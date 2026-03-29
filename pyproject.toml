@@ -1,0 +1,17 @@
+[project]
+name = "autoimprover"
+version = "0.1.0"
+description = "SOTA autonomous prompt optimizer for Claude Code using DSPy + GEPA"
+requires-python = ">=3.11"
+dependencies = [
+    "dspy>=3.1",
+    "gepa>=0.0.26",
+    "anthropic",
+    "litellm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
