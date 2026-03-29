@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""GEPA-powered prompt optimizer for Claude Code."""
+"""GEPA-powered prompt optimizer for Claude Code.
+
+Runs entirely on Claude Code Max plan — no API keys needed.
+All LLM calls route through `claude -p` (Claude Code CLI non-interactive mode).
+"""
 
 import json
 import os
+import re
+import subprocess
 import sys
-from pathlib import Path
+import shutil
+import time
+import traceback
+from typing import Any
 
-from dotenv import load_dotenv
-
-# Load .env from project root if present
-_env = Path(__file__).resolve().parent.parent / ".env"
-if _env.exists():
-    load_dotenv(_env)
-
-import litellm
 import gepa.optimize_anything as oa
 from gepa.optimize_anything import (
     GEPAConfig,
@@ -22,70 +23,179 @@ from gepa.optimize_anything import (
     optimize_anything,
 )
 
-EVAL_MODEL = os.getenv("AUTOIMPROVER_EVAL_MODEL", "anthropic/claude-sonnet-4-6")
-REFLECTION_MODEL = os.getenv("AUTOIMPROVER_REFLECTION_MODEL", "anthropic/claude-sonnet-4-6")
+# ---------------------------------------------------------------------------
+# Claude CLI backend — uses Max plan, zero config
+# ---------------------------------------------------------------------------
 
-JUDGE_SYSTEM = """\
-You are an expert prompt engineer evaluating prompts designed for Claude Code \
-(Anthropic's autonomous coding CLI). Claude Code has access to: Bash, file I/O, \
-Grep, Glob, Edit, Write, Read, sub-agents, MCP servers, web fetch, and multi-step \
-reasoning.
+CLAUDE_BIN = shutil.which("claude") or "claude"
+MAX_RETRIES = 3
+CALL_TIMEOUT = 120
+REFLECTION_TIMEOUT = 240  # reflection prompts are longer
 
-Score the candidate prompt on these dimensions (each 0-10):
+
+def claude_call(prompt: str, timeout: int = CALL_TIMEOUT) -> str:
+    """Call Claude via CLI non-interactive mode. Uses Max plan credits."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = subprocess.run(
+                [CLAUDE_BIN, "-p", "--output-format", "text", "--max-turns", "1"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                if result.stderr.strip():
+                    print(f"[claude stderr] {result.stderr.strip()[:200]}", file=sys.stderr)
+                return result.stdout.strip()
+            if attempt < MAX_RETRIES:
+                time.sleep(2 * attempt)
+                continue
+            raise RuntimeError(
+                f"claude -p failed after {MAX_RETRIES} attempts. "
+                f"exit={result.returncode} stderr={result.stderr[:300]}"
+            )
+        except subprocess.TimeoutExpired:
+            if attempt < MAX_RETRIES:
+                time.sleep(2 * attempt)
+                continue
+            raise RuntimeError(f"claude -p timed out after {timeout}s x {MAX_RETRIES} attempts")
+    raise RuntimeError("claude_call: unreachable")
+
+
+def reflection_lm(prompt: str | list[dict[str, Any]]) -> str:
+    """GEPA reflection/mutation LM — routed through Claude CLI.
+
+    Accepts str or list[dict] (GEPA's LanguageModel protocol).
+    """
+    if isinstance(prompt, list):
+        # GEPA may pass chat-format messages; flatten to a single string
+        parts = []
+        for msg in prompt:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Handle multimodal content blocks
+                content = " ".join(
+                    c.get("text", "") for c in content if isinstance(c, dict)
+                )
+            if role:
+                parts.append(f"[{role}]\n{content}")
+            else:
+                parts.append(str(content))
+        prompt = "\n\n".join(parts)
+    return claude_call(prompt, timeout=REFLECTION_TIMEOUT)
+
+
+# ---------------------------------------------------------------------------
+# Evaluator — Claude-as-judge scoring prompts for Claude Code usage
+# ---------------------------------------------------------------------------
+
+# Uses string concatenation instead of .format() to avoid brace conflicts
+# when candidate prompts contain { } characters (code, JSON, f-strings)
+JUDGE_PREAMBLE = """\
+You are an expert prompt engineer. Evaluate the following prompt that is \
+designed to be used with Claude Code (Anthropic's autonomous coding CLI).
+
+Claude Code has these tools: Bash, Read, Write, Edit, Glob, Grep, \
+sub-agents, MCP servers, WebFetch, WebSearch, task tracking, and \
+multi-step autonomous reasoning.
+
+Score the prompt on these 6 dimensions (each 0-10):
 
 1. CLARITY — unambiguous, well-structured, no room for misinterpretation
-2. SPECIFICITY — precise about inputs, outputs, constraints, and edge cases
+2. SPECIFICITY — precise about inputs, outputs, constraints, edge cases
 3. EFFECTIVENESS — would reliably produce high-quality results
-4. AUTONOMY — enables autonomous multi-step execution, minimal back-and-forth
+4. AUTONOMY — enables multi-step autonomous execution, minimal back-and-forth
 5. TOOL_AWARENESS — leverages Claude Code's tools (bash, file ops, MCP, agents)
-6. ROBUSTNESS — handles errors, edge cases, and unexpected states gracefully
+6. ROBUSTNESS — handles errors, edge cases, unexpected states gracefully
 
-Return ONLY valid JSON:
-{"clarity":N,"specificity":N,"effectiveness":N,"autonomy":N,"tool_awareness":N,\
-"robustness":N,"reasoning":"one sentence","weaknesses":"what to improve"}\
+Respond with ONLY this JSON (no markdown, no explanation):
+{"clarity":N,"specificity":N,"effectiveness":N,"autonomy":N,"tool_awareness":N,"robustness":N,"reasoning":"one sentence","weaknesses":"what to improve"}
+
+PROMPT TO EVALUATE:
+```
 """
+
+JUDGE_SUFFIX = "\n```"
+
+
+def _extract_json(text: str) -> dict:
+    """Extract JSON object from text that may contain markdown fences or prose."""
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown fences
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Brace-counting parser for nested JSON
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+
+    # Last resort: try json_repair if available
+    try:
+        from json_repair import repair_json
+        return json.loads(repair_json(text))
+    except Exception:
+        pass
+
+    raise ValueError(f"No valid JSON found in: {text[:200]}")
+
+
+DIMS = ["clarity", "specificity", "effectiveness", "autonomy", "tool_awareness", "robustness"]
 
 
 def evaluate_prompt(candidate: str) -> float:
     """Score a candidate prompt via Claude-as-judge with ASI logging."""
     try:
-        resp = litellm.completion(
-            model=EVAL_MODEL,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM},
-                {"role": "user", "content": f"Evaluate this prompt:\n\n```\n{candidate}\n```"},
-            ],
-            temperature=0.15,
-            max_tokens=512,
-        )
-        text = resp.choices[0].message.content.strip()
+        # Concatenate instead of .format() to avoid brace issues in candidate
+        full_prompt = JUDGE_PREAMBLE + candidate + JUDGE_SUFFIX
+        text = claude_call(full_prompt)
+        scores = _extract_json(text)
+        values = [float(scores.get(d, 0)) for d in DIMS]
+        raw = sum(values) / (len(DIMS) * 10)
 
-        # Extract JSON from possible markdown fences
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-
-        scores = json.loads(text)
-        dims = ["clarity", "specificity", "effectiveness", "autonomy", "tool_awareness", "robustness"]
-        values = [float(scores.get(d, 0)) for d in dims]
-        raw = sum(values) / (len(dims) * 10)
-
-        oa.log(f"Scores: { {d: v for d, v in zip(dims, values)} }")
+        oa.log(f"Scores: { {d: v for d, v in zip(DIMS, values)} }")
         oa.log(f"Reasoning: {scores.get('reasoning', 'N/A')}")
         oa.log(f"Weaknesses: {scores.get('weaknesses', 'N/A')}")
         oa.log(f"Aggregate: {raw:.4f}")
 
         return raw
 
-    except Exception as e:
-        oa.log(f"Evaluator error: {e}")
+    except (ValueError, json.JSONDecodeError) as e:
+        # Scoring failure (bad judge output) — return 0 and let GEPA continue
+        oa.log(f"Scoring parse error: {type(e).__name__}: {e}")
         return 0.0
+    except (RuntimeError, subprocess.SubprocessError) as e:
+        # Infrastructure failure — re-raise so GEPA's error handling kicks in
+        raise
 
 
-def run(prompt: str, max_calls: int = 50, run_dir: str | None = None) -> dict:
-    """Run GEPA optimize_anything on a prompt string."""
+# ---------------------------------------------------------------------------
+# Main optimization loop
+# ---------------------------------------------------------------------------
+
+def run(prompt: str, max_calls: int = 30, run_dir: str | None = None) -> dict:
+    """Run GEPA optimize_anything on a prompt. All LLM calls via Claude CLI."""
     config = GEPAConfig(
         engine=EngineConfig(
             max_metric_calls=max_calls,
@@ -95,9 +205,10 @@ def run(prompt: str, max_calls: int = 50, run_dir: str | None = None) -> dict:
             run_dir=run_dir,
             candidate_selection_strategy="pareto",
             frontier_type="hybrid",
+            parallel=False,  # Sequential — avoid rate-limiting claude -p
         ),
         reflection=ReflectionConfig(
-            reflection_lm=REFLECTION_MODEL,
+            reflection_lm=reflection_lm,
             module_selector="all",
             skip_perfect_score=False,
         ),
@@ -116,12 +227,22 @@ def run(prompt: str, max_calls: int = 50, run_dir: str | None = None) -> dict:
         config=config,
     )
 
+    if not result.val_aggregate_scores:
+        return {
+            "best_prompt": prompt,
+            "best_score": 0.0,
+            "seed_score": 0.0,
+            "improvement": 0.0,
+            "candidates_explored": 0,
+            "total_evaluations": 0,
+        }
+
     best = result.best_candidate
     if isinstance(best, dict):
-        best = next(iter(best.values()))
+        best = best.get("current_candidate", next(iter(best.values())))
 
-    seed_score = result.val_aggregate_scores[0] if result.val_aggregate_scores else 0.0
-    best_score = result.val_aggregate_scores[result.best_idx] if result.val_aggregate_scores else 0.0
+    seed_score = result.val_aggregate_scores[0]
+    best_score = result.val_aggregate_scores[result.best_idx]
 
     return {
         "best_prompt": best,
@@ -133,13 +254,21 @@ def run(prompt: str, max_calls: int = 50, run_dir: str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="GEPA prompt optimizer for Claude Code")
+    parser = argparse.ArgumentParser(
+        description="GEPA prompt optimizer for Claude Code (Max plan — no API key needed)"
+    )
     parser.add_argument("prompt", nargs="?", help="Prompt to optimize (or pipe via stdin)")
-    parser.add_argument("--max-calls", type=int, default=50, help="Max evaluation calls (default: 50)")
-    parser.add_argument("--run-dir", default=None, help="Checkpoint directory for resuming")
+    parser.add_argument("--max-calls", type=int, default=30,
+                        help="Max evaluation calls (default: 30, use 60+ for deeper optimization)")
+    parser.add_argument("--run-dir", default=None,
+                        help="Checkpoint directory for resuming")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
@@ -149,14 +278,20 @@ def main():
     if not prompt:
         parser.error("No prompt provided. Pass as argument or pipe via stdin.")
 
-    print(f"Optimizing prompt ({args.max_calls} max evals)...\n", file=sys.stderr)
+    if not shutil.which("claude"):
+        print("Error: 'claude' CLI not found in PATH. Install Claude Code first.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print(f"GEPA optimizer — {args.max_calls} max evals via Claude CLI (Max plan)\n",
+          file=sys.stderr)
 
     result = run(prompt, max_calls=args.max_calls, run_dir=args.run_dir)
 
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"Score: {result['seed_score']:.4f} -> {result['best_score']:.4f}  "
+        print(f"\nScore: {result['seed_score']:.4f} -> {result['best_score']:.4f}  "
               f"(+{result['improvement']:.4f})")
         print(f"Candidates explored: {result['candidates_explored']}")
         print(f"Total evaluations: {result['total_evaluations']}")
