@@ -5,7 +5,7 @@ description = "SOTA autonomous prompt optimizer for Claude Code using DSPy + GEP
 requires-python = ">=3.11"
 dependencies = [
     "dspy>=3.1",
-    "gepa>=0.0.26",
+    "gepa @ git+https://github.com/gepa-ai/gepa.git",
     "anthropic",
     "litellm",
 ]
