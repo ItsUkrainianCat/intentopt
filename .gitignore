@@ -1,14 +1,32 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
 dist/
 build/
+*.egg-info/
 .eggs/
 *.egg
+
+# Secrets and logs
 .env
 .secrets
 *.log
+
+# Files that Claude Code and ruflo drop into a project folder. Only the agent definitions and the
+# project settings are part of the repository.
+.claude/*
+!.claude/agents/
+!.claude/settings.json
+.claude-flow/
+.swarm/
+.agents/
+agentdb.rvf*
+ruvector.db
+
+# Run output and caches of the tool itself
+runs/
 .gepa_cache/
 .dspy_cache/
