@@ -57,7 +57,7 @@ When it reports:
 
 4. Each reviewer ends with one verdict block (format in `.claude/agents/reviewer.md`). Check four things: the JSON parses; `subject` and `head` match the proposal; every `file:line` exists; `verdict` is `reject` exactly when a high or medium finding is present. On a failed check ask the same agent to emit the block again once; if it fails again, rerun the seat. No abstentions.
 5. Store the three blocks unedited: `hive-mind_memory {action:"set", key:"vote.<proposalId>", value:{...}}`.
-6. Cast the votes one call at a time, rejections first: `hive-mind_consensus {action:"vote", proposalId, voterId:"<seat>", vote:true|false, hiveToken}`. `vote` must be a JSON boolean. Stop when the answer says `resolved: true`; with two equal votes the third is not needed and would be refused.
+6. Cast the votes one call at a time, rejections first: `hive-mind_consensus {action:"vote", proposalId, voterId:"<seat>", vote:true|false, hiveToken}`. `vote` must be a JSON boolean: ruflo counts the string `"false"` as an approval, so after every rejection check that `votesAgainst` went up by one. Stop when the answer says `resolved: true`; with two equal votes the third is not needed and would be refused.
 7. Rule: **a high finding always blocks**, whatever the tally. Otherwise the result decides: `approved` passes the gate and the dissenting reasons go into the build log; `rejected` means fix the findings and open a new proposal whose reviewers see only the fix diff. At most one re-vote per gate; after that the user decides.
 
 ### Gate workers
