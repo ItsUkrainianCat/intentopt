@@ -1,14 +1,36 @@
 [project]
 name = "autoimprover"
-version = "0.1.0"
-description = "SOTA autonomous prompt optimizer for Claude Code using DSPy + GEPA"
-requires-python = ">=3.11"
+version = "0.2.0.dev0"
+description = "Prompt optimizer: GEPA search over a prompt, scored on the user's own examples"
+requires-python = ">=3.12"
 dependencies = [
-    "gepa @ git+https://github.com/gepa-ai/gepa.git",
+    "gepa==0.1.4",
 ]
 
-[project.optional-dependencies]
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
+# Exact pins: a check must give the same answer on every machine and in every worktree.
+[dependency-groups]
 dev = [
-    "pytest",
-    "ruff",
+    "pytest==8.4.2",
+    "ruff==0.16.8",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# legacy/ is the 0.1.0 script, kept for reference until gate G5 replaces it
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.12"
