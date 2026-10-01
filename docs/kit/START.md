@@ -34,10 +34,12 @@ The lead runs these first, in the project session. A failed line is fixed before
 | 2 | `just check`, in the sandbox | exit 0: the `uv` cache is writable from a project session |
 | 3 | `git status --short` | empty |
 | 4 | `memory_search` (ruflo MCP tool) with the project's topic | results from the global store: home notes or `patterns` |
-| 5 | one `task_create` ("G0 self-check"), then `git status --short` | still empty: ledger files are ignored |
+| 5 | `task_create {type:"feature", description:"<project> G0 start", tags:["<project>","build","G0"]}` and `task_update` to `in_progress`, then `git status --short` | still empty: ledger files are ignored |
 | 6 | the session's agent list | contains `architect`, `coder`, `tester`, `reviewer` |
 | 7 | `git worktree list` | only the main checkout |
 | 8 | `free -m`, and the number of other Claude sessions | at least 3 GB available, swap used under 20 GB, at most 3 other sessions; otherwise say so and wait |
-| 9 | the status line | renders; `Swarm` shows this project's registry (normally `0 active`) |
+| 9 | swarm and hive, as in "Build start" of `BUILD-LOOP.md`: `swarm_status` / `swarm_init`, `hive-mind_init`, the three seats | `hive-mind_status` lists exactly `rev-spec`, `rev-safety`, `rev-tests` |
+| 10 | one throwaway vote: propose `type:"selfcheck:g0"` with `strategy:"quorum", quorumPreset:"majority"`, then vote `false`, `true`, `true` for the three seats | the proposal answers `required 2, totalNodes 3`; the last vote answers `resolved: true, result: "approved"` |
+| 11 | the status line | line 2 shows `Swarm ○ 0 active`; line 3 shows the build row with `Build G0`, `hive 3 seats` and the self-check vote |
 
-Record the result of each line in the first `task_complete` of the project.
+Record the result of each line in the `task_complete` of the G0 task. If line 9, 10 or 11 fails, run `python3 ~/Documents/ruv-stack-audit/harness/ruflo_protocol_rehearsal.py` and report what it prints before going on.

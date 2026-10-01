@@ -17,12 +17,13 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 
 ## How work is done here
 
-- Follow `docs/kit/BUILD-LOOP.md`: gates G0 to G7, each with a command that proves it.
+- Follow `docs/kit/BUILD-LOOP.md` (full mode): gates G0 to G7, each with a command that proves it; swarm and hive records, three-reviewer votes at G3 and G6, shadow model routing, gate workers, lessons at G7.
 - Agents: `architect`, `coder`, `tester`, `reviewer` (`.claude/agents/`). One writer per git worktree; each owns the files listed for its package in `docs/ARCHITECTURE.md`.
 - `pyproject.toml`, `uv.lock`, `justfile`, `.gitignore`, `CLAUDE.md`, `docs/**` and `.claude/**` belong to the lead session.
 - Dependencies: exact pins in `pyproject.toml`, hashes in `uv.lock`, always `uv run --frozen`. Adding one is the lead's job and needs an ADR.
 - Tests never call a real LLM or the network. The real backend (`claude -p`) is exercised only by the user's `just smoke`.
-- Only the lead session uses ruflo (memory search and store, the task and ownership ledger).
+- Only the lead session uses ruflo, through its MCP tools, and only one lead session works in this folder at a time.
+- The README is a `docs` work package for `coder`, merged before the G6 vote; after that vote only `docs/BUILD-LOG.md` and the tag change.
 
 ## Commit policy (pre-approved by the user for this repository, 2026-10-01)
 
