@@ -10,7 +10,7 @@ The paper's meta-prompt (Appendix C) shows the rewriter the current instruction,
 
 ## Decision
 
-`ReflectionConfig.reflection_prompt_template` is our own, built per strictness level (R8). It keeps the paper's structure (current instruction, minibatch with outputs and failed checks, request for one new instruction in a code block, minibatch size 3 as in the paper's runs) and adds: the intent contract with "keep verbatim" items; "do not add facts, names, numbers or requirements that appear only in the examples"; "prefer deleting or tightening over adding"; "preserve the author's voice, language, structure and every literal (R9)"; "change only what a failed check points to"; the length cap in tokens. With user-supplied `--examples` (real data) a flag `--facts-from-examples` allows the paper's behaviour.
+`ReflectionConfig.reflection_prompt_template` is our own, built per strictness level (R8). It keeps the paper's structure (current instruction, minibatch with outputs and failed checks, request for one new instruction in a code block, minibatch size 3 as in the paper's runs) and adds: the intent contract with "keep verbatim" items; "do not add facts, names, numbers or requirements that appear only in the examples"; "prefer deleting or tightening over adding"; "preserve the author's voice, language, structure and every literal (R9)"; "change only what a failed check points to"; the length cap in tokens. There is no switch in v1 that restores the paper's fact copying, even for user-supplied `--examples`: `docs/SPEC.md` has no requirement for it. A `--facts-from-examples` flag is a candidate follow-up (needs a SPEC amendment and its own test that copied facts come from user data only).
 
 ## Consequences
 
