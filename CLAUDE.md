@@ -38,7 +38,7 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 - GEPA must run with `parallel=False`: its default starts one LLM call per CPU core, and each call here is a `claude` process.
 - `--bare` is not used for `claude -p`: it needs an API key and never reads the subscription login.
 
-## Starting points for gate G1 (questions for the user, with the lead's recommendation)
+## Starting points for gate G1 (history: superseded by `docs/SPEC.md` and `docs/ARCHITECTURE.md`; where they differ, those two win, for example no `--eval rubric`, no `doctor` subcommand, no regex matching in v1)
 
 - **What is scored:** the candidate prompt run on the user's examples (JSONL: input, optional expected; exact, contains or regex match; optional judge with criteria). The 0.1.0 rubric only graded the prompt's wording and never ran it; keep it as `--eval rubric`, labelled "style score".
 - **Backend:** one interface; v1 ships `fake` (tests) and `claude-cli`. The local model at `127.0.0.1:8080` is the first follow-up, as task model only, and its output is untrusted.

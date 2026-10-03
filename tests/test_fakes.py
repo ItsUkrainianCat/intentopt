@@ -3,7 +3,7 @@
 import pytest
 from fakes import by_role, failing
 
-from autoimprover.types import BackendError, Call
+from autoimprover.types import Call, CallError
 
 
 def call(role: str = "task") -> Call:
@@ -24,14 +24,14 @@ def test_by_role_serves_a_list_in_order_and_repeats_the_last():
 
 
 def test_by_role_raises_an_exception_entry():
-    backend = by_role({"task": BackendError("boom")})
-    with pytest.raises(BackendError, match="boom"):
+    backend = by_role({"task": CallError("boom")})
+    with pytest.raises(CallError, match="boom"):
         backend.complete(call())
 
 
-def test_failing_backend_fails_every_call_and_still_records_it():
+def test_failing_backend_fails_every_attempt_and_still_records_it():
     backend = failing()
     for _ in range(2):
-        with pytest.raises(BackendError):
+        with pytest.raises(CallError):
             backend.complete(call())
     assert backend.count() == 2
