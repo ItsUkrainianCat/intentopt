@@ -36,7 +36,7 @@ improve(prompt, opts):
 | `evaluator.py` | run task model on a scenario; programmatic checks; batched checklist judge (one call per candidate per batch); returns `(score, side_info)` with `side_info["scores"]` per check group; `oa.log` for ASI | R10, R14, R16 |
 | `runner.py` | GEPA wiring (`hybrid` frontier, merge off, small valset), strictness templates, length cap, noise, holdout decision on the target model, iteration estimate for `--dry`, early stop | R3, R4, R7, R8, R12, R13, R14a, R15, R15a |
 | `report.py` | word diff, summary, JSON | R2 |
-| `cli.py` | arguments and exit codes (R2); subcommand `clean` (R23). Flags: `--dry` (R4), `--force-low-budget` (R4), `--json` (R2), `--examples` (R11), `--kind template\|task` (R5), `--budget` (R17), `--strictness` (R8), `--allow-growth` (R7), `--target-model` (R14a), `--merge` (R15), `--trust-search` (R11), `--resume` (R22), `--facts-from-examples` (ADR-006; needs `--examples`, not in SPEC, see Open points) | R1, R2, R4, R22, R23 |
+| `cli.py` | arguments and exit codes (R2); subcommand `clean` (R23). Flags: `--dry` (R4), `--force-low-budget` (R4), `--json` (R2), `--examples` (R11), `--kind template\|task` (R5), `--budget` (R17), `--strictness` (R8), `--allow-growth` (R7), `--target-model` (R14a), `--merge` (R15), `--trust-search` (R11), `--resume` (R22) | R1, R2, R4, R22, R23 |
 | `commands/improve.md` | Claude Code slash command text (`/improve`, `/optimize`) | R21 |
 
 Dependencies point one way: `cli -> runner -> {evaluator, contract, scenarios} -> backend -> runstore -> types`.
@@ -82,5 +82,5 @@ WP1 to WP3 can run in parallel (max 2 writers at once, each in its own worktree)
 ADR-001 gepa only, no DSPy in v1. ADR-002 judge sees outputs, not candidates. ADR-003 three-way split and holdout rule. ADR-004 one backend seam and budget counting. ADR-005 one-off tasks are tested on synthesised situations, templates on inputs. ADR-006 our own reflection prompt.
 
 ## Open points for the G3 vote
-- `--facts-from-examples` appears in ADR-006 but has no requirement in `docs/SPEC.md`. Either the user adds an R-number or the flag is dropped from v1 (the lead recommends dropping it: it re-opens the invented-facts risk ADR-006 exists to close).
+- `--facts-from-examples` was in ADR-006 without a requirement in `docs/SPEC.md`. The lead removed it from v1 on 2026-10-03 so the documents match the approved SPEC (it re-opens the invented-facts risk ADR-006 exists to close). The user can reverse this by adding an R-number; it is listed as a follow-up in ADR-006.
 - `autoimprover clean` (R23) has no exit-code row in R2; it exits 0, or 2 on bad usage.

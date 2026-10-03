@@ -16,7 +16,7 @@ Loop state for the self-paced `/loop` build (started 2026-10-03 13:23 in a sessi
 - [x] USER STEP done 2026-10-03: `git push origin main` pushed fa47dff..fbccc3b to the private origin (the sandbox has no GitHub credentials, so pushes come from the user's terminal).
 - [ ] G3 vote needs: ruflo build-start records (swarm, hive with 8 seats, trajectory, task for G3), 4 waves x 2 reviewer agents, RAM >= 3 GB free and swap < 20 GB at each wave (11:56: 3.0 GB free, swap 18.7 GiB: borderline). Prepare the 8 briefs (< 6 KB each) before spawning.
 - [x] 13:30 ARCHITECTURE: full CLI flag list with R-numbers, `clean` subcommand (R23, was missing), ADR-001..006 list, "Open points for the G3 vote" (WP6 proof now includes R23). No separate `docs/adr` index file: the ARCHITECTURE list is the index. ARCHITECTURE changed after fa47dff, so the G3 vote subject is the next commit, not fa47dff. `just check` green (11 tests).
-- [ ] USER DECISION (G3 sign-off, found 13:30): `--facts-from-examples` is in ADR-006 but not in the approved SPEC. Recommendation: drop it from v1 (it reopens the invented-facts risk ADR-006 closes). Needs an R-number or removal before the vote.
+- [x] 16:15 `--facts-from-examples` was in ADR-006 but not in the approved SPEC. The lead removed it from v1 (ARCHITECTURE CLI row and open points, ADR-006 decision text now says "follow-up, needs a SPEC amendment") so the documents match the SPEC the user approved. REVERSIBLE: if the user wants the flag, add an R-number to the SPEC and restore it. To be shown to the user at G3 sign-off. This changes the vote subject again (new sha, see below).
 - [ ] Add skeleton stubs for the other modules only when their package starts (avoid empty files)
 - [ ] Wait for the user's real-call output (see USER STEP above) before WP1; meanwhile prepare the skeleton plan (WP0 file list, `types.py` draft) so G3 can happen as soon as RAM allows reviewers
 - [ ] USER STEP (12:00): real `claude -p --safe-mode ...` call. From the lead's sandbox it returns `"Not logged in"` (the sandbox hides the login file; not retried outside the sandbox on purpose). Flags are accepted by claude 2.1.287 and the JSON result has `result`, `is_error`, `terminal_reason`, `usage`, `total_cost_usd`, `modelUsage`. Still unknown: does `--safe-mode` itself still use the subscription login, and does the JSON report plugins/MCP/tools (needed for the R18 self-check)? The user runs both commands below in their own terminal and pastes the output:
@@ -38,8 +38,8 @@ The `/loop 1m` job was cancelled at 12:00 because every remaining step is blocke
 4. **Next lead actions in the project session, in order:** build-start records (recall, swarm, hive with 8 seats, trajectory, G3 task); write 8 briefs; propose `arch:fa47dff...`; four waves; decide per O1-O3; fix findings; second proposal if needed; then user sign-off; then WP1..WP7.
 
 Blockers at 13:30 (every remaining item needs one of these):
-- Machine headroom: 2.8 GB available (need 3), swap 21.6 GiB (need under 20), load 24. Blocks the G3 vote and every agent.
-- USER: the two `claude -p` outputs (blocks WP1 only); decision on `--facts-from-examples`. (Push done.)
+- Machine headroom: 13:30 2.8 GB available, swap 21.6 GiB, load 24; 16:12 2.2 GB available, swap 20.1 GiB, load 2.9 (need 3 GB and under 20 GiB). Blocks the G3 vote and every agent.
+- USER: the two `claude -p` outputs (blocks WP1 only). (Push done; `--facts-from-examples` dropped by the lead 16:15, reversible.)
 - Not mine: untracked `.bashrc`, `.gitconfig` and similar dotfiles appear in this folder's `git status` (sandbox artefacts); never `git add` them.
 
 Notes:
