@@ -38,8 +38,8 @@ The lead runs these first, in the project session. A failed line is fixed before
 | 6 | the session's agent list | contains `architect`, `coder`, `tester`, `reviewer` |
 | 7 | `git worktree list` | only the main checkout |
 | 8 | `free -m`, and the number of other Claude sessions | at least 3 GB available, swap used under 20 GB, at most 3 other sessions; otherwise say so and wait |
-| 9 | swarm and hive, as in "Build start" of `BUILD-LOOP.md`: `swarm_status` / `swarm_init`, `hive-mind_init`, the three seats | `hive-mind_status` lists exactly `rev-spec`, `rev-safety`, `rev-tests` |
-| 10 | one throwaway vote: propose `type:"selfcheck:g0"` with `strategy:"quorum", quorumPreset:"majority"`, then vote `false`, `true`, `true` for the three seats | the proposal answers `required 2, totalNodes 3`; the last vote answers `resolved: true, result: "approved"` |
-| 11 | the status line | line 2 shows `Swarm ○ 0 active`; line 3 shows the build row with `Build G0`, `hive 3 seats` and the self-check vote |
+| 9 | swarm and hive, as in "Build start" of `BUILD-LOOP.md`: `swarm_status` / `swarm_init`, `hive-mind_init`, the eight seats | `hive-mind_status` lists exactly `rev-spec`, `rev-safety`, `rev-tests`, `rev-break`, `rev-state`, `rev-user`, `rev-docs`, `rev-diff`, and no pending proposal |
+| 10 | one throwaway vote: propose `type:"selfcheck:g0"` with `strategy:"quorum", quorumPreset:"supermajority"`, then vote `false`, `false`, then `true` for the six other seats, one call at a time | the proposal answers `required 6, totalNodes 8`; the second vote still says `resolved: false` with `votesAgainst 2`; the eighth vote answers `resolved: true, result: "approved"` |
+| 11 | the status line | line 2 shows `Swarm ○ 0 active`; line 3 shows the build row with `Build G0`, `hive 8 seats` and the self-check vote `6–2 ✓` |
 
 Record the result of each line in the `task_complete` of the G0 task. If line 9, 10 or 11 fails, run `python3 ~/Documents/ruv-stack-audit/harness/ruflo_protocol_rehearsal.py` and report what it prints before going on.

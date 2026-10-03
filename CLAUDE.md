@@ -17,7 +17,7 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 
 ## How work is done here
 
-- Follow `docs/kit/BUILD-LOOP.md` (full mode): gates G0 to G7, each with a command that proves it; swarm and hive records, three-reviewer votes at G3 and G6, shadow model routing, gate workers, lessons at G7.
+- Follow `docs/kit/BUILD-LOOP.md` (full mode): gates G0 to G7, each with a command that proves it; swarm and hive records, eight-seat supermajority votes (6 of 8, a reproduced high or medium blocks whatever the tally) at G3 and G6, shadow model routing, gate workers, lessons at G7.
 - Agents: `architect`, `coder`, `tester`, `reviewer` (`.claude/agents/`). One writer per git worktree; each owns the files listed for its package in `docs/ARCHITECTURE.md`.
 - `pyproject.toml`, `uv.lock`, `justfile`, `.gitignore`, `CLAUDE.md`, `docs/**` and `.claude/**` belong to the lead session.
 - Dependencies: exact pins in `pyproject.toml`, hashes in `uv.lock`, always `uv run --frozen`. Adding one is the lead's job and needs an ADR.
@@ -42,6 +42,6 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 
 - **What is scored:** the candidate prompt run on the user's examples (JSONL: input, optional expected; exact, contains or regex match; optional judge with criteria). The 0.1.0 rubric only graded the prompt's wording and never ran it; keep it as `--eval rubric`, labelled "style score".
 - **Backend:** one interface; v1 ships `fake` (tests) and `claude-cli`. The local model at `127.0.0.1:8080` is the first follow-up, as task model only, and its output is untrusted.
-- **Budget:** count every LLM call, not GEPA's metric calls (reflection calls are outside that limit). Default 40, ceiling 150, 30 minutes, one call at a time, plan shown before the run starts.
+- **Budget:** count every LLM call, not GEPA's metric calls (reflection calls are outside that limit). Superseded by `docs/SPEC.md` R17 (default 100, ceiling 300, 45 minutes, fixed costs reserved up front, one call at a time, plan shown before the run starts).
 - **Research ideas in v1** (`~/projects/autogepa/techniques/`): disk cache and hard budget (05), prompt-length report and growth cap (10), a "seed already near the ceiling" check (01), a holdout split from 8 examples up. The ideas that change GEPA's search wait.
 - **Containing `claude -p`:** one place builds the command (`--safe-mode --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 --model <m> --system-prompt <s> --output-format json`), with a scrubbed environment. `doctor` and the first call of every run abort unless the session reports no plugins, no MCP servers and no tools.
