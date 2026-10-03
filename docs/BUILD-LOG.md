@@ -38,7 +38,7 @@ The `/loop 1m` job was cancelled at 12:00 because every remaining step is blocke
 4. **Next lead actions in the project session, in order:** build-start records (recall, swarm, hive with 8 seats, trajectory, G3 task); write 8 briefs; propose `arch:fa47dff...`; four waves; decide per O1-O3; fix findings; second proposal if needed; then user sign-off; then WP1..WP7.
 
 Blockers at 13:30 (every remaining item needs one of these):
-- Machine headroom: 13:30 2.8 GB available, swap 21.6 GiB, load 24; 16:12 2.2 GB available, swap 20.1 GiB, load 2.9 (need 3 GB and under 20 GiB). Blocks the G3 vote and every agent.
+- Machine headroom: 13:30 2.8 GB available, swap 21.6 GiB, load 24; 16:12 2.2 GB available, swap 20.1 GiB, load 2.9; 16:39 2.2 GB, 20.1 GiB, load 3.8; vote subject will be 126fe4d or later (need 3 GB and under 20 GiB). Blocks the G3 vote and every agent.
 - USER: the two `claude -p` outputs (blocks WP1 only). (Push done; `--facts-from-examples` dropped by the lead 16:15, reversible.)
 - Not mine: untracked `.bashrc`, `.gitconfig` and similar dotfiles appear in this folder's `git status` (sandbox artefacts); never `git add` them.
 
