@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 Role = Literal["intake", "synth", "task", "judge", "reflect"]
 Kind = Literal["template", "task"]
@@ -24,6 +25,13 @@ WALL_CLOCK_DEFAULT_S = 45 * 60
 SEARCH_CLOCK_SHARE = 0.75
 PROMPT_MAX_CHARS = 20_000
 
+# Sizes that keep the budget arithmetic bounded (SPEC R15, R17): the holdout never exceeds
+# HOLDOUT_MAX scenarios however many the user supplies, and one judge call covers at most
+# JUDGE_BATCH_MAX scenarios, so every scoring pass is one judge call.
+HOLDOUT_MAX = 6
+JUDGE_BATCH_MAX = 6
+MINIBATCH_SIZE = 3
+
 # One call: its timeout, its retries and the failures that end a run (SPEC R17, R24).
 CALL_TIMEOUT_S = 300
 CALL_RETRIES = 2
@@ -33,24 +41,62 @@ SYSTEM_PROMPT_MAX_BYTES = 100_000
 
 # Exit codes (SPEC R2).
 EXIT_OK = 0
+EXIT_INTERNAL = 1
 EXIT_USAGE = 2
 EXIT_BACKEND = 3
 EXIT_NOT_LOCKED_DOWN = 4
 EXIT_INTERRUPTED = 130
 
+# A run id, the only form `--resume` and `clean` accept (ADR-007): never a path.
+RUN_ID_PATTERN = r"\d{8}-\d{6}-[0-9a-f]{8}(-\d+)?"
+
 # Programmatic check rules. `regex` is not here on purpose: a pattern written by a model would run
 # in this process (SPEC R19).
 PROGRAMMATIC_RULES = ("contains", "not_contains", "max_chars", "min_chars")
+_NUMERIC_RULES = ("max_chars", "min_chars")
+
+# Short names the claude CLI accepts, pinned to the ids this version was written for (SPEC R14).
+MODEL_ALIASES = {
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+}
+DEFAULT_TASK_MODEL = MODEL_ALIASES["haiku"]
+DEFAULT_JUDGE_MODEL = MODEL_ALIASES["opus"]
+# The judge when the target is the default judge itself (for example `/improve` in an Opus session).
+FALLBACK_JUDGE_MODEL = MODEL_ALIASES["sonnet"]
+DEFAULT_REFLECT_MODEL = MODEL_ALIASES["opus"]
+DEFAULT_TARGET_MODEL = MODEL_ALIASES["sonnet"]
+
+
+def canonical_model(name: str) -> str:
+    """The full id behind a model name: trims, lower-cases, drops a `[1m]` style suffix and maps
+    the aliases above. Unknown names pass through, so R14 compares like with like."""
+    key = re.sub(r"\[[^\]]*\]$", "", name.strip().lower())
+    if not key:
+        raise ValueError("model name is empty")
+    return MODEL_ALIASES.get(key, key)
+
+
+class CallError(Exception):
+    """One attempt of a model call failed: non-zero exit, timeout, unreadable reply. Raw backends
+    raise it; `Resilient` retries (SPEC R24)."""
+
+
+class CallFailed(Exception):
+    """A call failed all its attempts (SPEC R24). The evaluator turns it into an unknown result
+    for that scenario; a seed run on the holdout lets it end the run as BackendError."""
 
 
 class BackendError(Exception):
-    """A model call failed after its retries (SPEC R24)."""
+    """The run cannot go on: three consecutive calls failed, or a seed run failed (SPEC R24,
+    exit code 3)."""
 
 
 class BudgetExhausted(Exception):
-    """The call limit is used up (SPEC R17). Raised by the backend seam only; the evaluator and
-    reflection wrappers catch it and stop GEPA through a stopper, so it never escapes the search
-    (ADR-004)."""
+    """The call limit is used up or the clock deadline passed (SPEC R17). Raised by the backend
+    seam only; the evaluator and reflection wrappers catch it and stop GEPA through a stopper, so
+    it never escapes the search (ADR-004)."""
 
 
 class SessionNotLockedDown(Exception):
@@ -62,7 +108,8 @@ class Call:
     """One model call. `json_schema` is set on intake, synthesis and judge calls (SPEC R18).
 
     `sample` separates repeated runs of an otherwise identical call: it is part of the cache key,
-    so the second seed run of SPEC R12 (`sample=1`) is a new call, not a cache hit.
+    so the second seed run of SPEC R12 (`sample=1`) is a new call, not a cache hit. Reflection
+    calls carry their running index for the same reason (ADR-004).
     """
 
     role: Role
@@ -71,6 +118,13 @@ class Call:
     system: str = ""
     json_schema: str | None = None
     sample: int = 0
+
+    def __post_init__(self) -> None:
+        if "\0" in self.system or len(self.system.encode()) > SYSTEM_PROMPT_MAX_BYTES:
+            raise ValueError(
+                f"system prompt has a NUL byte or exceeds {SYSTEM_PROMPT_MAX_BYTES} bytes "
+                "(SPEC R18)"
+            )
 
 
 @dataclass(frozen=True)
@@ -91,7 +145,7 @@ class Backend(Protocol):
 class Check:
     """One pass/fail check. `rule` is None for a judged check, else one of PROGRAMMATIC_RULES.
 
-    `arg` is the needle (contains, not_contains) or the number (max_chars, min_chars).
+    `arg` is the needle (contains, not_contains) or a whole number (max_chars, min_chars).
     """
 
     id: str
@@ -101,12 +155,18 @@ class Check:
     arg: str | None = None
 
     def __post_init__(self) -> None:
+        if self.group not in get_args(CheckGroup):
+            raise ValueError(f"unknown check group {self.group!r}")
         if self.rule is None:
+            if self.arg is not None:
+                raise ValueError("a judged check takes no argument")
             return
         if self.rule not in PROGRAMMATIC_RULES:
             raise ValueError(f"unknown check rule {self.rule!r}; allowed: {PROGRAMMATIC_RULES}")
         if not self.arg:
             raise ValueError(f"check rule {self.rule!r} needs an argument")
+        if self.rule in _NUMERIC_RULES and not (self.arg.isascii() and self.arg.isdigit()):
+            raise ValueError(f"check rule {self.rule!r} needs a whole number, got {self.arg!r}")
 
 
 @dataclass(frozen=True)
@@ -121,6 +181,10 @@ class Contract:
     language: str = ""
     tone: str = ""
     checks: tuple[Check, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in get_args(Kind):
+            raise ValueError(f"unknown prompt kind {self.kind!r}")
 
 
 @dataclass(frozen=True)
@@ -148,7 +212,8 @@ class BatchEvaluator(Protocol):
 
 @dataclass(frozen=True)
 class Models:
-    """Model names per role. The judge is never the task model and never the target (SPEC R14)."""
+    """Model names per role, stored as full ids. The judge is never the task model and never the
+    target model, compared after aliases are resolved (SPEC R14)."""
 
     task: str
     judge: str
@@ -156,6 +221,8 @@ class Models:
     target: str
 
     def __post_init__(self) -> None:
+        for name in ("task", "judge", "reflect", "target"):
+            object.__setattr__(self, name, canonical_model(getattr(self, name)))
         if self.judge == self.task:
             raise ValueError("judge model must differ from the task model (SPEC R14)")
         if self.judge == self.target:
@@ -165,12 +232,17 @@ class Models:
             )
 
 
-DEFAULT_MODELS = Models(
-    task="claude-haiku-4-5-20251001",
-    judge="claude-opus-5-5",
-    reflect="claude-opus-5-5",
-    target="claude-sonnet-5-5",
-)
+def default_models(target: str | None = None) -> Models:
+    """The default roles for a target model. When the target is the default judge, the judge falls
+    back to Sonnet 5.5, so `/improve` works in an Opus session (SPEC R14, R21)."""
+    target_id = canonical_model(target) if target else DEFAULT_TARGET_MODEL
+    judge = FALLBACK_JUDGE_MODEL if target_id == DEFAULT_JUDGE_MODEL else DEFAULT_JUDGE_MODEL
+    return Models(
+        task=DEFAULT_TASK_MODEL, judge=judge, reflect=DEFAULT_REFLECT_MODEL, target=target_id
+    )
+
+
+DEFAULT_MODELS = default_models()
 
 
 @dataclass(frozen=True)
@@ -186,10 +258,12 @@ class Plan:
     seed: int = 0
 
     def __post_init__(self) -> None:
-        if not 1 <= self.budget <= BUDGET_CEILING:
-            raise ValueError(f"budget must be between 1 and {BUDGET_CEILING}")
-        if self.wall_clock_s < 1:
-            raise ValueError("wall_clock_s must be positive")
+        if self.strictness not in LENGTH_CAP:
+            raise ValueError(f"unknown strictness {self.strictness!r}")
+        if type(self.budget) is not int or not 1 <= self.budget <= BUDGET_CEILING:
+            raise ValueError(f"budget must be a whole number between 1 and {BUDGET_CEILING}")
+        if type(self.wall_clock_s) is not int or self.wall_clock_s < 1:
+            raise ValueError("wall_clock_s must be a positive whole number of seconds")
 
 
 @dataclass(frozen=True)
@@ -212,3 +286,14 @@ class Outcome:
     length_ratio: float | None = None
     calls_used: int = 0
     run_dir: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in ("improved", "unchanged"):
+            raise ValueError(f"unknown outcome status {self.status!r}")
+        if (
+            self.status == "improved"
+            and self.score_before is not None
+            and self.score_after is not None
+            and self.score_after <= self.score_before
+        ):
+            raise ValueError("an improved outcome must score higher than the original")

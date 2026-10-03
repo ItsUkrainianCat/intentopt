@@ -34,7 +34,7 @@ select = ["E", "F", "I", "B", "UP"]
 testpaths = ["tests"]
 # importlib: two test files may share a name (tests/test_cli.py and tests/acceptance/test_cli.py);
 # `pythonpath` lets tests import the shared doubles as `from fakes import ...`.
-addopts = "-q --import-mode=importlib"
+addopts = "-q --import-mode=importlib -p pytester"
 pythonpath = ["tests"]
 markers = ["real_process: the test may start a child process (see tests/conftest.py)"]
 

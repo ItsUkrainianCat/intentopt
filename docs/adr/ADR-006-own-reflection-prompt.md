@@ -14,7 +14,7 @@ The paper's meta-prompt (Appendix C) shows the rewriter the current instruction,
 
 ## Consequences
 
-Less overfitting to synthetic scenarios and smaller diffs; some gains the paper's wording would find (injecting domain facts) are deliberately left out for synthetic runs. The template is a tested artifact: unit tests assert the contract items and rules appear in the rendered reflection call.
+Less overfitting to synthetic scenarios and smaller diffs; some gains the paper's wording would find (injecting domain facts) are deliberately left out for synthetic runs. The template is a tested artifact: unit tests assert the contract items and rules appear in the rendered reflection call. GEPA renders its template with plain string replacement, so a candidate or contract text that contains a placeholder such as `<side_info>` would have feedback spliced into it: the runner escapes the placeholders in candidate and contract text before rendering. The template also asks the model for two or three plain-language lines on what it changed and why; the runner keeps them per candidate lineage and they are the "what changed and why" lines of the report (R2), so no extra model call is needed. An empty reply or one without a code block is rejected by the reflection wrapper (ADR-004) instead of becoming a candidate.
 
 ## Alternatives rejected
 

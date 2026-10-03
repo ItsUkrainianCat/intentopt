@@ -1,12 +1,13 @@
 """Test doubles shared by unit and acceptance tests; import them as `from fakes import ...`.
 
-Owned by the lead. `ScriptedBackend` implements the `Backend` protocol: it answers from a function,
-records every call and can inject failures, so no test needs a real model.
+Owned by the lead. `ScriptedBackend` implements the `Backend` protocol and stands in for the raw
+`ClaudeCli` layer (ADR-004): it answers from a function, records every call and can inject
+failures, so no test needs a real model.
 """
 
 from collections.abc import Callable, Mapping, Sequence
 
-from autoimprover.types import BackendError, Call, Reply
+from autoimprover.types import Call, CallError, Reply
 
 Script = Callable[[Call], "str | Exception"]
 
@@ -43,5 +44,7 @@ def by_role(replies: Mapping[str, str | Exception | Sequence[str | Exception]]) 
 
 
 def failing(message: str = "backend down") -> ScriptedBackend:
-    """A backend whose every call fails with BackendError (SPEC R24)."""
-    return ScriptedBackend(lambda _call: BackendError(message))
+    """A raw backend whose every attempt fails with CallError, the way ClaudeCli does (SPEC R24).
+    Tests inject it with `cli.main(argv, backend=...)`, which replaces the raw layer only, so the
+    retry and failure counting of `Resilient` still run."""
+    return ScriptedBackend(lambda _call: CallError(message))
