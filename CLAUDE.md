@@ -19,7 +19,7 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 
 - Follow `docs/kit/BUILD-LOOP.md` (full mode): gates G0 to G7, each with a command that proves it; swarm and hive records, eight-seat supermajority votes (6 of 8, a reproduced high or medium blocks whatever the tally) at G3 and G6, shadow model routing, gate workers, lessons at G7.
 - Agents: `architect`, `coder`, `tester`, `reviewer` (`.claude/agents/`). One writer per git worktree; each owns the files listed for its package in `docs/ARCHITECTURE.md`.
-- `pyproject.toml`, `uv.lock`, `justfile`, `.gitignore`, `CLAUDE.md`, `docs/**` and `.claude/**` belong to the lead session.
+- `pyproject.toml`, `uv.lock`, `justfile`, `.gitignore`, `CLAUDE.md`, `docs/**`, `.claude/**`, `src/autoimprover/types.py`, `tests/conftest.py` and `tests/fakes.py` belong to the lead session (the work-package table in `docs/ARCHITECTURE.md` has the full list).
 - Dependencies: exact pins in `pyproject.toml`, hashes in `uv.lock`, always `uv run --frozen`. Adding one is the lead's job and needs an ADR.
 - Tests never call a real LLM or the network. The real backend (`claude -p`) is exercised only by the user's `just smoke`.
 - Only the lead session uses ruflo, through its MCP tools, and only one lead session works in this folder at a time.
@@ -44,4 +44,4 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 - **Backend:** one interface; v1 ships `fake` (tests) and `claude-cli`. The local model at `127.0.0.1:8080` is the first follow-up, as task model only, and its output is untrusted.
 - **Budget:** count every LLM call, not GEPA's metric calls (reflection calls are outside that limit). Superseded by `docs/SPEC.md` R17 (default 100, ceiling 300, 45 minutes, fixed costs reserved up front, one call at a time, plan shown before the run starts).
 - **Research ideas in v1** (`~/projects/autogepa/techniques/`): disk cache and hard budget (05), prompt-length report and growth cap (10), a "seed already near the ceiling" check (01), a holdout split from 8 examples up. The ideas that change GEPA's search wait.
-- **Containing `claude -p`:** one place builds the command (`--safe-mode --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 --model <m> --system-prompt <s> --output-format json`), with a scrubbed environment. `doctor` and the first call of every run abort unless the session reports no plugins, no MCP servers and no tools.
+- **Containing `claude -p`:** one place builds the command (`--safe-mode --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 --model <m> --system-prompt=<s> --output-format json`; user text on stdin only), with a scrubbed environment. `doctor` and the first call of every run abort unless the session reports no plugins, no MCP servers and no tools.

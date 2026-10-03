@@ -7,6 +7,9 @@ dependencies = [
     "gepa==0.1.4",
 ]
 
+[project.scripts]
+autoimprover = "autoimprover.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13"]
 build-backend = "uv_build"
@@ -29,7 +32,11 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# importlib: two test files may share a name (tests/test_cli.py and tests/acceptance/test_cli.py);
+# `pythonpath` lets tests import the shared doubles as `from fakes import ...`.
+addopts = "-q --import-mode=importlib"
+pythonpath = ["tests"]
+markers = ["real_process: the test may start a child process (see tests/conftest.py)"]
 
 [tool.pyright]
 include = ["src"]
