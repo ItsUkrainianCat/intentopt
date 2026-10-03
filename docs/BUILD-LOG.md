@@ -13,7 +13,7 @@ Loop state for the self-paced `/loop` build (started 2026-10-03 13:23 in a sessi
 - [x] WP0 draft 12:20: `src/autoimprover/types.py` (Call, Reply, Backend, Check, Contract, Scenario, Models, Plan, Outcome, errors, constants) + `tests/test_types.py`; `just check` green (11 tests). Uncommitted until the G3 vote passes (skeleton commit follows the vote).
 - [x] 12:30 Kit sync: repo copy of the kit was stale (3-seat 2-of-3 votes); copied `docs/kit/*`, `.claude/agents/*` from `~/projects/project-kit` (commit 20c86d0) and fixed CLAUDE.md. The vote is EIGHT seats, 6 of 8 (supermajority), two agents at a time in 4 waves, bound to a commit.
 - [x] 12:31 Skeleton commit fa47dff (SPEC, ARCHITECTURE, ADR-001..006, types.py + tests, `just check` green). The vote subject is this sha; the vote comes AFTER the skeleton commit (earlier note was wrong).
-- [ ] USER STEP: `git push origin main` (the sandbox has no GitHub credentials: "could not read Username"). Run in the user's terminal: `! git -C ~/projects/optimizer push origin main`
+- [x] USER STEP done 2026-10-03: `git push origin main` pushed fa47dff..fbccc3b to the private origin (the sandbox has no GitHub credentials, so pushes come from the user's terminal).
 - [ ] G3 vote needs: ruflo build-start records (swarm, hive with 8 seats, trajectory, task for G3), 4 waves x 2 reviewer agents, RAM >= 3 GB free and swap < 20 GB at each wave (11:56: 3.0 GB free, swap 18.7 GiB: borderline). Prepare the 8 briefs (< 6 KB each) before spawning.
 - [x] 13:30 ARCHITECTURE: full CLI flag list with R-numbers, `clean` subcommand (R23, was missing), ADR-001..006 list, "Open points for the G3 vote" (WP6 proof now includes R23). No separate `docs/adr` index file: the ARCHITECTURE list is the index. ARCHITECTURE changed after fa47dff, so the G3 vote subject is the next commit, not fa47dff. `just check` green (11 tests).
 - [ ] USER DECISION (G3 sign-off, found 13:30): `--facts-from-examples` is in ADR-006 but not in the approved SPEC. Recommendation: drop it from v1 (it reopens the invented-facts risk ADR-006 closes). Needs an R-number or removal before the vote.
@@ -39,7 +39,7 @@ The `/loop 1m` job was cancelled at 12:00 because every remaining step is blocke
 
 Blockers at 13:30 (every remaining item needs one of these):
 - Machine headroom: 2.8 GB available (need 3), swap 21.6 GiB (need under 20), load 24. Blocks the G3 vote and every agent.
-- USER: `! git -C ~/projects/optimizer push origin main`; the two `claude -p` outputs (blocks WP1 only); decision on `--facts-from-examples`.
+- USER: the two `claude -p` outputs (blocks WP1 only); decision on `--facts-from-examples`. (Push done.)
 - Not mine: untracked `.bashrc`, `.gitconfig` and similar dotfiles appear in this folder's `git status` (sandbox artefacts); never `git add` them.
 
 Notes:
