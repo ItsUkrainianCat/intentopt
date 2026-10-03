@@ -10,11 +10,11 @@ Release 0.1.0 asked one model to grade the wording of the prompt on six traits a
 
 ## Decision
 
-1. The task model runs the candidate on a scenario. 2. Programmatic checks run first (format, length, required and forbidden strings from the contract). 3. A binary checklist, derived once from the contract and the scenario's `criteria`, is judged by a model different from the task model. The judge receives the scenario input, the output and the checklist, and never the candidate text. 4. Score = checks passed / checks total; failed checks and a short output excerpt are the ASI returned to GEPA, and per-group sub-scores go in `side_info["scores"]` so GEPA tracks them as separate objectives. 5. The judge is called once per candidate per batch of scenarios (one call holds all outputs and checklists), which halves the call cost; the batch size is capped so the judge prompt stays short.
+1. The task model runs the candidate on a scenario. 2. Programmatic checks run first (format, length, required and forbidden strings from the contract). 3. A binary checklist, derived once from the contract and the scenario's `criteria`, is judged by a model different from the task model and from the target model (SPEC R14, so the run that decides the result is never graded by the model that produced it). The judge receives the scenario input, the output and the checklist, and never the candidate text. 4. Score = checks passed / checks total; failed checks and a short output excerpt are the ASI returned to GEPA, and per-group sub-scores go in `side_info["scores"]` so GEPA tracks them as separate objectives. 5. The judge is called once per candidate per batch of scenarios (one call holds all outputs and checklists), which keeps the call cost near one task call per scenario; the batch size is capped so the judge prompt stays short. This needs GEPA's `batch_evaluator` hook (the per-pair `evaluator` would call the judge once per scenario); on that path `oa.log()` capture is not available, so the ASI (failed checks, short output excerpts) is returned inside each `side_info`.
 
 ## Consequences
 
-The score measures behaviour, not style. Cost is two calls per evaluation (task plus judge) plus programmatic checks, which are free, so cheap checks should carry as much weight as the contract allows. The judge can still be wrong on a check; the holdout and the noise threshold (R3, R12) contain that.
+The score measures behaviour, not style. Cost is one task call per scenario plus one judge call per batch, plus programmatic checks, which are free, so cheap checks should carry as much weight as the contract allows. The judge can still be wrong on a check; the holdout and the noise threshold (R3, R12) contain that.
 
 ## Alternatives rejected
 
