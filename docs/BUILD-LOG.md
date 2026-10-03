@@ -1,6 +1,6 @@
 # BUILD-LOG
 
-Loop state for the `/loop 1m` build (cron job 64ac1690, session-only). Each tick reads this, does the next unchecked step, and updates it.
+Loop state for the self-paced `/loop` build (started 2026-10-03 13:23 in a session inside this folder; the earlier `/loop 1m` job was cancelled). Each tick reads this, does the next unchecked step, and updates it.
 
 - [x] G0 kit adopted (earlier)
 - [x] G1 SPEC approved 2026-10-03
@@ -11,7 +11,12 @@ Loop state for the `/loop 1m` build (cron job 64ac1690, session-only). Each tick
 - [x] ADR-005 (task vs template scenarios) and ADR-006 (own reflection prompt) written 12:12
 - [x] Read paper appendix C (meta-prompt) and E.4 (minibatch 3, merge max 5, Df=train / Dpareto=val). Key finding: the paper's meta-prompt tells the rewriter to copy "niche domain facts" from examples into the prompt; with synthetic scenarios that would inject invented content, hence ADR-006. Not read: D.1 (merge algorithm, only needed if `--merge` ships) and appendix L (example optimised prompts, useful as style references for the reflection template).
 - [x] WP0 draft 12:20: `src/autoimprover/types.py` (Call, Reply, Backend, Check, Contract, Scenario, Models, Plan, Outcome, errors, constants) + `tests/test_types.py`; `just check` green (11 tests). Uncommitted until the G3 vote passes (skeleton commit follows the vote).
-- [ ] Add `--facts-from-examples`, `--kind`, `--target-model`, `--merge`, `--force-low-budget`, `--trust-search` to the CLI list in ARCHITECTURE; add ADR-005/006 to the G3 pack; add `docs/adr` index
+- [x] 12:30 Kit sync: repo copy of the kit was stale (3-seat 2-of-3 votes); copied `docs/kit/*`, `.claude/agents/*` from `~/projects/project-kit` (commit 20c86d0) and fixed CLAUDE.md. The vote is EIGHT seats, 6 of 8 (supermajority), two agents at a time in 4 waves, bound to a commit.
+- [x] 12:31 Skeleton commit fa47dff (SPEC, ARCHITECTURE, ADR-001..006, types.py + tests, `just check` green). The vote subject is this sha; the vote comes AFTER the skeleton commit (earlier note was wrong).
+- [ ] USER STEP: `git push origin main` (the sandbox has no GitHub credentials: "could not read Username"). Run in the user's terminal: `! git -C ~/projects/optimizer push origin main`
+- [ ] G3 vote needs: ruflo build-start records (swarm, hive with 8 seats, trajectory, task for G3), 4 waves x 2 reviewer agents, RAM >= 3 GB free and swap < 20 GB at each wave (11:56: 3.0 GB free, swap 18.7 GiB: borderline). Prepare the 8 briefs (< 6 KB each) before spawning.
+- [x] 13:30 ARCHITECTURE: full CLI flag list with R-numbers, `clean` subcommand (R23, was missing), ADR-001..006 list, "Open points for the G3 vote" (WP6 proof now includes R23). No separate `docs/adr` index file: the ARCHITECTURE list is the index. ARCHITECTURE changed after fa47dff, so the G3 vote subject is the next commit, not fa47dff. `just check` green (11 tests).
+- [ ] USER DECISION (G3 sign-off, found 13:30): `--facts-from-examples` is in ADR-006 but not in the approved SPEC. Recommendation: drop it from v1 (it reopens the invented-facts risk ADR-006 closes). Needs an R-number or removal before the vote.
 - [ ] Add skeleton stubs for the other modules only when their package starts (avoid empty files)
 - [ ] Wait for the user's real-call output (see USER STEP above) before WP1; meanwhile prepare the skeleton plan (WP0 file list, `types.py` draft) so G3 can happen as soon as RAM allows reviewers
 - [ ] USER STEP (12:00): real `claude -p --safe-mode ...` call. From the lead's sandbox it returns `"Not logged in"` (the sandbox hides the login file; not retried outside the sandbox on purpose). Flags are accepted by claude 2.1.287 and the JSON result has `result`, `is_error`, `terminal_reason`, `usage`, `total_cost_usd`, `modelUsage`. Still unknown: does `--safe-mode` itself still use the subscription login, and does the JSON report plugins/MCP/tools (needed for the R18 self-check)? The user runs both commands below in their own terminal and pastes the output:
@@ -23,6 +28,19 @@ Loop state for the `/loop 1m` build (cron job 64ac1690, session-only). Each tick
 - [ ] G5 merge, remove legacy/
 - [ ] G6 release vote, user `just smoke`
 - [ ] G7 tag (needs user yes)
+
+## RESUME CHECKLIST (written 12:00, loop paused)
+
+The `/loop 1m` job was cancelled at 12:00 because every remaining step is blocked outside the lead's reach:
+1. **Wrong session location.** This build was driven from a session started in `$HOME`. The kit requires a session started inside `~/projects/optimizer` (ruflo records and the vote live in that folder's state). Start `cd ~/projects/optimizer && claude`, then `/loop 1m <same prompt>`.
+2. **Machine headroom for the vote** (8 reviewers, 2 at a time): >= 3 GB RAM available, swap < 20 GB, <= 3 other sessions. At 11:57: 2.4 GB available, swap 20.2 GiB, load 6. Close heavy apps or other sessions first.
+3. **User steps pending:** `git push origin main` (no credentials in the sandbox); the two `claude -p` outputs (see USER STEP above).
+4. **Next lead actions in the project session, in order:** build-start records (recall, swarm, hive with 8 seats, trajectory, G3 task); write 8 briefs; propose `arch:fa47dff...`; four waves; decide per O1-O3; fix findings; second proposal if needed; then user sign-off; then WP1..WP7.
+
+Blockers at 13:30 (every remaining item needs one of these):
+- Machine headroom: 2.8 GB available (need 3), swap 21.6 GiB (need under 20), load 24. Blocks the G3 vote and every agent.
+- USER: `! git -C ~/projects/optimizer push origin main`; the two `claude -p` outputs (blocks WP1 only); decision on `--facts-from-examples`.
+- Not mine: untracked `.bashrc`, `.gitconfig` and similar dotfiles appear in this folder's `git status` (sandbox artefacts); never `git add` them.
 
 Notes:
 - Resources at 11:47: RAM available ~2 GB, swap ~18.7 GiB used; agent spawn rule needs 3 GB free, so the lead works alone until that clears. Re-check before spawning.
