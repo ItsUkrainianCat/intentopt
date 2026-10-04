@@ -48,14 +48,14 @@ _INTAKE_SYSTEM = (
     '- output_format: the format it requires for the answer, or "" if it requires none.\n'
     "- language: the language it is written in.\n"
     "- tone: the tone it asks for, or else the tone it is written in.\n"
-    "- checks: at most 8 pass/fail checks on an answer produced by following the prompt. Each "
-    "has a unique non-empty id, a group (format, constraints or content), a non-empty text "
-    "saying what must hold, a rule and an arg. A judged check, decided by a reader, has rule "
-    "null and arg null. A programmatic check has one of exactly four rules: contains or "
-    "not_contains, with the exact text as arg, or max_chars or min_chars, with a whole number of "
-    "characters as arg. There are no other rules and no regular expressions. Prefer judged "
-    "checks for content; use a programmatic check only where a fixed text or a length decides "
-    "it.\n"
+    "- checks: at least 1 and at most 8 pass/fail checks on an answer produced by following the "
+    "prompt. Each has a unique non-empty id, a group (format, constraints or content), a "
+    "non-empty text saying what must hold, a rule and an arg. A judged check, decided by a "
+    "reader, has rule null and arg null. A programmatic check has one of exactly four rules: "
+    "contains or not_contains, with the exact text as arg, or max_chars or min_chars, with a "
+    "whole number of characters as arg. There are no other rules and no regular expressions. "
+    "Prefer judged checks for content; use a programmatic check only where a fixed text or a "
+    "length decides it.\n"
     "Take every item from the prompt itself: add no fact or requirement it does not state."
 )
 _MAX_CHECKS = 8
@@ -275,8 +275,8 @@ def _contract(text: str) -> Contract:
 def _checks(value: object) -> tuple[Check, ...]:
     if not isinstance(value, list):
         raise ValueError("`checks` is not a list")
-    if len(value) > _MAX_CHECKS:
-        raise ValueError(f"more than {_MAX_CHECKS} checks")
+    if not 1 <= len(value) <= _MAX_CHECKS:
+        raise ValueError(f"not 1 to {_MAX_CHECKS} checks: the evaluator needs one to score")
     found: list[Check] = []
     for item in value:
         if not isinstance(item, dict) or not all(key in item for key in _CHECK_KEYS):
