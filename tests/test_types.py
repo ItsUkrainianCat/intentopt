@@ -302,3 +302,11 @@ def test_the_stop_cause_is_budget_or_clock_because_gepa_never_ends_a_search_itse
 def test_the_instruction_delimiters_cannot_be_confused_with_a_code_fence():
     assert "```" not in INSTRUCTION_BEGIN + INSTRUCTION_END
     assert INSTRUCTION_BEGIN != INSTRUCTION_END
+
+
+def test_budget_exhausted_says_whether_the_limit_or_the_clock_ended_it():
+    from autoimprover.types import BudgetExhausted
+
+    assert BudgetExhausted("calls").cause == "budget"
+    assert BudgetExhausted("deadline", cause="clock").cause == "clock"
+    assert str(BudgetExhausted("calls")) == "calls"

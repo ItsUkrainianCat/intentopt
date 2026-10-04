@@ -197,7 +197,12 @@ class BackendError(Exception):
 class BudgetExhausted(Exception):
     """The call limit is used up or the clock deadline passed (SPEC R17). Raised by the backend
     seam only; the evaluator and reflection wrappers catch it and stop GEPA through a stopper, so
-    it never escapes the search (ADR-004)."""
+    it never escapes the search (ADR-004). `cause` is "budget" for the call limit and "clock" for
+    the deadline; the runner turns it into the stop cause of the report."""
+
+    def __init__(self, message: str, cause: Literal["budget", "clock"] = "budget") -> None:
+        super().__init__(message)
+        self.cause = cause
 
 
 class SessionNotLockedDown(Exception):
