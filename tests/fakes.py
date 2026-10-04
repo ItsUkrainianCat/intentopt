@@ -13,9 +13,24 @@ from autoimprover.types import Call, CallError, Reply
 Script = Callable[[Call], "str | Exception"]
 
 
+class FakeClock:
+    """A monotonic clock a test advances by hand; pass `clock.now` as the `now` seam."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.t = start
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
 class ScriptedBackend:
-    def __init__(self, script: Script) -> None:
+    def __init__(self, script: Script, duration_s: float = 0.0, clock: FakeClock | None = None):
         self._script = script
+        self._duration_s = duration_s
+        self._clock = clock
         self.calls: list[Call] = []
 
     def complete(self, call: Call) -> Reply:
@@ -23,7 +38,14 @@ class ScriptedBackend:
         answer = self._script(call)
         if isinstance(answer, Exception):
             raise answer
-        return Reply(text=answer, tokens_in=len(call.user), tokens_out=len(answer))
+        if self._clock is not None:
+            self._clock.advance(self._duration_s)
+        return Reply(
+            text=answer,
+            tokens_in=len(call.user),
+            tokens_out=len(answer),
+            duration_s=self._duration_s,
+        )
 
     def count(self, role: str | None = None) -> int:
         return sum(1 for c in self.calls if role is None or c.role == role)
@@ -113,7 +135,10 @@ def judge_reply(call: Call, passes: Callable[[str, str, str], bool] = lambda *_:
     return json.dumps({"results": results})
 
 
-def reflection_reply(instruction: str, why: Sequence[str] = ("tightened the wording",)) -> str:
+def reflection_reply(
+    instruction: str,
+    why: Sequence[str] = ("tightened the wording", "kept the output format", "kept every literal"),
+) -> str:
     """A reflection reply: the new instruction in one fenced block, then bullet lines (ADR-008)."""
     return "```\n" + instruction + "\n```\n" + "\n".join(f"- {line}" for line in why)
 
@@ -122,7 +147,9 @@ def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> Scri
     """A complete scripted model for end-to-end tests.
 
     The task model's output is good exactly when the prompt text it was given contains MARKER;
-    the judge passes a check exactly when the output is good; reflection always proposes
+    the judge passes a scoring check exactly when the output is good and passes every check of
+    the R6 contract check (scenario `contract`, whose "output" is the candidate prompt); reflection
+    always proposes
     `improved_prompt`. So `improved_prompt` containing MARKER is returned as an improvement, and
     one without it is not: use both as twins so a test cannot pass for the wrong reason.
     """
@@ -135,7 +162,10 @@ def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> Scri
         if call.role == "task":
             return "GOOD answer" if MARKER in call.system + call.user else "BAD answer"
         if call.role == "judge":
-            return judge_reply(call, lambda _s, _c, output: output.startswith("GOOD"))
+            return judge_reply(
+                call,
+                lambda scenario, _c, output: scenario == "contract" or output.startswith("GOOD"),
+            )
         return reflection_reply(improved_prompt)
 
     return ScriptedBackend(script)

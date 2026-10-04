@@ -14,7 +14,7 @@ Release 0.1.0 asked one model to grade the wording of the prompt on six traits a
 
 ## Consequences
 
-The score measures behaviour, not style. Cost is one task call per scenario plus one judge call per batch, plus programmatic checks, which are free, so cheap checks should carry as much weight as the contract allows. The judge can still be wrong on a check; the holdout and the noise threshold (R3, R12) contain that.
+The score measures behaviour, not style. Cost is one task call per scenario plus one judge call per batch, plus programmatic checks, which are free, so cheap checks should carry as much weight as the contract allows. One exception, the R6 contract check at the end: its judge call sees the candidate (as the "output" next to the original, ADR-008) because the question is fidelity, not scoring. It can only veto a candidate, never raise a score or pick the winner, so flattering it gains nothing the holdout would not undo. The judge can still be wrong on a check; the holdout and the noise threshold (R3, R12) contain that.
 
 ## Alternatives rejected
 

@@ -89,3 +89,42 @@ def test_happy_backend_is_a_positive_control_and_its_twin_is_a_negative_one():
     assert judged["results"][0]["checks"][0]["pass"] is True
     assert MARKER in win.complete(Call(role="reflect", model="m", user="x")).text
     assert MARKER not in lose.complete(Call(role="reflect", model="m", user="x")).text
+
+
+def test_happy_backend_passes_the_r6_contract_check_for_its_winner():
+    # The contract check sends the candidate as the judge's "output" (ADR-008); without a pass for
+    # scenario `contract` the positive control could never return an improvement.
+    import json
+
+    from fakes import MARKER, happy_backend
+
+    win = happy_backend(f"better {MARKER}")
+    request = {
+        "scenarios": [
+            {
+                "scenario": "contract",
+                "input": "the original prompt",
+                "output": f"better {MARKER}",
+                "checks": [{"id": "k1", "text": "keeps every literal"}],
+            }
+        ]
+    }
+    judged = json.loads(win.complete(Call(role="judge", model="m", user=json.dumps(request))).text)
+    assert judged["results"][0]["scenario"] == "contract"
+    assert judged["results"][0]["checks"][0]["pass"] is True
+
+
+def test_scripted_backend_reports_a_duration_and_advances_a_fake_clock():
+    from fakes import FakeClock, ScriptedBackend
+
+    clock = FakeClock(start=100.0)
+    backend = ScriptedBackend(lambda _call: "ok", duration_s=4.5, clock=clock)
+    assert backend.complete(call()).duration_s == 4.5
+    backend.complete(call())
+    assert clock.now() == 109.0
+
+
+def test_the_default_reflection_reply_has_three_why_lines():
+    from fakes import reflection_reply
+
+    assert reflection_reply("x").count("\n- ") == 3

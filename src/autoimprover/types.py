@@ -24,6 +24,8 @@ WALL_CLOCK_DEFAULT_S = 45 * 60
 # The search may use this share of the clock; the rest is kept for the final steps (SPEC R17).
 SEARCH_CLOCK_SHARE = 0.75
 PROMPT_MAX_CHARS = 20_000
+# Scenarios one synthesis call must return (SPEC R11); the fixed costs of R17 assume this number.
+SYNTH_COUNT = 12
 
 # Sizes that keep the budget arithmetic bounded (SPEC R15, R17): the holdout never exceeds
 # HOLDOUT_MAX scenarios however many the user supplies, and one judge call covers at most
@@ -97,6 +99,8 @@ SYNTH_SCHEMA = {
                 "required": ["id", "input"],
                 "properties": {"id": {"type": "string"}, "input": {"type": "string"}},
             },
+            "minItems": SYNTH_COUNT,
+            "maxItems": SYNTH_COUNT,
         }
     },
 }
@@ -119,7 +123,7 @@ JUDGE_SCHEMA = {
                             "properties": {
                                 "id": {"type": "string"},
                                 "pass": {"type": "boolean"},
-                                "quote": {"type": "string"},
+                                "quote": {"type": "string", "minLength": 1},
                             },
                         },
                     },
@@ -163,13 +167,15 @@ class CallError(Exception):
 
 
 class CallFailed(Exception):
-    """A call failed all its attempts (SPEC R24). The evaluator turns it into an unknown result
-    for that scenario; a seed run on the holdout lets it end the run as BackendError."""
+    """A call failed all its attempts (SPEC R24). Inside the search the adapter gives that scenario
+    a neutral score and keeps the candidate out of the finalists, and a failed reflection call
+    skips the iteration; anywhere else (intake, synthesis, seed runs, finalist runs, contract
+    checks, scoring the seed candidate) it ends the run as BackendError."""
 
 
 class BackendError(Exception):
-    """The run cannot go on: three consecutive calls failed, or a seed run failed (SPEC R24,
-    exit code 3)."""
+    """The run cannot go on (SPEC R24, exit code 3): three consecutive failed calls to the same
+    model, or a call that failed outside the search or while scoring the seed candidate."""
 
 
 class BudgetExhausted(Exception):
@@ -355,8 +361,9 @@ class Outcome:
 
     `verified` is True only when the holdout comparison on the target model decided the result;
     a `--trust-search` win (SPEC R11) stays False. `stop` says why the search ended. `changes` are
-    the 3 to 6 lines of "what changed and why" (SPEC R2). `score_*` are holdout scores on the target
-    model; `search_score_*` are on the search (task) model, reported when it differs (R14a).
+    up to 6 lines of "what changed and why", newest first (SPEC R2). `score_*` are holdout scores on
+    the target model; `search_score_*` are the seed's and the winner's valset scores on the search
+    (task) model, taken during the search at no extra call, reported when it differs (R14a).
     """
 
     status: Literal["improved", "unchanged"]
