@@ -166,6 +166,10 @@ def test_a_trust_search_result_is_marked_not_verified_and_shows_no_holdout_score
     assert "NOT VERIFIED on a holdout" in text and "--trust-search" in text
     assert "holdout score" not in text and "verified: yes" not in text
     assert "search score (valset" in text
+    assert report.REASON_LINES["improved"] not in text and "never saw" not in text
+    [meaning] = [line for line in text.splitlines() if line.startswith("meaning: ")]
+    assert "validation set" in meaning and "no holdout" in meaning
+    assert "no noise was measured" in meaning
 
 
 def test_only_a_clock_stop_says_the_search_was_cut_short():
