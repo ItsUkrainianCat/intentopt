@@ -35,3 +35,57 @@ def test_failing_backend_fails_every_attempt_and_still_records_it():
         with pytest.raises(CallError):
             backend.complete(call())
     assert backend.count() == 2
+
+
+def test_builders_produce_replies_with_exactly_the_schema_fields():
+    import json
+
+    from fakes import intake_reply, judge_reply, reflection_reply, synth_reply
+
+    from autoimprover.types import INTAKE_SCHEMA, JUDGE_SCHEMA, SYNTH_SCHEMA
+
+    assert set(json.loads(intake_reply())) == set(INTAKE_SCHEMA["required"])
+    assert set(json.loads(synth_reply(3))) == set(SYNTH_SCHEMA["required"])
+    request = {
+        "scenarios": [
+            {
+                "scenario": "s1",
+                "input": "i",
+                "output": "an output",
+                "checks": [{"id": "c1", "text": "t"}],
+            }
+        ]
+    }
+    reply = json.loads(judge_reply(Call(role="judge", model="m", user=json.dumps(request))))
+    assert set(reply) == set(JUDGE_SCHEMA["required"])
+    check = reply["results"][0]["checks"][0]
+    assert set(check) == {"id", "pass", "quote"}
+    assert check["quote"] in "an output"
+    assert reflection_reply("new text").startswith("```\nnew text\n```\n- ")
+
+
+def test_happy_backend_is_a_positive_control_and_its_twin_is_a_negative_one():
+    import json
+
+    from fakes import MARKER, happy_backend
+
+    win = happy_backend(f"better prompt {MARKER}")
+    lose = happy_backend("same old prompt")
+    task = Call(role="task", model="m", user="situation 1", system="")
+    with_marker = Call(role="task", model="m", user=f"situation 1 {MARKER}")
+    assert win.complete(task).text == "BAD answer"
+    assert win.complete(with_marker).text == "GOOD answer"
+    request = {
+        "scenarios": [
+            {
+                "scenario": "s1",
+                "input": "i",
+                "output": "GOOD answer",
+                "checks": [{"id": "c1", "text": "t"}],
+            }
+        ]
+    }
+    judged = json.loads(win.complete(Call(role="judge", model="m", user=json.dumps(request))).text)
+    assert judged["results"][0]["checks"][0]["pass"] is True
+    assert MARKER in win.complete(Call(role="reflect", model="m", user="x")).text
+    assert MARKER not in lose.complete(Call(role="reflect", model="m", user="x")).text

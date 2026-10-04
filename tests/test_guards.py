@@ -111,3 +111,43 @@ def test_the_guard_fixture_is_active_when_not_shadowed(pytester: pytest.Pytester
         """
     )
     pytester.runpytest_inprocess().assert_outcomes(passed=1)
+
+
+def test_guards_survive_a_tests_own_monkeypatch_undo(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AUTOIMPROVER_X", "1")
+    monkeypatch.undo()
+    with pytest.raises(AssertionError, match="R20"):
+        subprocess.run(["true"], check=False)
+    with socket.socket() as s, pytest.raises(AssertionError, match="R20"):
+        s.connect(("127.0.0.1", 9))
+    with pytest.raises(AssertionError, match="R20"):
+        time.sleep(0)
+
+
+def test_module_scoped_fixtures_are_guarded_too(pytester: pytest.Pytester):
+    pytester.makeconftest(CONFTEST.read_text())
+    pytester.makepyfile(
+        test_scope="""
+        import socket, subprocess
+        import pytest
+
+        @pytest.fixture(scope="module")
+        def shared_run():
+            with pytest.raises(AssertionError, match="R20"):
+                subprocess.run(["true"], check=False)
+            with socket.socket() as s, pytest.raises(AssertionError, match="R20"):
+                s.connect(("127.0.0.1", 9))
+            return "guarded"
+
+        def test_uses_it(shared_run):
+            assert shared_run == "guarded"
+        """
+    )
+    pytester.runpytest_inprocess().assert_outcomes(passed=1)
+
+
+def test_the_real_home_is_not_reachable_before_any_fixture_runs():
+    # Session-level values: HOME already points into a temporary folder at import time.
+    assert "autoimprover-tests-" in os.environ["HOME"] or Path.home().is_relative_to(
+        Path.cwd().parent
+    )
