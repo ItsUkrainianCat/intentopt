@@ -18,6 +18,7 @@ from fakes import MARKER, FakeClock, happy_backend, judge_reply
 
 from autoimprover import runner
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
+from autoimprover.runformat import CacheEntry
 from autoimprover.runstore import RunStore, cache_key
 from autoimprover.scenarios import split
 from autoimprover.types import (
@@ -140,10 +141,12 @@ def improve(
             on_call=store.save_progress,
         )
         raw.budgeted = budgeted
+        cached = CachedBackend(ResilientBackend(budgeted), store)
         outcome = runner.improve(
             prompt,
             plan,
-            backend=CachedBackend(ResilientBackend(budgeted), store),
+            backend=cached,
+            cache=cached,
             budgeted=budgeted,
             clock=clock,
             store=store,
@@ -353,22 +356,60 @@ def test_a_search_cut_short_by_its_clock_share_still_confirms_its_finalist(tmp_p
     assert raw.clock.t < 600
 
 
-def test_a_call_that_failed_inside_the_search_is_replayed_as_failed_after_a_resume(tmp_path):
+def stored(root: Path, run_id: str, call: Call) -> CacheEntry | None:
+    """What the run folder holds for `call`: a reply, a tombstone (reply None), or nothing."""
+    store = RunStore.resume(root, run_id)
+    try:
+        return store.cache_get(call)
+    finally:
+        store.close()
+
+
+IN_SEARCH = {  # the failing call, and the reference outcome with the failure replayed
+    "reflect": (lambda c: c.role == "reflect", "improved"),  # skipped, then asked again
+    "task": (lambda c: c.model == MODELS.task and MARKER in c.user, "no_reliable_improvement"),
+}
+
+
+@pytest.mark.parametrize("role", IN_SEARCH)
+def test_a_call_that_failed_inside_the_search_is_tombstoned_and_replayed_without_a_retry(
+    tmp_path, role: str
+):
+    match, code = IN_SEARCH[role]
     probe = Raw()
     improve(tmp_path / "probe", probe)
-    reflect = next(c for c in probe.calls if c.role == "reflect")  # skipped, then asked again
-    reference_raw = Raw(fails=lambda call: call == reflect)
+    failing = next(c for c in probe.calls if match(c))
+    reference_raw = Raw(fails=lambda call: call == failing)
     reference = improve(tmp_path / "reference", reference_raw)
-    after = max(i for i, c in enumerate(reference_raw.calls, start=1) if c == reflect) + 1
+    after = max(i for i, c in enumerate(reference_raw.calls, start=1) if c == failing) + 1
     run_id = new_run(tmp_path / "run")
     with pytest.raises(Cut):
-        improve(tmp_path / "run", Raw(fails=lambda call: call == reflect, cut_at=after), run_id)
+        improve(tmp_path / "run", Raw(fails=lambda call: call == failing, cut_at=after), run_id)
+    entry = stored(tmp_path / "run", run_id, failing)
+    assert entry is not None and entry.reply is None  # a tombstone in the run folder
     resumed = Raw()  # the model would answer it now: only the tombstone keeps the original path
     outcome = improve(tmp_path / "run", resumed, run_id)
-    assert reflect not in resumed.calls and reference.reason_code == "improved"
+    assert failing not in resumed.calls and reference.reason_code == code
     assert replace(outcome, calls_used=0, run_dir="") == replace(
         reference, calls_used=0, run_dir=""
     )
+
+
+SEED_RUNS = {  # a call scoring the original: seed run 2 on the holdout, GEPA's seed valset pass
+    "holdout": Call("task", MODELS.target, f"{PARTS.holdout[0].input}\n\n{PROMPT}", sample=1),
+    "valset": Call("task", MODELS.task, f"{PARTS.val[0].input}\n\n{PROMPT}"),
+}
+
+
+@pytest.mark.parametrize("run", SEED_RUNS)
+def test_a_failed_call_scoring_the_original_leaves_no_tombstone_and_is_retried(tmp_path, run):
+    failing, run_id = SEED_RUNS[run], new_run(tmp_path)
+    with pytest.raises(BackendError):
+        improve(tmp_path, Raw(fails=lambda call: call == failing), run_id)
+    assert stored(tmp_path, run_id, failing) is None  # never scored, never a tombstone
+    resumed = Raw()
+    assert improve(tmp_path, resumed, run_id).reason_code == "improved"
+    assert failing in resumed.calls  # tried again, live
 
 
 def stages(calls: list[Call]) -> dict[str, int]:

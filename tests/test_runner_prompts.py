@@ -127,10 +127,12 @@ def decide(
         deadline = SEARCH_CLOCK_SHARE * plan.wall_clock_s
         budgeted = BudgetedBackend(raw, plan.budget - costs.final, 0, clock, deadline)
         searched.budgeted = budgeted
+        cached = CachedBackend(ResilientBackend(budgeted), store)
         return runner.improve(
             PROMPT,
             plan,
-            backend=CachedBackend(ResilientBackend(budgeted), store),
+            backend=cached,
+            cache=cached,
             budgeted=budgeted,
             clock=clock,
             store=store,
