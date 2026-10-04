@@ -4,13 +4,15 @@ A test that reaches one of them fails with a message naming R20.
 
 The guards live on a private session-wide `MonkeyPatch`, so they also cover module- and
 session-scoped fixtures and survive a test's own `monkeypatch.undo()`. They patch the usual routes
-(this is not a sandbox): code that imported `time.sleep` before the patch or calls `_socket`
-directly can slip past, and the agents that write tests are told never to try
+(this is not a sandbox): code that imported `time.sleep` before the patch, calls `_socket`
+directly, starts a `multiprocessing` child with the spawn method, or runs in a thread a test left
+behind can slip past, and the agents that write tests are told never to try
 (`.claude/agents/*.md`). What IS enforced: the `_ruv_guards` fixture below cannot be redefined or
 shadowed (checked at collection), and `tests/test_guards.py` pins each route. Owned by the lead.
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -44,7 +46,7 @@ _ENV_FOLDERS = (
 
 _session_patch = pytest.MonkeyPatch()
 # Child processes are blocked unless the running test carries the `real_process` marker.
-_state = {"process_allowed": False}
+_state: dict = {"process_allowed": False, "base": None}
 _real_popen_init = subprocess.Popen.__init__
 
 
@@ -57,6 +59,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     _session_patch.undo()
+    if _state["base"] is not None:
+        shutil.rmtree(_state["base"], ignore_errors=True)
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
@@ -87,6 +91,7 @@ def _popen_init(*args: object, **kwargs: object):
 def _install_session_guards() -> None:
     """Patch once, for the whole session, on a MonkeyPatch no test can reach."""
     base = Path(tempfile.mkdtemp(prefix="autoimprover-tests-"))
+    _state["base"] = base
     for var, sub in _ENV_FOLDERS:
         folder = base / "home" / sub
         folder.mkdir(parents=True, exist_ok=True)
@@ -111,6 +116,12 @@ def _install_session_guards() -> None:
     for name in _PROCESS_FUNCTIONS:
         if hasattr(os, name):
             _session_patch.setattr(os, name, _refuse("child process"))
+
+
+@pytest.fixture(scope="session")
+def session_home() -> Path:
+    """The HOME the session guards installed before any fixture ran (for tests of the guards)."""
+    return Path(_state["base"]) / "home"
 
 
 @pytest.fixture(autouse=True)

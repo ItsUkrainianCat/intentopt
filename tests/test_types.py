@@ -240,3 +240,18 @@ def test_outcome_carries_the_report_fields_of_r2_and_r14a():
     assert len(out.changes) == 2
     assert (out.search_score_before, out.search_score_after) == (0.4, 0.8)
     assert Outcome(status="unchanged", prompt="p", reason="r").changes == ()
+
+
+def test_the_synthesis_schema_fixes_the_scenario_count_the_budget_assumes():
+    from autoimprover.types import SYNTH_COUNT, SYNTH_SCHEMA
+
+    items = SYNTH_SCHEMA["properties"]["scenarios"]
+    assert SYNTH_COUNT == 12
+    assert (items["minItems"], items["maxItems"]) == (SYNTH_COUNT, SYNTH_COUNT)
+
+
+def test_a_judge_quote_cannot_be_empty():
+    from autoimprover.types import JUDGE_SCHEMA
+
+    check = JUDGE_SCHEMA["properties"]["results"]["items"]["properties"]["checks"]["items"]
+    assert check["properties"]["quote"]["minLength"] == 1

@@ -146,8 +146,26 @@ def test_module_scoped_fixtures_are_guarded_too(pytester: pytest.Pytester):
     pytester.runpytest_inprocess().assert_outcomes(passed=1)
 
 
-def test_the_real_home_is_not_reachable_before_any_fixture_runs():
-    # Session-level values: HOME already points into a temporary folder at import time.
-    assert "autoimprover-tests-" in os.environ["HOME"] or Path.home().is_relative_to(
-        Path.cwd().parent
+def test_the_session_home_is_a_temporary_folder_and_not_the_real_one(session_home: Path):
+    import pwd
+
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    assert session_home.is_dir()
+    assert session_home.resolve() != real_home
+    assert session_home.parent.name.startswith("autoimprover-tests-")
+
+
+def test_the_session_folder_is_removed_when_the_session_ends(pytester: pytest.Pytester):
+    record = pytester.path / "session_home.txt"
+    pytester.makeconftest(CONFTEST.read_text())
+    pytester.makepyfile(
+        test_where=f"""
+        def test_records_the_session_home(session_home):
+            assert session_home.is_dir()
+            open({str(record)!r}, "w").write(str(session_home))
+        """
     )
+    pytester.runpytest_inprocess().assert_outcomes(passed=1)
+    recorded = Path(record.read_text())
+    assert recorded.parent.name.startswith("autoimprover-tests-")
+    assert not recorded.parent.exists()
