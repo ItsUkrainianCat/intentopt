@@ -112,8 +112,8 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 | WP | Owner (agent) | Exclusive files | Needs | Proof |
 |---|---|---|---|---|
 | WP1 backend + runstore | `coder` | `src/autoimprover/backend.py`, `runstore.py`, `tests/test_backend.py`, `tests/test_runstore.py` | skeleton, the user's real-call output | R17, R18, R19, R22, R23, R24 |
-| WP2 contract | `coder` | `contract.py`, `tests/test_contract.py` | skeleton | R5, R6, R9 |
-| WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` | skeleton | R11, R15 |
+| WP2 contract | `coder` | `contract.py`, `tests/test_contract.py`, `tests/test_contract_literals.py` | skeleton | R5, R6, R9 |
+| WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` (and `tests/test_scenarios_synth.py` once the synthesis tests move there) | skeleton | R11, R15 |
 | WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py` | WP1-WP3 | R10, R10a, R10b, R16, R24 |
 | WP5 runner | `coder` | `runner.py`, `tests/test_runner.py` | WP1-WP4 | R3, R4, R6, R7, R8, R11-R17, R22, R24 |
 | WP6 report + cli | `coder` | `report.py`, `cli.py`, `tests/test_report.py`, `tests/test_cli.py` | WP5 | R1, R2, R4, R14, R22, R23 |
