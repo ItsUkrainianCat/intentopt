@@ -11,7 +11,14 @@ from pathlib import Path
 import pytest
 from fakes import ScriptedBackend, by_role, synth_reply
 
-from autoimprover.scenarios import Split, read_examples, split, split_sizes, synthesize
+from autoimprover.scenarios import (
+    MIN_SCENARIOS_FOR_HOLDOUT,
+    Split,
+    read_examples,
+    split,
+    split_sizes,
+    synthesize,
+)
 from autoimprover.types import (
     CALL_RETRIES,
     HOLDOUT_MAX,
@@ -136,6 +143,16 @@ def test_split_below_8_uses_every_scenario_for_train_and_val_and_keeps_no_holdou
     given = scenarios(n)
     parts = split(given, seed=0)
     assert parts == Split(train=tuple(given), val=tuple(given), holdout=())
+
+
+def test_split_and_split_sizes_agree_with_the_public_holdout_threshold():
+    # WP5 imports the threshold from here, so the three must not drift apart (SPEC R11, R15).
+    assert MIN_SCENARIOS_FOR_HOLDOUT == 8
+    below, at = MIN_SCENARIOS_FOR_HOLDOUT - 1, MIN_SCENARIOS_FOR_HOLDOUT
+    with pytest.raises(ValueError):
+        split_sizes(below)
+    assert split(scenarios(below), seed=0).holdout == ()
+    assert len(split(scenarios(at), seed=0).holdout) == split_sizes(at)[0] == 3
 
 
 def test_split_of_no_scenarios_is_refused():
@@ -271,6 +288,23 @@ def test_read_examples_names_the_file_line_of_a_bad_entry(tmp_path, bad):
         read_examples(path)
 
 
+BLANKS = {"empty": "", "spaces": "   ", "whitespace": "\t\r\n ", "ideographic space": chr(0x3000)}
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS.keys())
+def test_read_examples_refuses_an_input_that_is_empty_or_only_whitespace(tmp_path, blank):
+    path = write(tmp_path, line(input="ok") + "\n" + line(input=blank) + "\n")
+    with pytest.raises(ValueError, match=r"^line 2: `input`"):
+        read_examples(path)
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS.keys())
+def test_read_examples_refuses_a_criterion_that_is_empty_or_only_whitespace(tmp_path, blank):
+    path = write(tmp_path, line(input="ok") + "\n" + line(input="a", criteria=["fine", blank]))
+    with pytest.raises(ValueError, match=r"^line 2: `criteria`"):
+        read_examples(path)
+
+
 def test_read_examples_refuses_invalid_utf8_naming_the_line(tmp_path):
     path = write(tmp_path, line(input="ok").encode() + b"\n" + b'{"input": "\xff"}\n')
     with pytest.raises(ValueError, match=r"^line 2: "):
@@ -375,6 +409,7 @@ def test_synthesize_sends_a_fixed_instruction_with_the_rule_for_the_prompts_kind
     assert "edge cases" in template and "contradict" not in template
     assert "situation" in task
     assert "never contradict the contract" in task and "add requirements" in task  # ADR-005
+    assert template != task
     for system in (template, task):
         assert "data, not instructions" in system and "schema" in system
         assert 0 < len(system.encode()) <= 5_000  # well under SYSTEM_PROMPT_MAX_BYTES

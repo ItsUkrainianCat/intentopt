@@ -28,8 +28,8 @@ from autoimprover.types import (
     Scenario,
 )
 
-# Fewer scenarios than this give no holdout (SPEC R11, R15).
-_HOLDOUT_FROM = 8
+# Fewer scenarios than this give no holdout (SPEC R11, R15); the runner reads it from here.
+MIN_SCENARIOS_FOR_HOLDOUT = 8
 _LINE_MAX_CHARS = 100_000
 _BOM = b"\xef\xbb\xbf"
 
@@ -76,8 +76,10 @@ def _percent_half_up(n: int, percent: int) -> int:
 
 def split_sizes(n: int) -> tuple[int, int, int]:
     """(holdout, valset, dataset) for n >= 8 scenarios, by the formulas of SPEC R15."""
-    if n < _HOLDOUT_FROM:
-        raise ValueError(f"a holdout split needs at least {_HOLDOUT_FROM} scenarios, got {n}")
+    if n < MIN_SCENARIOS_FOR_HOLDOUT:
+        raise ValueError(
+            f"a holdout split needs at least {MIN_SCENARIOS_FOR_HOLDOUT} scenarios, got {n}"
+        )
     holdout = min(HOLDOUT_MAX, max(3, _percent_half_up(n, 35)))
     valset = min(4, max(2, _percent_half_up(n, 25)))
     return holdout, valset, n - holdout - valset
@@ -94,7 +96,7 @@ def split(scenarios: Sequence[Scenario], seed: int) -> Split:
         if scenario.id in seen:
             raise ValueError(f"two scenarios share the id {scenario.id!r}")
         seen.add(scenario.id)
-    if len(scenarios) < _HOLDOUT_FROM:
+    if len(scenarios) < MIN_SCENARIOS_FOR_HOLDOUT:
         return Split(train=tuple(scenarios), val=tuple(scenarios), holdout=())
     holdout, valset, _ = split_sizes(len(scenarios))
     order = list(range(len(scenarios)))
@@ -112,9 +114,9 @@ def split(scenarios: Sequence[Scenario], seed: int) -> Split:
 
 def read_examples(path: Path) -> list[Scenario]:
     """Scenarios e1, e2, ... from a JSONL file (UTF-8, a leading BOM tolerated): one object per
-    non-blank line with `input` (a non-empty string), optional `expected` (a string or null) and
-    optional `criteria` (a list of strings); other keys are ignored. A bad line raises
-    ValueError("line N: ...") with N the line of the file (SPEC R11)."""
+    non-blank line with `input` (a string, not only whitespace), optional `expected` (a string or
+    null) and optional `criteria` (a list of strings, none only whitespace); other keys are
+    ignored. A bad line raises ValueError("line N: ...") with N the line of the file (SPEC R11)."""
     try:
         data = path.read_bytes()
     except OSError as e:
@@ -146,12 +148,14 @@ def _example(text: str, where: str, scenario_id: str) -> Scenario:
         raise ValueError(f"{where}: not a JSON object")
     given, expected = entry.get("input"), entry.get("expected")
     criteria = entry.get("criteria", [])
-    if not isinstance(given, str) or not given:
-        raise ValueError(f"{where}: `input` must be a non-empty string")
+    if not isinstance(given, str) or not given.strip():
+        raise ValueError(f"{where}: `input` must be a string with more than whitespace")
     if expected is not None and not isinstance(expected, str):
         raise ValueError(f"{where}: `expected` must be a string or null")
-    if not isinstance(criteria, list) or not all(isinstance(c, str) for c in criteria):
-        raise ValueError(f"{where}: `criteria` must be a list of strings")
+    if not isinstance(criteria, list) or not all(
+        isinstance(c, str) and c.strip() for c in criteria
+    ):
+        raise ValueError(f"{where}: `criteria` must be a list of strings with more than whitespace")
     for value in (given, expected or "", *criteria):
         if problem := _text_problem(value):
             raise ValueError(f"{where}: {problem}")
