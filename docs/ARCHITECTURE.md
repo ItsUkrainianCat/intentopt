@@ -98,12 +98,13 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `contract.py` | `extract_contract(backend, model, prompt, kind=None) -> Contract` (`model` is the reflection model, ADR-008); `Violation(check_id: str, text: str)`; `check(backend, judge_model, contract, original, candidate) -> list[Violation]` (the programmatic checks plus one judged call, ADR-008); `literals(prompt) -> tuple[str, ...]`, `literals_preserved(original, candidate) -> bool` | R5, R6, R9 |
 | `scenarios.py` | `read_examples(path: Path) -> list[Scenario]` (a bad line raises `ValueError("line N: ...")`, which `cli` turns into exit 2); `synthesize(backend, model, prompt, contract) -> list[Scenario]` (`model` is the reflection model); `split_sizes(n) -> tuple[int, int, int]` (holdout, valset, dataset; n >= 8); `split(scenarios, seed) -> Split`, `Split(train, val, holdout)` being tuples of `Scenario` (n < 8: `train == val == all`, `holdout == ()`) | R11, R15 |
 | `evaluator.py` | `Evaluator(backend, contract, task_model, judge_model, sample=0)` implementing `BatchEvaluator` (the runner builds one with `models.task` for the search and one with `models.target` and `sample` 0 or 1 for the seed and finalist runs): task call per scenario, programmatic checks, one judge call per at most `JUDGE_BATCH_MAX` scenarios, quote rule; a `CallFailed` on a task call or the judge call returns an `incomplete` entry instead of raising (`BudgetExhausted`, `BackendError`, `SessionNotLockedDown` propagate); `side_info["scores"]` per group and the ASI in other keys | R10, R10a, R10b, R16, R24 |
-| `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `RunState` with the replay-invariant `SearchMeter` (distinct calls once); adapter and reflection wrapper; stopper; reflection prompt per strictness; `iterations_afforded`, `fixed_costs`; lineage notes for the report; gates (contract, length cap, literals); the only importer of `gepa` | R3, R4, R7, R8, R12-R17, R24 |
+| `search.py` | the GEPA seam, the only importer of `gepa`: `SearchMeter` (distinct calls once, seconds), `RunState` (`abort`, `stop`, `completed`, reflection index, `raise_if_aborted`), the batch evaluator adapter, the reflection wrapper (delimiter parsing, `SkipProposal`), the stopper, the stdout redirect and `RunLogger`, `run_search(...) -> SearchResult` (candidates with valset scores and lineage notes) | R12, R15, R15a, R16, R17, R22, R24 |
+| `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `fixed_costs`, `iterations_afforded`; reflection prompt per strictness (ADR-006); `score_holdout`; gates (contract, length cap, literals); finalist selection, `--trust-search`, the final steps and the `Outcome` with its report fields | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | `report.py` | `render(outcome, ...)`: word diff, summary lines, JSON, error object; the only writer to stdout | R2 |
 | `cli.py` | `main(argv, *, backend=None, now=None) -> int` (`backend` replaces the raw model layer, `now` the monotonic clock) and the subcommand `clean`. Flags: `--dry`, `--force-low-budget`, `--json`, `--file`, `--examples`, `--kind template\|task`, `--budget`, `--strictness`, `--allow-growth`, `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--merge`, `--trust-search`, `--resume <id>` | R1, R2, R4, R14, R22, R23 |
 | `commands/improve.md`, `commands/optimize.md` (repo root) | Claude Code slash command text (`/improve`, alias `/optimize`) | R19, R21 |
 
-Dependencies point one way: `cli -> runner -> {evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `runner.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
+Dependencies point one way: `cli -> runner -> search -> {evaluator, backend}`, `runner -> {contract, scenarios}`, `{evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `search.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
 
 Interfaces fixed at the skeleton commit are in `types.py` (read it, not a copy here) and the `cli.main` signature. Signatures of the other modules above are fixed by this table; an owner may add private helpers but changes a public signature only through the lead.
 
@@ -118,7 +119,8 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 | WP2 contract | `coder` | `contract.py`, `tests/test_contract.py`, `tests/test_contract_literals.py`, `tests/test_contract_check.py` | skeleton | R5, R6, R9 |
 | WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` (and `tests/test_scenarios_synth.py` once the synthesis tests move there) | skeleton | R11, R15 |
 | WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py`, `tests/test_evaluator_judge.py` | WP2, WP3 | R10, R10a, R10b, R16, R24 |
-| WP5 runner | `coder` | `runner.py`, `tests/test_runner.py` | WP1a-WP4 (not WP1b: tests inject the raw layer) | R3, R4, R6, R7, R8, R11-R17, R22, R24 |
+| WP5a search | `coder` | `src/autoimprover/search.py`, `tests/test_search.py`, `tests/test_search_resume.py`; one change to `backend.py` and `tests/test_backend_layers.py` (WP1a is closed): `CachedBackend` gains `record_failures`, a switch that makes it store a tombstone for every `CallFailed` it lets through while on | WP1a-WP4 (merged) | R15a, R16, R17, R22, R24 |
+| WP5b runner | `coder` | `runner.py`, `tests/test_runner.py`, `tests/test_runner_flow.py` | WP5a | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | WP6 report + cli | `coder` | `report.py`, `cli.py`, `tests/test_report.py`, `tests/test_cli.py` | WP5 | R1, R2, R4, R14, R22, R23 |
 | WP7 docs | `coder` | `README.md`, `commands/improve.md`, `commands/optimize.md`, `tests/test_improve_command.py` | WP6 | R19, R21 |
 | WP8 acceptance | `tester` | `tests/acceptance/**` (including its own `conftest.py`) | skeleton only; written from the SPEC and ADR-008 without reading `src/` | the A proofs; every test that asserts a candidate is NOT returned has a twin on `happy_backend` asserting that one IS, so it cannot pass for the wrong reason |
@@ -135,32 +137,32 @@ WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in i
 |---|---|---|
 | R1 input | `cli.py` (6) | T: 20,001 chars, empty, NUL byte -> exit 2; CRLF and CR are normalised to LF before anything else sees the prompt |
 | R2 output, exit codes | `report.py`, `cli.py` (6) | A: each row of section 8 |
-| R3 unchanged unless reliable | `runner.py` (5) | A with fake: candidate gain below threshold -> original, exit 0 |
+| R3 unchanged unless reliable | `runner.py` (5b) | A with fake: candidate gain below threshold -> original, exit 0 |
 | R4 dry run, low budget | `cli.py` (6), `runner.fixed_costs`, `runner.iterations_afforded` (5) | A: `--dry` makes zero calls, writes nothing and exits 0 even for budget 30 or an unusable state folder; T: budget 66 with 12 scenarios is refused (worst case 2 iterations); T: n = 8, 12, 40 give 6, 5, 4 worst-case iterations at budget 100, and n < 8 (no holdout) has its own fixed costs |
 | R5 contract, kind | `contract.py` (2) | T: kind guessed, `--kind` overrides |
-| R6 contract gate | `contract.py` (2), gate in `runner.py` (5) | A: planted violation never returned |
-| R7 length cap | `runner.py` (5) | T: 1.26x candidate rejected at conservative |
-| R8 strictness | `runner.py` (5) | T: the three reflection templates differ and carry the cap |
+| R6 contract gate | `contract.py` (2), gate in `runner.py` (5b) | A: planted violation never returned |
+| R7 length cap | `runner.py` (5b) | T: 1.26x candidate rejected at conservative |
+| R8 strictness | `runner.py` (5b) | T: the three reflection templates differ and carry the cap |
 | R9 literals | `contract.py` (2) | T: hand-written seeded property test (no new dependency) |
 | R10 batched scoring, groups | `evaluator.py` (4) | T: one judge call per batch, `side_info["scores"]` per group |
 | R10a execution by kind | `evaluator.py` (4) | T: template vs task call shape |
 | R10b quote rule | `evaluator.py` (4) | T: a pass with an empty, blank or absent quote counts as a failed check |
-| R11 scenarios, holdout rules | `scenarios.py` (3), `runner.py` (5) | T: n=7 gives no holdout and no paid call without `--trust-search`; with it dataset = valset = all scenarios, and a finalist not above the seed on the valset is never returned; a failed call while scoring the seed is exit 3, not a 0 |
-| R12 noise, `Call.sample` | `types.py` (skeleton), `runner.py` (5) | T: seed run 2 is a live call; threshold uses `2 x \|diff\|` |
-| R13 already strong | `runner.py` (5) | A: seed 0.95 stops with no search |
+| R11 scenarios, holdout rules | `scenarios.py` (3), `runner.py` (5b) | T: n=7 gives no holdout and no paid call without `--trust-search`; with it dataset = valset = all scenarios, and a finalist not above the seed on the valset is never returned; a failed call while scoring the seed is exit 3, not a 0 |
+| R12 noise, `Call.sample` | `types.py` (skeleton), `runner.py` (5b) | T: seed run 2 is a live call; threshold uses `2 x \|diff\|` |
+| R13 already strong | `runner.py` (5b) | A: seed 0.95 stops with no search |
 | R14 judge != task, != target | `types.py` (skeleton), flags in `cli.py` (6) | T: aliases resolved; `--target-model opus` picks the fallback judge |
-| R14a target confirmation | `runner.py` (5) | A: winner on search model, loser on target is not returned |
-| R15 split, search wiring | `scenarios.py` (3), `runner.py` (5) | T: n = 8, 10, 12, 30, 40 sizes; `GEPAConfig` builds on 0.1.4 |
-| R15a small valset, strict improvement | `runner.py` (5) | T: calls counted on `fake` |
-| R16 ASI to reflection | `evaluator.py` (4), template in `runner.py` (5) | T: failed checks and excerpts in the reflection prompt |
-| R17 budget, reserve, clock, timeout | `backend.py` (1a), `claude_cli.py` (1b: timeout), `runner.py` (5) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
+| R14a target confirmation | `runner.py` (5b) | A: winner on search model, loser on target is not returned |
+| R15 split, search wiring | `scenarios.py` (3), `search.py` (5a) | T: n = 8, 10, 12, 30, 40 sizes; `GEPAConfig` builds on 0.1.4 |
+| R15a small valset, strict improvement | `search.py` (5a) | T: calls counted on `fake` |
+| R16 ASI to reflection | `evaluator.py` (4), template in `runner.py` (5b) | T: failed checks and excerpts in the reflection prompt |
+| R17 budget, reserve, clock, timeout | `backend.py` (1a), `claude_cli.py` (1b: timeout), `search.py` (5a: stopper, meter), `runner.py` (5b: reserve) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
 | R18 command, lockdown, argv rules | `claude_cli.py` (1b) | T: argv has no user text; first live call checks lockdown; S |
 | R19 untrusted data | `backend.py` (1), `types.py` (skeleton), `commands/improve.md` (7) | T hostile strings; `test_improve_command.py` |
 | R20 no real model or network | `tests/conftest.py` (skeleton) | T `test_guards.py` |
 | R21 slash command | `commands/*.md` (7) | T text test; S |
-| R22 resume | `runstore.py` (1), `runner.py` (5), `cli.py` (6) | A: a run cut at each stage (mid-search, last iteration, final steps) resumes with zero repeated successful paid calls, the same budget and the same finalists; T: a call that failed before the cut is tried again live |
+| R22 resume | `runstore.py` (1a), `search.py` (5a), `runner.py` (5b), `cli.py` (6) | A: a run cut at each stage (mid-search, last iteration, final steps) resumes with zero repeated successful paid calls, the same budget and the same finalists; T: a call that failed before the cut is tried again live |
 | R23 run folder, clean | `runstore.py` (1), `cli.py` (6) | T: 0700, not in git, `clean <id>` rejects a path |
-| R24 failures, retries, exit 3 | `backend.py` (1), `evaluator.py` (4), `runner.py` (5) | A with `failing()`: the first failed call outside the search (intake) -> exit 3 with the run folder; T: three consecutive failed calls to one model inside the search -> exit 3 even while another model succeeds; one failed reflection call only skips an iteration |
+| R24 failures, retries, exit 3 | `backend.py` (1a), `evaluator.py` (4), `search.py` (5a), `runner.py` (5b) | A with `failing()`: the first failed call outside the search (intake) -> exit 3 with the run folder; T: three consecutive failed calls to one model inside the search -> exit 3 even while another model succeeds; one failed reflection call only skips an iteration |
 
 ## 6. Enforcement points
 
@@ -169,7 +171,7 @@ The single place that enforces each limit, and why nothing goes around it:
 | Rule | Enforced in | Why it cannot be bypassed |
 |---|---|---|
 | Call limit (R17) | `BudgetedBackend.complete` | every live call passes it; cache hits sit above it and cost nothing, and a resume starts it from the saved total |
-| Search stop, replay-invariant (R17, R22) | `RunState.stopper` over `SearchMeter` (issued calls and seconds, hits counted like live calls) | the stopper reads nothing else, so a replay decides exactly as the original did |
+| Search stop, replay-invariant (R17, R22) | `search.RunState.stopper` over `SearchMeter` (issued calls and seconds, hits counted like live calls) | the stopper reads nothing else, so a replay decides exactly as the original did |
 | Reserve (R17) | `BudgetedBackend.limit`, set to `budget - final`, raised only by `runner` after the search | the search has no handle on the limit |
 | Wall clock, deadline (R17) | `Clock` (shared) read by `BudgetedBackend` and `ClaudeCliBackend` | one object, monotonic |
 | Per-call timeout (R17) | `ClaudeCliBackend._run`: `min(300 s, clock.remaining(deadline))` | the only place a process starts |
