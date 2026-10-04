@@ -281,7 +281,7 @@ def test_a_call_that_was_never_stored_is_a_miss(store: RunStore):
 
 
 def test_hostile_text_is_stored_and_read_back_exactly(store: RunStore):
-    hostile = 'x"}\n\0\ud800 ../../etc/passwd $(rm -rf ~) ‮'
+    hostile = 'x"}\n\0\ud800 ../../etc/passwd $(rm -rf ~) \u202e'
     call = Call(role="judge", model="m", user=hostile, json_schema='{"type": "object"}')
     store.cache_put(call, Reply(text=hostile, duration_s=1.0))
     entry = store.cache_get(call)
