@@ -129,7 +129,10 @@ def test_their_twin_with_trust_search_returns_an_unverified_result(tmp_path, cap
     trusted = run(capsys, happy_backend(BETTER), *argv)
     obj = trusted.obj()
     assert (obj["status"], obj["prompt"], obj["verified"]) == ("improved", BETTER, False)
-    assert "NOT VERIFIED" in trusted.err
+    assert "NOT VERIFIED" in trusted.err and "never saw" not in obj["reason"]
+    human = run(capsys, happy_backend(BETTER), *argv[1:])
+    assert human.out == BETTER + "\n" and "NOT VERIFIED on a holdout" in human.err
+    assert "never saw" not in human.err and "measured noise" not in human.err
 
 
 def test_anything_printed_during_the_run_goes_to_the_log_not_stdout(capsys):
