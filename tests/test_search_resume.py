@@ -259,6 +259,27 @@ def new_run(root: Path) -> str:
     return store.run_id
 
 
+def stack(
+    store: RunStore, raw: Raw, limit: int = 60, deadline: float = 2025.0
+) -> tuple[CachedBackend, tuple[int, float]]:
+    """`Cached(Resilient(Budgeted(raw)))` on the run folder's saved totals, and the checkpoint."""
+    clock = Clock(now=raw.clock.now, elapsed=store.elapsed_s)
+    budgeted = BudgetedBackend(
+        raw, limit, store.calls_used, clock, deadline, on_call=store.save_progress
+    )
+    start = store.search_start_or_record(budgeted.used, clock.elapsed())
+    return CachedBackend(ResilientBackend(budgeted), store), start
+
+
+def tombstone(root: Path, run_id: str, call: Call) -> object:
+    """The run folder's cache entry for `call`, or None."""
+    store = RunStore.resume(root, run_id)
+    try:
+        return store.cache_get(call)
+    finally:
+        store.close()
+
+
 def attempt(
     root: Path, raw: Raw, run_id: str = "", *, n: int = 8, limit: int = 60, **overrides: object
 ) -> tuple[str, SearchResult | None]:
@@ -266,21 +287,10 @@ def attempt(
     from the checkpoint; the result is None when the process was cut."""
     store = RunStore.resume(root, run_id or new_run(root))
     try:
-        clock = Clock(now=raw.clock.now, elapsed=store.elapsed_s)
-        budgeted = BudgetedBackend(
-            raw,
-            limit=limit,
-            used=store.calls_used,
-            clock=clock,
-            deadline=float(overrides.pop("deadline", 2025.0)),
-            on_call=store.save_progress,
-        )
-        cached = CachedBackend(ResilientBackend(budgeted), store)
-        start = store.search_start_or_record(budgeted.used, clock.elapsed())
+        cached, start = stack(store, raw, limit, float(overrides.pop("deadline", 2025.0)))
         settings: dict = {"calls_left_at_start": limit - start[0], "search_start": start}
         settings["make_evaluator"] = lambda b: Evaluator(b, LEVELS, TASK, JUDGE)
-        result = search_with(cached, n=n, **{**settings, **overrides})
-        assert cached.record_failures is False  # on for the search only
+        result = search_with(cached, n=n, cache=cached, **{**settings, **overrides})
     except Cut:
         return store.run_id, None
     finally:
@@ -351,6 +361,9 @@ def test_an_in_search_failure_is_replayed_as_failed_and_never_retried_after_the_
     )
     assert reference.failed == [cache_key(failing)] * 3
     assert [c.text for c in result.candidates] == [SEED + " +" * level for level in levels]
+    run_id, _ = attempt(tmp_path / "once", Raw(fails=lambda call: call == failing))
+    entry = tombstone(tmp_path / "once", run_id, failing)
+    assert entry is not None and getattr(entry, "outcome", None) == "failed"
     last_attempt = max(i for i, c in enumerate(reference.calls, start=1) if c == failing)
     late = [resumed for k, resumed in resumes if k > last_attempt]
     assert late and all(resumed.failed == [] for resumed in late)
@@ -411,6 +424,75 @@ def test_a_failed_seed_call_ends_the_run_and_is_tried_again_on_resume(tmp_path: 
     run_id = new_run(tmp_path / "run")
     with pytest.raises(BackendError, match="original prompt"):
         attempt(tmp_path / "run", Raw(fails=lambda call: call == seed_call), run_id)
+    assert tombstone(tmp_path / "run", run_id, seed_call) is None
     resumed = Raw()
     _, result = attempt(tmp_path / "run", resumed, run_id)
     assert seed_call in resumed.calls and result is not None and result.seed_val_score == 0.0
+
+
+def scores_the_seed(call: Call) -> bool:
+    """A call made while the climbing search scores the original prompt (level 0)."""
+    return (call.role == "task" and "+" not in call.user) or (
+        call.role == "judge" and "answer at level 0" in call.user
+    )
+
+
+ENDINGS = [
+    ({}, None),
+    ({"cut_at": 9}, Cut),
+    ({"fails": lambda c: c.role == "reflect"}, BackendError),
+]
+
+
+@pytest.mark.parametrize(("raw_args", "raised"), ENDINGS, ids=["returns", "cut", "aborts"])
+@pytest.mark.parametrize("before", [False, True])
+def test_the_tombstone_switch_is_on_for_the_search_off_for_the_seed_and_put_back(
+    tmp_path: Path, raw_args: dict, raised: type | None, before: bool
+):
+    store = RunStore.resume(tmp_path, new_run(tmp_path))
+    raw = Raw(**raw_args)
+    cached, start = stack(store, raw)
+    switch: list[tuple[bool, bool]] = []  # per live call: scoring the seed?, switch on?
+    fails = raw.fails
+
+    def watching(call: Call) -> bool:
+        switch.append((scores_the_seed(call), cached.record_failures))
+        return fails(call)
+
+    raw.fails = watching
+    cached.record_failures = before
+    try:
+        search_with(cached, cache=cached, search_start=start, calls_left_at_start=60)
+    except (Cut, BackendError) as error:
+        assert type(error) is raised
+    else:
+        assert raised is None
+    finally:
+        store.close()
+    assert cached.record_failures is before
+    assert {seed for seed, _ in switch} == {True, False}
+    assert all(on is not seed for seed, on in switch)
+
+
+def test_a_child_tombstone_on_a_judge_call_the_seed_shares_ends_the_run(tmp_path: Path):
+    """A known limit, pinned so that a change is noticed (see `search.py`): a judge call holds
+    outputs, not the candidate, so a child whose outputs equal the seed's shares its judge call;
+    the child's tombstone then fails the seed's scoring without a live call, and the run ends."""
+
+    def same_output(call: Call) -> str:
+        return judge_reply(call) if call.role == "judge" else "the same answer"
+
+    store = RunStore.resume(tmp_path, new_run(tmp_path))
+    raw = Raw(same_output, fails=lambda call: call.role == "judge")
+    cached, _ = stack(store, raw)
+    val = scenarios(2)
+    state = RunState()
+    adapter = search.EvaluatorAdapter(
+        Evaluator(cached, CONTRACT, TASK, JUDGE), state, seed=SEED, val=val, cache=cached
+    )
+    adapter([("a child", search.Example(s, val=False)) for s in val])
+    assert state.abort is None and len(raw.failed) == 3  # the child's judge call, tombstoned
+    adapter([(SEED, search.Example(s, val=True)) for s in val])
+    store.close()
+    assert state.abort is not None and state.abort.cause == "backend"
+    assert len(raw.failed) == 3  # the seed's judge call was the child's tombstone, not live
