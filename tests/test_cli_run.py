@@ -350,6 +350,59 @@ def test_a_resumed_run_with_examples_keeps_them_even_when_cut_before_they_were_u
     assert model.count("synth") == 0
 
 
+IGNORED = [
+    "--budget",
+    "300",
+    "--strictness",
+    "bold",
+    "--kind",
+    "template",
+    "--judge-model",
+    "haiku",
+]
+IGNORED += [
+    "--trust-search",
+    "--allow-growth",
+    "--merge",
+    "--force-low-budget",
+    "--file",
+    "nil.txt",
+]
+NOTICE = (
+    "notice: --resume continues the saved run; ignoring --allow-growth, --budget, --examples, "
+    "--file, --force-low-budget, --judge-model, --kind, --merge, --strictness, --trust-search, "
+    "the prompt argument"
+)
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_a_resume_ignores_a_new_prompt_and_flags_with_one_notice(tmp_path, capsys, json_mode):
+    reference = run(capsys, happy_backend(BETTER), "--json", PROMPT).obj()
+    cli.main(["clean"])
+    with pytest.raises(Cut):
+        cli.main([PROMPT], backend=Cutting(1), now=FakeClock().now)
+    [folder] = runs()
+    model = happy_backend(BETTER)
+    ignored = [*IGNORED, "--examples", examples(tmp_path, 9), "Another prompt."]
+    mode = ["--json"] if json_mode else []
+    resumed = run(capsys, model, *mode, "--resume", folder.name, *ignored)
+    assert resumed.code == 0 and model.count("synth") == 1  # the saved run synthesises
+    assert [line for line in resumed.err.splitlines() if "ignoring" in line] == [NOTICE]
+    if json_mode:
+        assert comparable(resumed.obj()) == comparable(reference)
+        assert resumed.obj()["calls_used"] == 1 + len(model.calls)
+    else:
+        assert resumed.out == BETTER + "\n"
+
+
+def test_a_resume_with_nothing_to_ignore_prints_no_notice(capsys):
+    with pytest.raises(Cut):
+        cli.main([PROMPT], backend=Cutting(1), now=FakeClock().now)
+    [folder] = runs()
+    resumed = run(capsys, happy_backend(BETTER), "--json", "--resume", folder.name)
+    assert resumed.obj()["status"] == "improved" and "ignoring" not in resumed.err
+
+
 @pytest.mark.parametrize("damage", [{"kind": "essay"}, {"trust_search": "yes"}])
 def test_a_manifest_with_damaged_saved_flags_refuses_the_resume(capsys, damage):
     with pytest.raises(Cut):
