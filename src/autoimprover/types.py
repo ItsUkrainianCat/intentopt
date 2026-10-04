@@ -11,7 +11,23 @@ Role = Literal["intake", "synth", "task", "judge", "reflect"]
 Kind = Literal["template", "task"]
 Strictness = Literal["conservative", "balanced", "bold"]
 CheckGroup = Literal["format", "constraints", "content"]
-StopCause = Literal["finished", "budget", "clock"]
+# Why the search ended. GEPA 0.1.4 never ends a search by itself (probe), so only a stopper does:
+# "budget" is the normal ending (the search used its share of the calls), "clock" means the clock
+# share ended it first. Only "clock" is reported as cut short (SPEC R2).
+StopCause = Literal["budget", "clock"]
+# Why a result was returned or kept; the fixed codes of the `--json` object (SPEC R2, R3, R11, R13).
+REASON_CODES = (
+    "improved",
+    "no_reliable_improvement",
+    "already_strong",
+    "no_holdout",
+    "no_candidate_beat_seed",
+    "unconfirmed_out_of_budget",
+)
+# Delimiter lines the reflection reply puts around the new instruction (ADR-008). The instruction
+# may itself contain fenced code blocks (SPEC R9), so a fence cannot be the delimiter.
+INSTRUCTION_BEGIN = "<<<INSTRUCTION"
+INSTRUCTION_END = "INSTRUCTION>>>"
 
 # Length cap per strictness level, as a multiple of the original's tokens (SPEC R7, R8).
 LENGTH_CAP: dict[Strictness, float] = {"conservative": 1.25, "balanced": 1.5, "bold": 2.5}
@@ -360,7 +376,9 @@ class Outcome:
     """The result of a run. `prompt` is the original when status is "unchanged" (SPEC R3).
 
     `verified` is True only when the holdout comparison on the target model decided the result;
-    a `--trust-search` win (SPEC R11) stays False. `stop` says why the search ended. `changes` are
+    a `--trust-search` win (SPEC R11) stays False. `stop` says why the search ended (None when no
+    search ran: already strong, no holdout). `reason` is the human text, `reason_code` one of
+    REASON_CODES. `changes` are
     up to 6 lines of "what changed and why", newest first (SPEC R2). `score_*` are holdout scores on
     the target model; `search_score_*` are the seed's and the winner's valset scores on the search
     (task) model, taken during the search at no extra call, reported when it differs (R14a).
@@ -369,8 +387,9 @@ class Outcome:
     status: Literal["improved", "unchanged"]
     prompt: str
     reason: str
+    reason_code: str
     verified: bool = False
-    stop: StopCause = "finished"
+    stop: StopCause | None = None
     changes: tuple[str, ...] = ()
     score_before: float | None = None
     score_after: float | None = None
@@ -385,6 +404,10 @@ class Outcome:
     def __post_init__(self) -> None:
         if self.status not in ("improved", "unchanged"):
             raise ValueError(f"unknown outcome status {self.status!r}")
+        if self.reason_code not in REASON_CODES:
+            raise ValueError(f"unknown reason code {self.reason_code!r}; allowed: {REASON_CODES}")
+        if (self.status == "improved") != (self.reason_code == "improved"):
+            raise ValueError("reason code `improved` goes with status improved, and only with it")
         if (
             self.status == "improved"
             and self.score_before is not None

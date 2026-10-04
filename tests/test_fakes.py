@@ -61,7 +61,7 @@ def test_builders_produce_replies_with_exactly_the_schema_fields():
     check = reply["results"][0]["checks"][0]
     assert set(check) == {"id", "pass", "quote"}
     assert check["quote"] in "an output"
-    assert reflection_reply("new text").startswith("```\nnew text\n```\n- ")
+    assert reflection_reply("new text").startswith("<<<INSTRUCTION\nnew text\nINSTRUCTION>>>\n- ")
 
 
 def test_happy_backend_is_a_positive_control_and_its_twin_is_a_negative_one():
@@ -128,3 +128,14 @@ def test_the_default_reflection_reply_has_three_why_lines():
     from fakes import reflection_reply
 
     assert reflection_reply("x").count("\n- ") == 3
+
+
+def test_a_reflection_instruction_with_a_code_block_stays_intact_between_the_delimiters():
+    from fakes import reflection_reply
+
+    from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END
+
+    instruction = "Run this:\n```bash\nls -l\n```\nthen answer."
+    reply = reflection_reply(instruction)
+    inner = reply.split(INSTRUCTION_BEGIN + "\n", 1)[1].split("\n" + INSTRUCTION_END, 1)[0]
+    assert inner == instruction

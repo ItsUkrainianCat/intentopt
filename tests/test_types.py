@@ -1,6 +1,7 @@
 """The shared types enforce the rules the spec puts on them."""
 
 import dataclasses
+from typing import get_args
 
 import pytest
 
@@ -16,6 +17,8 @@ from autoimprover.types import (
     EXIT_OK,
     EXIT_USAGE,
     HOLDOUT_MAX,
+    INSTRUCTION_BEGIN,
+    INSTRUCTION_END,
     JUDGE_BATCH_MAX,
     LENGTH_CAP,
     LENGTH_FLOOR_TOKENS,
@@ -23,6 +26,7 @@ from autoimprover.types import (
     MODEL_ALIASES,
     PROGRAMMATIC_RULES,
     PROMPT_MAX_CHARS,
+    REASON_CODES,
     SEARCH_CLOCK_SHARE,
     SYSTEM_PROMPT_MAX_BYTES,
     WALL_CLOCK_DEFAULT_S,
@@ -33,6 +37,7 @@ from autoimprover.types import (
     Outcome,
     Plan,
     Reply,
+    StopCause,
     canonical_model,
     default_models,
 )
@@ -192,17 +197,31 @@ def test_check_group_and_contract_kind_are_validated():
 
 
 def test_outcome_is_unverified_unless_the_holdout_decided():
-    out = Outcome(status="improved", prompt="p", reason="r")
+    out = Outcome(status="improved", prompt="p", reason="r", reason_code="improved")
     assert out.verified is False
-    assert out.stop == "finished"
+    assert out.stop is None
 
 
 def test_outcome_rejects_an_unknown_status_and_an_improvement_that_is_not_one():
     with pytest.raises(ValueError, match="status"):
-        Outcome(status="error", prompt="p", reason="r")  # type: ignore[arg-type]
+        Outcome(status="error", prompt="p", reason="r", reason_code="improved")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="higher"):
-        Outcome(status="improved", prompt="p", reason="r", score_before=0.6, score_after=0.5)
-    assert Outcome(status="improved", prompt="p", reason="r", score_before=0.5, score_after=0.6)
+        Outcome(
+            status="improved",
+            prompt="p",
+            reason="r",
+            reason_code="improved",
+            score_before=0.6,
+            score_after=0.5,
+        )
+    assert Outcome(
+        status="improved",
+        prompt="p",
+        reason="r",
+        reason_code="improved",
+        score_before=0.5,
+        score_after=0.6,
+    )
 
 
 def test_exit_codes_match_spec_r2():
@@ -230,6 +249,7 @@ def test_outcome_carries_the_report_fields_of_r2_and_r14a():
         status="improved",
         prompt="p",
         reason="r",
+        reason_code="improved",
         verified=True,
         changes=("tightened the opening", "kept the output format"),
         score_before=0.5,
@@ -239,7 +259,9 @@ def test_outcome_carries_the_report_fields_of_r2_and_r14a():
     )
     assert len(out.changes) == 2
     assert (out.search_score_before, out.search_score_after) == (0.4, 0.8)
-    assert Outcome(status="unchanged", prompt="p", reason="r").changes == ()
+    assert (
+        Outcome(status="unchanged", prompt="p", reason="r", reason_code="no_holdout").changes == ()
+    )
 
 
 def test_the_synthesis_schema_fixes_the_scenario_count_the_budget_assumes():
@@ -255,3 +277,28 @@ def test_a_judge_quote_cannot_be_empty():
 
     check = JUDGE_SCHEMA["properties"]["results"]["items"]["properties"]["checks"]["items"]
     assert check["properties"]["quote"]["minLength"] == 1
+
+
+def test_outcome_reason_codes_are_fixed_and_agree_with_the_status():
+    with pytest.raises(ValueError, match="reason code"):
+        Outcome(status="unchanged", prompt="p", reason="r", reason_code="because")
+    with pytest.raises(ValueError, match="improved"):
+        Outcome(status="unchanged", prompt="p", reason="r", reason_code="improved")
+    with pytest.raises(ValueError, match="improved"):
+        Outcome(status="improved", prompt="p", reason="r", reason_code="no_reliable_improvement")
+    for code in REASON_CODES:
+        if code != "improved":
+            assert Outcome(status="unchanged", prompt="p", reason="r", reason_code=code)
+
+
+def test_the_stop_cause_is_budget_or_clock_because_gepa_never_ends_a_search_itself():
+    assert get_args(StopCause) == ("budget", "clock")
+    assert (
+        Outcome(status="unchanged", prompt="p", reason="r", reason_code="already_strong").stop
+        is None
+    )
+
+
+def test_the_instruction_delimiters_cannot_be_confused_with_a_code_fence():
+    assert "```" not in INSTRUCTION_BEGIN + INSTRUCTION_END
+    assert INSTRUCTION_BEGIN != INSTRUCTION_END

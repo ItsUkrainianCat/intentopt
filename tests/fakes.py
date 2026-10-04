@@ -8,7 +8,7 @@ failures, so no test needs a real model.
 import json
 from collections.abc import Callable, Mapping, Sequence
 
-from autoimprover.types import Call, CallError, Reply
+from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, Call, CallError, Reply
 
 Script = Callable[[Call], "str | Exception"]
 
@@ -139,8 +139,10 @@ def reflection_reply(
     instruction: str,
     why: Sequence[str] = ("tightened the wording", "kept the output format", "kept every literal"),
 ) -> str:
-    """A reflection reply: the new instruction in one fenced block, then bullet lines (ADR-008)."""
-    return "```\n" + instruction + "\n```\n" + "\n".join(f"- {line}" for line in why)
+    """A reflection reply: the new instruction between delimiter lines, then bullet lines
+    (ADR-008). The instruction may contain fenced code blocks; they stay intact."""
+    bullets = "\n".join(f"- {line}" for line in why)
+    return f"{INSTRUCTION_BEGIN}\n{instruction}\n{INSTRUCTION_END}\n{bullets}"
 
 
 def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> ScriptedBackend:
