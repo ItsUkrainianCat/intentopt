@@ -4,18 +4,24 @@ check is tested in `test_contract_check.py` (judged part) and `test_contract_lit
 
 import dataclasses
 import json
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-from fakes import ScriptedBackend, by_role, intake_reply
+from fakes import ScriptedBackend, by_role, intake_reply, judge_reply
 
-from autoimprover.contract import extract_contract
+from autoimprover.backend import CachedBackend
+from autoimprover.contract import check, extract_contract
+from autoimprover.runstore import RunStore
 from autoimprover.types import (
     CALL_RETRIES,
+    DEFAULT_MODELS,
     INTAKE_SCHEMA,
     CallError,
     CallFailed,
     Check,
     Contract,
+    Plan,
 )
 
 MODEL = "claude-opus-5-5"
@@ -258,4 +264,77 @@ def test_extract_contract_lets_every_backend_exception_through_after_one_call(er
     backend = by_role({"intake": error})
     with pytest.raises(type(error), match="^down$"):
         extract_contract(backend, MODEL, PROMPT)
+    assert len(backend.calls) == 1
+
+
+# --- GEPA's template tokens (ADR-006): a contract text holding one is an invalid reply ----------
+
+GEPA_TOKENS = ("<curr_param>", "<side_info>")
+# Every text field of Contract and Check a model can fill freely, with the token put in it.
+TOKEN_FIELDS = {
+    "goal": lambda t: _with(goal=f"summarise {t} a bug report"),
+    "keep item": lambda t: _with(keep=["Acme", f"see {t}"]),
+    "constraint": lambda t: _with(constraints=[f"under 100 words{t}"]),
+    "output_format": lambda t: _with(output_format=f"markdown {t} list"),
+    "language": lambda t: _with(language=t),
+    "tone": lambda t: _with(tone=f"neutral {t}"),
+    "check id": lambda t: _with(checks=_check(id=f"c3{t}")),
+    "check text": lambda t: _with(checks=_check(text=f"names {t}")),
+    "check arg": lambda t: _with(checks=_check(rule="contains", arg=t)),
+}
+
+
+def test_curr_param_in_the_goal_is_asked_again_and_a_resume_recovers(tmp_path: Path):
+    bad = TOKEN_FIELDS["goal"]("<curr_param>")
+    inner = ScriptedBackend(lambda call: bad if call.sample == 0 else GOOD)
+    plan, now = Plan(models=DEFAULT_MODELS), datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
+
+    def extract(store: RunStore) -> Contract:
+        try:
+            return extract_contract(CachedBackend(inner, store), MODEL, PROMPT)
+        finally:
+            store.close()
+
+    first = RunStore.open_or_create(tmp_path / "runs", plan, PROMPT, utcnow=lambda: now)
+    assert extract(first) == CONTRACT
+    assert extract(RunStore.resume(tmp_path / "runs", first.path.name)) == CONTRACT
+    # The resume reads both replies from the cache: the bad one is refused again, never used.
+    assert [c.sample for c in inner.calls] == [0, 1]
+    assert dataclasses.replace(inner.calls[1], sample=0) == inner.calls[0]
+
+
+@pytest.mark.parametrize("token", GEPA_TOKENS)
+@pytest.mark.parametrize("field", TOKEN_FIELDS, ids=list(TOKEN_FIELDS))
+def test_a_gepa_token_in_any_text_of_the_contract_is_asked_again(field, token):
+    twin = by_role({"intake": TOKEN_FIELDS[field](token.strip("<>"))})
+    extract_contract(twin, MODEL, PROMPT)
+    assert len(twin.calls) == 1  # without its angle brackets the same reply is valid
+    bad = TOKEN_FIELDS[field](token)
+    backend = ScriptedBackend(lambda call: bad if call.sample == 0 else GOOD)
+    assert extract_contract(backend, MODEL, PROMPT) == CONTRACT
+    assert [c.sample for c in backend.calls] == [0, 1]
+
+
+@pytest.mark.parametrize("token", GEPA_TOKENS)
+def test_a_gepa_token_in_every_reply_ends_in_call_failed(token):
+    backend = by_role({"intake": TOKEN_FIELDS["keep item"](token)})
+    with pytest.raises(CallFailed, match=f"intake.*{token}"):
+        extract_contract(backend, MODEL, PROMPT)
+    assert [c.sample for c in backend.calls] == list(range(1 + CALL_RETRIES))
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["curr_param and side_info", "<curr_param", "side_info>", "<CURR_PARAM>", "< side_info >"],
+)
+def test_a_text_that_only_resembles_a_gepa_token_is_accepted(text):
+    reply = _with(goal=text, keep=["Acme", text], tone=text, checks=_check(text=text))
+    contract = extract_contract(by_role({"intake": reply}), MODEL, PROMPT)
+    assert (contract.goal, contract.keep[1], contract.tone, contract.checks[2].text) == (text,) * 4
+
+
+def test_the_contract_check_still_accepts_a_quote_holding_a_gepa_token():
+    candidate = "<side_info> and <curr_param> stay as they are."
+    backend = ScriptedBackend(judge_reply)  # quotes the first 20 characters: "<side_info> and <cur"
+    assert check(backend, "claude-sonnet-5-5", CONTRACT, "Summarise a bug report.", candidate) == []
     assert len(backend.calls) == 1

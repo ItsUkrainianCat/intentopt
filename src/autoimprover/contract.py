@@ -9,7 +9,9 @@ URLs, file paths and quoted strings (SPEC R9).
 Prompts and replies are untrusted data: a prompt travels as the user message or inside its JSON,
 never in the fixed system instructions, and a reply is parsed as JSON and never evaluated. A reply
 that is not valid is asked again as a new sample, so the call cache cannot serve the bad reply
-back (ADR-004, ADR-008); whatever the backend raises propagates unchanged.
+back (ADR-004, ADR-008); whatever the backend raises propagates unchanged. An intake reply with
+one of GEPA's template tokens in any of its texts is not valid, because the reflection template
+could not carry it (ADR-006).
 """
 
 from __future__ import annotations
@@ -60,6 +62,10 @@ _INTAKE_SYSTEM = (
 )
 _MAX_CHECKS = 8
 _CHECK_KEYS = ("id", "group", "text", "rule", "arg")
+# GEPA renders the reflection template by plain replacement of these tokens, so a contract text
+# holding one would have feedback spliced into it (ADR-006). The same tuple as in runner.py, kept
+# here because runner imports this module.
+_GEPA_TOKENS = ("<curr_param>", "<side_info>")
 
 # The fixed system instruction of the contract check, a judge call that sees the candidate
 # (ADR-002, ADR-008). Both prompts travel in the user JSON only.
@@ -232,14 +238,16 @@ def _loads(text: str) -> Any:
 
 
 def _text(value: object, where: str, *, blank: bool = True) -> str:
-    """`value` if it is a string that can travel on to later calls: no NUL, no lone surrogate, and
-    not blank unless `blank`; else ValueError naming `where`."""
+    """`value` if it is a string that can travel on to later calls: no NUL, no lone surrogate, no
+    GEPA template token, and not blank unless `blank`; else ValueError naming `where`."""
     if not isinstance(value, str):
         raise ValueError(f"{where} is not a string")
     if not blank and not value.strip():
         raise ValueError(f"{where} is blank")
     if "\0" in value:
         raise ValueError(f"{where} contains a NUL character")
+    if token := next((token for token in _GEPA_TOKENS if token in value), None):
+        raise ValueError(f"{where} contains GEPA's template token {token}")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
@@ -255,8 +263,8 @@ def _texts(value: object, where: str) -> tuple[str, ...]:
 
 def _contract(text: str) -> Contract:
     """The contract an intake reply holds; ValueError when it is not valid for INTAKE_SCHEMA or
-    for Check and Contract, or has a blank goal, keep item, constraint, check id or check text.
-    Keys the schema does not name are ignored."""
+    for Check and Contract, has a blank goal, keep item, constraint, check id or check text, or
+    has a GEPA template token in any text. Keys the schema does not name are ignored."""
     reply = _loads(text)
     if not isinstance(reply, dict):
         raise ValueError("not a JSON object")
