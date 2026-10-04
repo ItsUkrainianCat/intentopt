@@ -190,45 +190,52 @@ def test_an_aborted_search_raises_its_own_error(
         decide(tmp_path, monkeypatch, Searched(found(), error), ScriptedBackend(model()))
 
 
-def test_running_out_of_time_in_the_final_steps_keeps_the_original(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+SEED_NOISE = {"0": {HOLDOUT[0].id, HOLDOUT[1].id}, "1": {HOLDOUT[0].id}}  # runs of 0.5 and 0.25
+UNMEASURED = (None, None, None, None)
+MEASURED = (0.375, 0.25, "budget", 0.5)  # score_before, noise, stop, search_score_before
+
+
+@pytest.mark.parametrize(
+    ("where", "trust", "jump", "code", "measured"),
+    [
+        ("seed run 2", False, 2700.0, "unconfirmed_out_of_budget", UNMEASURED),
+        ("final steps", False, 2700.0, "unconfirmed_out_of_budget", MEASURED),
+        ("final steps", False, 600.0, "improved", MEASURED),  # the twin: time enough to confirm
+        ("final steps", True, 2700.0, "unconfirmed_out_of_budget", (None, None, "budget", 0.5)),
+    ],
+)
+def test_time_running_out_keeps_the_original_with_what_was_measured_before(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    trust: bool,
+    jump: float,
+    code: str,
+    measured: tuple,
 ):
-    def late(path: Path, jump: float) -> tuple[Outcome, ScriptedBackend]:
-        clock, healthy = FakeClock(), model(winners=(A,))
+    clock = FakeClock()
+    healthy = scored(lambda s, _c, out: out[0] != "s" or s in SEED_NOISE[out[-1]]).complete
 
-        def script(call: Call) -> str:
-            if contract_checked(call) == A:
-                clock.advance(jump)  # the clock runs out while the contract is checked
-            return healthy(call)
+    def script(call: Call) -> str:  # the clock jumps in seed run 2, or at A's contract check
+        late = call.sample == 1 if where == "seed run 2" else contract_checked(call) == A
+        clock.advance(jump if late else 0.0)
+        return healthy(call).text
 
-        raw, searched = ScriptedBackend(script), Searched(found(cand(A, 0.5)))
-        return decide(path, monkeypatch, searched, raw, fake_clock=clock), raw
-
-    outcome, raw = late(tmp_path / "late", 2700.0)
-    assert (outcome.status, outcome.reason_code) == ("unchanged", "unconfirmed_out_of_budget")
-    assert (outcome.prompt, outcome.stop, outcome.calls_used) == (PROMPT, "budget", len(raw.calls))
-    assert not any(c.model == MODELS.target and A in c.user for c in raw.calls)
-    twin, _ = late(tmp_path / "twin", 600.0)
-    assert (twin.prompt, twin.reason_code) == (A, "improved")
-
-
-def test_running_out_before_the_search_keeps_the_original_with_no_stop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    clock, healthy = FakeClock(), model()
-
-    def script(call: Call) -> str:
-        clock.advance(2025.0 if call.role == "intake" else 0.0)
-        return healthy(call)
-
-    searched = Searched(found(cand(A, 0.5)))
-    outcome = decide(tmp_path, monkeypatch, searched, ScriptedBackend(script), fake_clock=clock)
-    assert (outcome.reason_code, outcome.stop, outcome.calls_used) == (
-        "unconfirmed_out_of_budget",
-        None,
-        1,
+    searched = Searched(found(cand(A, 0.9), cand(D, 0.8), seed=0.5))
+    raw, examples = ScriptedBackend(script), EXAMPLES[:5] if trust else None
+    outcome = decide(
+        tmp_path,
+        monkeypatch,
+        searched,
+        raw,
+        examples=examples,
+        trust_search=trust,
+        fake_clock=clock,
     )
-    assert searched.kwargs == {}
+    assert (outcome.reason_code, outcome.prompt) == (code, A if code == "improved" else PROMPT)
+    fields = (outcome.score_before, outcome.noise, outcome.stop, outcome.search_score_before)
+    assert fields == measured and outcome.calls_used == len(raw.calls)
+    assert bool(searched.kwargs) == (where == "final steps")
 
 
 def test_the_search_gets_train_and_val_only_its_share_of_the_budget_and_the_plan(
