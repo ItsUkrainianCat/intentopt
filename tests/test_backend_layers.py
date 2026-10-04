@@ -293,3 +293,45 @@ def test_a_resumed_run_replays_hits_and_tombstones_free_and_continues_the_count(
     with pytest.raises(BudgetExhausted):
         replay.complete(dataclasses.replace(BASE, sample=2))
     resumed.close()
+
+
+# --- Tombstones written by the cache while the search runs (ADR-004, SPEC R22) -------------------
+
+
+def test_record_failures_stores_a_call_that_failed_every_attempt_as_a_tombstone(store: RunStore):
+    raw = ScriptedBackend(lambda c: CallError("exit 1") if c.sample == 1 else "ok")
+    backend, budgeted = stack(store, raw, FakeClock())
+    assert backend.record_failures is False
+    backend.record_failures = True
+    failing = dataclasses.replace(BASE, sample=1)
+    with pytest.raises(CallFailed) as failed:
+        backend.complete(failing)
+    entry = store.cache_get(failing)
+    assert entry is not None and (entry.outcome, entry.error) == ("failed", str(failed.value))
+    assert entry.duration_s == 0.0
+    with pytest.raises(CallFailed):
+        backend.complete(failing)
+    assert (raw.count(), budgeted.used) == (3, 3)
+    assert backend.complete(BASE).text == "ok" and store.cache_get(BASE) is not None
+
+
+@pytest.mark.parametrize("error", ERRORS[1:], ids=lambda e: type(e).__name__)
+def test_record_failures_stores_nothing_but_a_call_failed(store: RunStore, error: Exception):
+    cached = CachedBackend(ScriptedBackend(lambda _c: error), store)
+    cached.record_failures = True
+    with pytest.raises(type(error)):
+        cached.complete(BASE)
+    assert list((store.path / "cache").iterdir()) == []
+
+
+def test_the_third_consecutive_failure_raises_backend_error_and_is_not_stored(store: RunStore):
+    raw = ScriptedBackend(lambda c: CallError("exit 1"))
+    backend, _ = stack(store, raw, FakeClock(), limit=20)
+    backend.record_failures = True
+    calls = [dataclasses.replace(BASE, sample=n) for n in range(3)]
+    for call in calls[:2]:
+        with pytest.raises(CallFailed):
+            backend.complete(call)
+    with pytest.raises(BackendError):
+        backend.complete(calls[2])
+    assert [store.cache_get(c) is not None for c in calls] == [True, True, False]

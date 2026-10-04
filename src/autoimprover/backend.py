@@ -148,18 +148,27 @@ class CachedBackend:
     answered from the run folder without a live call, so a hit costs nothing and never reaches
     the budget, and a resume replays the run (SPEC R17, R22). Only successful replies are stored,
     with the duration of the live call; a hit carries that duration so the search meter advances
-    as it did. A tombstone (an in-search failure recorded by the runner) replays as `CallFailed`.
-    Exceptions from below are never stored. Every answered call is logged in `calls.jsonl`.
+    as it did. A tombstone replays as `CallFailed`. Exceptions from below are not stored, except
+    while `record_failures` is on (the search sets it): then a `CallFailed`, a call that failed
+    all its attempts, is stored as a tombstone before it propagates, so a resume decides as the
+    original run did (SPEC R22; ADR-004). The tombstone's duration is 0: the attempts' time is not
+    known here. Every answered call is logged in `calls.jsonl`.
     """
 
     def __init__(self, inner: Backend, store: RunStore) -> None:
         self._inner = inner
         self._store = store
+        self.record_failures = False
 
     def complete(self, call: Call) -> Reply:
         entry = self._store.cache_get(call)
         if entry is None:
-            reply = self._inner.complete(call)
+            try:
+                reply = self._inner.complete(call)
+            except CallFailed as error:
+                if self.record_failures:
+                    self._store.record_failure(call, str(error), 0.0)
+                raise
             self._store.cache_put(call, reply)
         elif entry.reply is None:  # a tombstone
             raise CallFailed(entry.error)
