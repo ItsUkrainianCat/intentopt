@@ -112,7 +112,7 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 | WP | Owner (agent) | Exclusive files | Needs | Proof |
 |---|---|---|---|---|
 | WP1 backend + runstore | `coder` | `src/autoimprover/backend.py`, `runstore.py`, `tests/test_backend.py`, `tests/test_runstore.py` | skeleton, the user's real-call output | R17, R18, R19, R22, R23, R24 |
-| WP2 contract | `coder` | `contract.py`, `tests/test_contract.py`, `tests/test_contract_literals.py` | skeleton | R5, R6, R9 |
+| WP2 contract | `coder` | `contract.py`, `tests/test_contract.py`, `tests/test_contract_literals.py`, `tests/test_contract_check.py` | skeleton | R5, R6, R9 |
 | WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` (and `tests/test_scenarios_synth.py` once the synthesis tests move there) | skeleton | R11, R15 |
 | WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py` | WP1-WP3 | R10, R10a, R10b, R16, R24 |
 | WP5 runner | `coder` | `runner.py`, `tests/test_runner.py` | WP1-WP4 | R3, R4, R6, R7, R8, R11-R17, R22, R24 |
@@ -130,7 +130,7 @@ WP1 to WP3 and WP8 can run in parallel (at most 2 writers at once, each in its o
 
 | Req | Module (WP) | Proof, and an input that makes it fail |
 |---|---|---|
-| R1 input | `cli.py` (6) | T: 20,001 chars, empty, NUL byte -> exit 2 |
+| R1 input | `cli.py` (6) | T: 20,001 chars, empty, NUL byte -> exit 2; CRLF and CR are normalised to LF before anything else sees the prompt |
 | R2 output, exit codes | `report.py`, `cli.py` (6) | A: each row of section 8 |
 | R3 unchanged unless reliable | `runner.py` (5) | A with fake: candidate gain below threshold -> original, exit 0 |
 | R4 dry run, low budget | `cli.py` (6), `runner.fixed_costs`, `runner.iterations_afforded` (5) | A: `--dry` makes zero calls, writes nothing and exits 0 even for budget 30 or an unusable state folder; T: budget 66 with 12 scenarios is refused (worst case 2 iterations); T: n = 8, 12, 40 give 6, 5, 4 worst-case iterations at budget 100, and n < 8 (no holdout) has its own fixed costs |
