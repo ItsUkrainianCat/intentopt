@@ -48,6 +48,11 @@ REASON_LINES = {
     "on the holdout, so the original is kept; a larger --budget leaves more for the final steps",
 }
 
+# An improved result that no holdout checked (--trust-search, SPEC R11) says only what was done.
+_UNVERIFIED_MEANING = (
+    "a rewrite scored higher than the original on the search's own validation set; there is no "
+    "holdout and no noise was measured, so the gain is not verified"
+)
 _STOPS = {
     "budget": "it used its share of the calls (the normal ending)",
     "clock": "the clock ended it, at its share of the wall clock",
@@ -101,10 +106,11 @@ def render(outcome: Outcome, original: str, contract: Contract | None, plan: Pla
     `contract` the run's intent contract when one was extracted."""
     improved = outcome.status == "improved"
     head = "improved" if improved else "unchanged, the original prompt is returned"
+    unverified = improved and not outcome.verified
     lines = [
         f"result: {head} ({outcome.reason_code})",
         f"reason: {one_line(outcome.reason)}",
-        f"meaning: {REASON_LINES[outcome.reason_code]}",
+        f"meaning: {_UNVERIFIED_MEANING if unverified else REASON_LINES[outcome.reason_code]}",
     ]
     if improved:
         lines.append(
