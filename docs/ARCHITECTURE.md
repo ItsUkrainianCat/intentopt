@@ -91,7 +91,8 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | Module | Responsibility and public interface | Spec |
 |---|---|---|
 | `types.py` | dataclasses, protocols, constants shared by all: `Backend`, `BatchEvaluator`, `Call`, `Reply`, `Contract`, `Check`, `Scenario`, `Models`, `Plan`, `Outcome` (with `changes` and the search-model scores), the reply schemas `INTAKE_SCHEMA`, `SYNTH_SCHEMA`, `JUDGE_SCHEMA`, exceptions (`CallError`, `CallFailed`, `BackendError`, `BudgetExhausted`, `SessionNotLockedDown`), exit codes, `canonical_model`, `default_models` | all |
-| `backend.py` | `Clock`; `ClaudeCliBackend(clock)`, `BudgetedBackend(raw, limit, used, clock, deadline)` with `raise_limit`, `ResilientBackend(inner)` (failure count per model id), `CachedBackend(inner, store)` (entries store the call's `duration_s`; tombstones replay as `CallFailed`; `Reply` carries the duration for the search meter); the layers of section 6 | R17-R20, R24 |
+| `claude_cli.py` | `ClaudeCliBackend(clock, ...)`: the only builder of the `claude -p` command, scrubbed environment, per-call timeout, lockdown check on the first live call (section 9); depends on `Clock` from `backend.py` | R17, R18, R19 |
+| `backend.py` | `Clock`; `BudgetedBackend(raw, limit, used, clock, deadline)` with `raise_limit`, `ResilientBackend(inner)` (failure count per model id), `CachedBackend(inner, store)` (entries store the call's `duration_s`; tombstones replay as `CallFailed`; `Reply` carries the duration for the search meter); the layers of section 6 (everything except the `claude -p` process) | R17, R19, R20, R24 |
 | `runstore.py` | `RunStore`: `open_or_create` and `resume(id)` (both take `run.lock` first; `resume` then reads manifest, checkpoint, contract and scenarios), `save_progress(calls_used, elapsed_s)`, `search_start_or_record(used, elapsed)`, `cache_get/put`, `log_call`, `record_failure(key, error, duration_s)` (tombstones), `save_contract` / `contract()`, `save_scenarios` / `scenarios()`, `open_log()` (for `gepa.log`), `cwd()` (the empty working folder of the child process), `clean(id=None)`, `resolve_run(id)`, `check_root()` (read-only usability test for `--dry`); the only module that touches the run folder | R22, R23 |
 | `contract.py` | `extract_contract(backend, model, prompt, kind=None) -> Contract` (`model` is the reflection model, ADR-008); `Violation(check_id: str, text: str)`; `check(backend, judge_model, contract, original, candidate) -> list[Violation]` (the programmatic checks plus one judged call, ADR-008); `literals(prompt) -> tuple[str, ...]`, `literals_preserved(original, candidate) -> bool` | R5, R6, R9 |
 | `scenarios.py` | `read_examples(path: Path) -> list[Scenario]` (a bad line raises `ValueError("line N: ...")`, which `cli` turns into exit 2); `synthesize(backend, model, prompt, contract) -> list[Scenario]` (`model` is the reflection model); `split_sizes(n) -> tuple[int, int, int]` (holdout, valset, dataset; n >= 8); `split(scenarios, seed) -> Split`, `Split(train, val, holdout)` being tuples of `Scenario` (n < 8: `train == val == all`, `holdout == ()`) | R11, R15 |
@@ -101,7 +102,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `cli.py` | `main(argv, *, backend=None, now=None) -> int` (`backend` replaces the raw model layer, `now` the monotonic clock) and the subcommand `clean`. Flags: `--dry`, `--force-low-budget`, `--json`, `--file`, `--examples`, `--kind template\|task`, `--budget`, `--strictness`, `--allow-growth`, `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--merge`, `--trust-search`, `--resume <id>` | R1, R2, R4, R14, R22, R23 |
 | `commands/improve.md`, `commands/optimize.md` (repo root) | Claude Code slash command text (`/improve`, alias `/optimize`) | R19, R21 |
 
-Dependencies point one way: `cli -> runner -> {evaluator, contract, scenarios} -> backend -> runstore -> types`. `gepa` is imported only in `runner.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
+Dependencies point one way: `cli -> runner -> {evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `runner.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
 
 Interfaces fixed at the skeleton commit are in `types.py` (read it, not a copy here) and the `cli.main` signature. Signatures of the other modules above are fixed by this table; an owner may add private helpers but changes a public signature only through the lead.
 
@@ -111,16 +112,17 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 
 | WP | Owner (agent) | Exclusive files | Needs | Proof |
 |---|---|---|---|---|
-| WP1 backend + runstore | `coder` | `src/autoimprover/backend.py`, `runstore.py`, `tests/test_backend.py`, `tests/test_runstore.py` | skeleton, the user's real-call output | R17, R18, R19, R22, R23, R24 |
+| WP1a backend layers + runstore | `coder` | `src/autoimprover/backend.py`, `runstore.py`, `tests/test_backend.py`, `tests/test_runstore.py` | skeleton | R17, R19, R22, R23, R24 |
+| WP1b claude cli | `coder` | `src/autoimprover/claude_cli.py`, `tests/test_claude_cli.py` | WP1a (`Clock`), the user's two real-call outputs | R17 (timeout), R18, R19 |
 | WP2 contract | `coder` | `contract.py`, `tests/test_contract.py`, `tests/test_contract_literals.py`, `tests/test_contract_check.py` | skeleton | R5, R6, R9 |
 | WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` (and `tests/test_scenarios_synth.py` once the synthesis tests move there) | skeleton | R11, R15 |
-| WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py`, `tests/test_evaluator_judge.py` | WP1-WP3 | R10, R10a, R10b, R16, R24 |
-| WP5 runner | `coder` | `runner.py`, `tests/test_runner.py` | WP1-WP4 | R3, R4, R6, R7, R8, R11-R17, R22, R24 |
+| WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py`, `tests/test_evaluator_judge.py` | WP2, WP3 | R10, R10a, R10b, R16, R24 |
+| WP5 runner | `coder` | `runner.py`, `tests/test_runner.py` | WP1a-WP4 (not WP1b: tests inject the raw layer) | R3, R4, R6, R7, R8, R11-R17, R22, R24 |
 | WP6 report + cli | `coder` | `report.py`, `cli.py`, `tests/test_report.py`, `tests/test_cli.py` | WP5 | R1, R2, R4, R14, R22, R23 |
 | WP7 docs | `coder` | `README.md`, `commands/improve.md`, `commands/optimize.md`, `tests/test_improve_command.py` | WP6 | R19, R21 |
 | WP8 acceptance | `tester` | `tests/acceptance/**` (including its own `conftest.py`) | skeleton only; written from the SPEC and ADR-008 without reading `src/` | the A proofs; every test that asserts a candidate is NOT returned has a twin on `happy_backend` asserting that one IS, so it cannot pass for the wrong reason |
 
-WP1 to WP3 and WP8 can run in parallel (at most 2 writers at once, each in its own worktree). pytest runs with `--import-mode=importlib` and `pythonpath = ["tests"]`, so `tests/test_cli.py` and `tests/acceptance/test_cli.py` coexist and helpers come from `from fakes import ...`.
+WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in its own worktree). pytest runs with `--import-mode=importlib` and `pythonpath = ["tests"]`, so `tests/test_cli.py` and `tests/acceptance/test_cli.py` coexist and helpers come from `from fakes import ...`.
 
 ## 4. Skeleton (committed before any package starts)
 
@@ -150,8 +152,8 @@ WP1 to WP3 and WP8 can run in parallel (at most 2 writers at once, each in its o
 | R15 split, search wiring | `scenarios.py` (3), `runner.py` (5) | T: n = 8, 10, 12, 30, 40 sizes; `GEPAConfig` builds on 0.1.4 |
 | R15a small valset, strict improvement | `runner.py` (5) | T: calls counted on `fake` |
 | R16 ASI to reflection | `evaluator.py` (4), template in `runner.py` (5) | T: failed checks and excerpts in the reflection prompt |
-| R17 budget, reserve, clock, timeout | `backend.py` (1), `runner.py` (5) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
-| R18 command, lockdown, argv rules | `backend.py` (1) | T: argv has no user text; first live call checks lockdown; S |
+| R17 budget, reserve, clock, timeout | `backend.py` (1a), `claude_cli.py` (1b: timeout), `runner.py` (5) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
+| R18 command, lockdown, argv rules | `claude_cli.py` (1b) | T: argv has no user text; first live call checks lockdown; S |
 | R19 untrusted data | `backend.py` (1), `types.py` (skeleton), `commands/improve.md` (7) | T hostile strings; `test_improve_command.py` |
 | R20 no real model or network | `tests/conftest.py` (skeleton) | T `test_guards.py` |
 | R21 slash command | `commands/*.md` (7) | T text test; S |
