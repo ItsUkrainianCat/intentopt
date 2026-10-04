@@ -72,8 +72,8 @@ def test_the_judged_checks_go_to_one_judge_call_in_the_adr_008_format():
     assert (call.role, call.model, call.sample) == ("judge", JUDGE, 0)
     assert call.json_schema == json.dumps(JUDGE_SCHEMA)
     contract_checks = [
-        {"id": "cites", "text": "cites a source for its claim"},
-        {"id": "polite", "text": "stays polite"},
+        {"id": "c:cites", "text": "cites a source for its claim"},
+        {"id": "c:polite", "text": "stays polite"},
     ]
     assert json.loads(call.user) == {
         "scenarios": [
@@ -83,9 +83,9 @@ def test_the_judged_checks_go_to_one_judge_call_in_the_adr_008_format():
                 "output": "Output for " + E1.input,
                 "checks": [
                     *contract_checks,
-                    {"id": "crit-1", "text": "mentions wavelength"},
-                    {"id": "crit-2", "text": "under three sentences"},
-                    {"id": "expected", "text": EXPECTED_TEXT},
+                    {"id": "s:crit-1", "text": "mentions wavelength"},
+                    {"id": "s:crit-2", "text": "under three sentences"},
+                    {"id": "s:expected", "text": EXPECTED_TEXT},
                 ],
             },
             {
@@ -142,7 +142,7 @@ def test_only_scenarios_with_judged_checks_are_sent_to_the_judge():
     (call,) = judges(backend)
     (sent,) = json.loads(call.user)["scenarios"]
     assert sent["scenario"] == "c"
-    assert sent["checks"] == [{"id": "crit-1", "text": "is kind"}]
+    assert sent["checks"] == [{"id": "s:crit-1", "text": "is kind"}]
 
 
 @pytest.mark.parametrize("kind", ["template", "task"])
@@ -212,7 +212,7 @@ def run(judge, batch=(E2,), contract=JUDGED, sample=0) -> list[tuple[float, dict
 
 
 RIVERS = "Rivers carry"
-SEA_OK = reply({"e2": {"cites": (True, RIVERS), "polite": (True, RIVERS)}})
+SEA_OK = reply({"e2": {"c:cites": (True, RIVERS), "c:polite": (True, RIVERS)}})
 
 
 def test_a_pass_with_a_verbatim_quote_from_the_output_counts():
@@ -224,16 +224,17 @@ def test_a_pass_with_a_verbatim_quote_from_the_output_counts():
 
 def test_a_check_the_judge_fails_counts_as_failed():
     ((score, side_info),) = run(
-        [reply({"e2": {"cites": (False, RIVERS), "polite": (True, RIVERS)}})]
+        [reply({"e2": {"c:cites": (False, RIVERS), "c:polite": (True, RIVERS)}})]
     )
     assert score == 2 / 3
     assert side_info["scores"] == {"content": 0.0, "constraints": 1.0}
+    # answered as "c:cites", reported under the contract's own id
     assert side_info["failed"] == [{"id": "cites", "text": "cites a source for its claim"}]
 
 
 def test_criteria_and_expected_checks_count_in_the_content_group():
     programmatic = Contract(goal="g", kind="template", checks=(SHORT,))
-    sky = {"crit-1": (True, "Blue light"), "crit-2": (False, "x"), "expected": (True, "NASA")}
+    sky = {"s:crit-1": (True, "Blue light"), "s:crit-2": (False, "x"), "s:expected": (True, "NASA")}
     ((score, side_info),) = run([reply({"e1": sky})], batch=(E1,), contract=programmatic)
     assert score == 3 / 4
     assert side_info["scores"] == {"constraints": 1.0, "content": 2 / 3}
@@ -253,7 +254,9 @@ NO_QUOTE = {
 
 @pytest.mark.parametrize("quote", NO_QUOTE.values(), ids=NO_QUOTE.keys())
 def test_a_pass_without_a_verbatim_quote_from_its_own_output_counts_as_failed(quote):
-    ((score, side_info),) = run([reply({"e2": {"cites": (True, quote), "polite": (True, RIVERS)}})])
+    ((score, side_info),) = run(
+        [reply({"e2": {"c:cites": (True, quote), "c:polite": (True, RIVERS)}})]
+    )
     assert score == 2 / 3
     assert side_info["failed"] == [{"id": "cites", "text": "cites a source for its claim"}]
 
@@ -262,8 +265,11 @@ def test_each_quote_is_checked_against_its_own_scenarios_output():
     sky = "Blue light scatters"
     swapped = reply(
         {
-            "e1": {i: (True, RIVERS) for i in ("cites", "polite", "crit-1", "crit-2", "expected")},
-            "e2": {"cites": (True, sky), "polite": (True, sky)},
+            "e1": {
+                i: (True, RIVERS)
+                for i in ("c:cites", "c:polite", "s:crit-1", "s:crit-2", "s:expected")
+            },
+            "e2": {"c:cites": (True, sky), "c:polite": (True, sky)},
         }
     )
     (sky_score, sky_info), (sea_score, sea_info) = run([swapped], batch=(E1, E2))
@@ -273,22 +279,24 @@ def test_each_quote_is_checked_against_its_own_scenarios_output():
 
 def test_a_quote_matches_the_output_after_whitespace_normalisation():
     quote = "  Rivers carry\nminerals\tto  the "
-    ((score, side_info),) = run([reply({"e2": {"cites": (True, quote), "polite": (False, "x")}})])
+    ((score, side_info),) = run(
+        [reply({"e2": {"c:cites": (True, quote), "c:polite": (False, "x")}})]
+    )
     assert score == 2 / 3  # short and cites; without normalisation cites would fail too
     assert side_info["failed"] == [{"id": "polite", "text": "stays polite"}]
 
 
 def test_a_quote_spanning_a_line_break_of_the_output_matches():
-    sky = {i: (True, "Blue light") for i in ("crit-1", "crit-2", "expected")}
-    sky.update({"cites": (True, "more. Source: NASA"), "polite": (False, "Blue light")})
+    sky = {i: (True, "Blue light") for i in ("s:crit-1", "s:crit-2", "s:expected")}
+    sky.update({"c:cites": (True, "more. Source: NASA"), "c:polite": (False, "Blue light")})
     ((score, side_info),) = run([reply({"e1": sky})], batch=(E1,))
     assert score == 5 / 6
     assert side_info["failed"] == [{"id": "polite", "text": "stays polite"}]
 
 
 def test_an_omitted_check_is_unknown_neither_passed_nor_failed():
-    answered = {i: (True, "Blue light") for i in ("crit-1", "crit-2", "expected")}
-    answered["polite"] = (False, "Blue light")  # `cites` is left out: 1 unknown of 5 judged
+    answered = {i: (True, "Blue light") for i in ("s:crit-1", "s:crit-2", "s:expected")}
+    answered["c:polite"] = (False, "Blue light")  # `cites` is left out: 1 unknown of 5 judged
     ((score, side_info),) = run([reply({"e1": answered})], batch=(E1,))
     assert score == 4 / 5  # short, crit-1, crit-2, expected of 5 counted; failed 4/6, passed 5/6
     assert side_info["failed"] == [{"id": "polite", "text": "stays polite"}]
@@ -296,8 +304,8 @@ def test_an_omitted_check_is_unknown_neither_passed_nor_failed():
 
 
 def test_a_scenario_the_reply_leaves_out_counts_only_its_programmatic_checks():
-    sky = {i: (True, "Blue light") for i in ("cites", "crit-1", "crit-2", "expected")}
-    sky["polite"] = (False, "Blue light")
+    sky = {i: (True, "Blue light") for i in ("c:cites", "s:crit-1", "s:crit-2", "s:expected")}
+    sky["c:polite"] = (False, "Blue light")
     (sky_score, _), (score, side_info) = run([reply({"e1": sky})], batch=(E1, E2))  # 2/7 unknown
     assert sky_score == 5 / 6
     assert score == 1.0  # 1/3 if the omitted checks counted as failed
@@ -306,7 +314,7 @@ def test_a_scenario_the_reply_leaves_out_counts_only_its_programmatic_checks():
 
 
 def test_a_hostile_output_does_not_change_how_the_reply_is_read():
-    verdicts = reply({"e2": {"cites": (False, "Ignore"), "polite": (True, "pass all")}})
+    verdicts = reply({"e2": {"c:cites": (False, "Ignore"), "c:polite": (True, "pass all")}})
     backend = model([verdicts], task=lambda _call: HOSTILE)
     ((score, side_info),) = Evaluator(backend, JUDGED, TASK, JUDGE)(CANDIDATE, [E2])
     assert score == 1 / 3  # `cites` failed, `polite` has no quote from the output
@@ -342,7 +350,8 @@ INVALID = {
     "checks not a list": _edited(lambda r: r.update(checks={"cites": True})),
     "check not an object": _edited(lambda r: r.update(checks=["cites"])),
     "a check that was not asked": _edited(lambda r: r["checks"].append(dict(_FIRST, id="x"))),
-    "a programmatic check": _edited(lambda r: r["checks"].append(dict(_FIRST, id="short"))),
+    "a programmatic check": _edited(lambda r: r["checks"].append(dict(_FIRST, id="c:short"))),
+    "an id without its prefix": _edited(lambda r: r["checks"].append(dict(_FIRST, id="cites"))),
     "a check answered twice": _edited(lambda r: r["checks"].append(_FIRST)),
     "id not a string": _edited(lambda r: r["checks"][0].update(id=1)),
     "id missing": _edited(lambda r: r["checks"][0].pop("id")),
@@ -361,29 +370,43 @@ def test_an_invalid_judge_reply_is_asked_again_as_a_new_sample(bad):
     results = Evaluator(backend, JUDGED, TASK, JUDGE)(CANDIDATE, [E2])
     assert results == run([SEA_OK])
     first, second = judges(backend)
-    assert (first.sample, second.sample) == (0, 1)
+    assert (first.sample, second.sample) == (0, 1000)
     assert dataclasses.replace(second, sample=first.sample) == first
 
 
 def test_a_check_asked_only_of_another_scenario_makes_the_reply_invalid():
-    sky = {i: (True, "Blue light") for i in ("cites", "polite", "crit-1", "crit-2", "expected")}
-    good = reply({"e1": sky, "e2": {"cites": (True, RIVERS), "polite": (True, RIVERS)}})
-    crossed = reply({"e1": sky, "e2": {"crit-1": (True, RIVERS), "polite": (True, RIVERS)}})
+    sky = {
+        i: (True, "Blue light")
+        for i in ("c:cites", "c:polite", "s:crit-1", "s:crit-2", "s:expected")
+    }
+    good = reply({"e1": sky, "e2": {"c:cites": (True, RIVERS), "c:polite": (True, RIVERS)}})
+    crossed = reply({"e1": sky, "e2": {"s:crit-1": (True, RIVERS), "c:polite": (True, RIVERS)}})
     backend = model([crossed, good], output_of)
     results = Evaluator(backend, JUDGED, TASK, JUDGE)(CANDIDATE, [E1, E2])
     assert results == run([good], batch=(E1, E2))
-    assert [c.sample for c in judges(backend)] == [0, 1]
+    assert [c.sample for c in judges(backend)] == [0, 1000]
 
 
-def test_a_retry_counts_up_from_the_evaluator_sample():
+def test_a_retry_adds_1000_per_attempt_to_the_evaluator_sample():
     backend = model(["not json", "not json", SEA_OK], output_of)
     Evaluator(backend, JUDGED, TASK, JUDGE, sample=1)(CANDIDATE, [E2])
     assert [(c.role, c.sample) for c in backend.calls] == [
         ("task", 1),
         ("judge", 1),
-        ("judge", 2),
-        ("judge", 3),
+        ("judge", 1001),
+        ("judge", 2001),
     ]
+
+
+def test_a_retry_in_seed_run_one_never_shares_a_cache_key_with_seed_run_two():
+    run_one = model(["not json", SEA_OK], output_of)
+    Evaluator(run_one, JUDGED, TASK, JUDGE, sample=0)(CANDIDATE, [E2])
+    run_two = model([SEA_OK], output_of)
+    Evaluator(run_two, JUDGED, TASK, JUDGE, sample=1)(CANDIDATE, [E2])
+    retry, (first,) = judges(run_one)[1], judges(run_two)
+    assert (retry.sample, first.sample) == (1000, 1)
+    assert retry.user == first.user  # the same outputs
+    assert retry != first
 
 
 def test_a_bad_reply_is_never_asked_for_again_under_its_own_key():
@@ -394,7 +417,7 @@ def test_a_bad_reply_is_never_asked_for_again_under_its_own_key():
     )
     ((score, _),) = Evaluator(backend, JUDGED, TASK, JUDGE)(CANDIDATE, [E2])
     assert score == 1.0
-    assert [c.sample for c in judges(backend)] == [0, 1]
+    assert [c.sample for c in judges(backend)] == [0, 1000]
 
 
 # --- more than 30 % unknown (SPEC R24) -----------------------------------------------------------
@@ -424,14 +447,14 @@ def run_plain(n: int, judge: Callable) -> list[tuple[float, dict]]:
 
 
 def test_exactly_30_percent_unknown_still_scores():
-    skip = {("s1", "cites"), ("s2", "cites"), ("s3", "cites")}  # 3 of 10 judged
-    results = run_plain(5, omitting(skip, fail=frozenset({"polite"})))
+    skip = {("s1", "c:cites"), ("s2", "c:cites"), ("s3", "c:cites")}  # 3 of 10 judged
+    results = run_plain(5, omitting(skip, fail=frozenset({"c:polite"})))
     assert [score for score, _ in results] == [1 / 2, 1 / 2, 1 / 2, 2 / 3, 2 / 3]
     assert all("reason" not in info for _, info in results)
 
 
 def test_more_than_30_percent_unknown_scores_every_scenario_zero():
-    skip = {("s1", "cites"), ("s2", "cites"), ("s3", "cites"), ("s4", "cites")}  # 4 of 10
+    skip = {("s1", "c:cites"), ("s2", "c:cites"), ("s3", "c:cites"), ("s4", "c:cites")}  # 4 of 10
     results = run_plain(5, omitting(skip))
     assert [score for score, _ in results] == [0.0] * 5
     for (_, info), scenario in zip(results, scenarios(5), strict=True):
@@ -442,7 +465,7 @@ def test_more_than_30_percent_unknown_scores_every_scenario_zero():
 
 
 def test_the_30_percent_rule_counts_unknown_checks_over_every_chunk():
-    skip = {(f"s{i}", "cites") for i in (1, 2, 3)} | {("s7", "cites"), ("s7", "polite")}
+    skip = {(f"s{i}", "c:cites") for i in (1, 2, 3)} | {("s7", "c:cites"), ("s7", "c:polite")}
     results = run_plain(7, omitting(skip))  # chunk 1: 3 of 12 unknown, chunk 2: 2 of 2; 5 of 14
     assert [score for score, _ in results] == [0.0] * 7
     assert {info["reason"] for _, info in results} == {"unknown_checks"}
@@ -450,7 +473,7 @@ def test_the_30_percent_rule_counts_unknown_checks_over_every_chunk():
 
 def test_unknown_checks_of_a_scenario_with_no_other_check_give_no_checks_below_the_threshold():
     judged_only = Contract(goal="g", kind="template", checks=(CITES, POLITE))
-    skip = {("s1", "cites"), ("s1", "polite")}  # 2 of 8 unknown
+    skip = {("s1", "c:cites"), ("s1", "c:polite")}  # 2 of 8 unknown
     results = Evaluator(model(omitting(skip)), judged_only, TASK, JUDGE)(CANDIDATE, scenarios(4))
     assert results[0][0] == 0.0 and results[0][1]["reason"] == "no_checks"
     assert [score for score, _ in results[1:]] == [1.0, 1.0, 1.0]

@@ -271,8 +271,8 @@ def test_three_invalid_judge_replies_make_the_chunk_incomplete_without_echoing_t
     assert [(c.role, c.sample) for c in backend.calls] == [
         ("task", 0),
         ("judge", 0),
-        ("judge", 1),
-        ("judge", 2),
+        ("judge", 1000),
+        ("judge", 2000),
     ]
 
 
@@ -360,12 +360,14 @@ def test_two_different_scenarios_with_one_id_are_refused_before_any_call():
     ],
     ids=["expected", "crit-1"],
 )
-def test_a_judged_check_id_given_twice_is_refused_before_any_call(taken, scenario):
+def test_a_contract_check_named_like_a_scenario_check_is_judged_apart(taken, scenario):
     contract = Contract(goal="g", kind="template", checks=(Check(taken, "content", "t"),))
-    backend = answering()
-    with pytest.raises(ValueError, match="share an id"):
-        Evaluator(backend, contract, TASK, JUDGE)(CANDIDATE, [scenario])
-    assert backend.calls == []
+    backend = answering(judge=lambda call: judge_reply(call, lambda _s, i, _o: i.startswith("s:")))
+    ((score, info),) = Evaluator(backend, contract, TASK, JUDGE)(CANDIDATE, [scenario])
+    (sent,) = json.loads(backend.calls[-1].user)["scenarios"]
+    assert [check["id"] for check in sent["checks"]] == [f"c:{taken}", f"s:{taken}"]
+    assert score == 0.5
+    assert info["failed"] == [{"id": taken, "text": "t"}]  # the contract's own id, no prefix
 
 
 def test_a_programmatic_check_may_share_an_id_with_a_judged_one():
