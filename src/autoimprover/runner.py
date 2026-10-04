@@ -15,10 +15,10 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, TextIO
+from dataclasses import dataclass, field
+from typing import Any, NamedTuple, TextIO
 
-from autoimprover.backend import BudgetedBackend, Clock
+from autoimprover.backend import BudgetedBackend, CachedBackend, Clock
 from autoimprover.contract import check, extract_contract, literals_preserved
 from autoimprover.evaluator import Evaluator
 from autoimprover.runstore import RunStore
@@ -33,7 +33,6 @@ from autoimprover.types import (
     MINIBATCH_SIZE,
     SEARCH_CLOCK_SHARE,
     SYSTEM_PROMPT_MAX_BYTES,
-    Backend,
     BackendError,
     BatchEvaluator,
     BudgetExhausted,
@@ -128,11 +127,9 @@ _TOKEN = re.compile(r"\w+|[^\w\s]")
 
 
 def count_tokens(text: str) -> int:
-    """An approximation of a model's token count, with no tokenizer to pin (no new dependency):
-    every run of word characters (letters, digits, underscore, in any script) is one token and
-    every other character that is not whitespace is one more. Real tokenizers split long words
-    further, so this undercounts them; it counts the original and the candidate alike, and the
-    cap of SPEC R7 compares the two."""
+    """A model's token count, approximately and with no tokenizer to pin: each run of word
+    characters (any script) is one token, each other visible character one more. It undercounts
+    long words, but counts the original and the candidate alike, as the cap of SPEC R7 needs."""
     return sum(1 for _ in _TOKEN.finditer(text))
 
 
@@ -307,8 +304,7 @@ _REASONS = {
 _UNVERIFIED = "beats the original on the valset; not verified on a holdout (--trust-search)"
 
 
-@dataclass(frozen=True)
-class _Seed:
+class _Seed(NamedTuple):
     """The original's two holdout runs on the target model: their mean, their difference and the
     gain a candidate must exceed (SPEC R12)."""
 
@@ -321,7 +317,7 @@ def improve(
     prompt: str,
     plan: Plan,
     *,
-    backend: Backend,
+    backend: CachedBackend,
     budgeted: BudgetedBackend,
     clock: Clock,
     store: RunStore,
@@ -331,10 +327,11 @@ def improve(
     log: TextIO,
 ) -> Outcome:
     """Improve `prompt` under `plan` (ARCHITECTURE section 1, from the contract on). `backend` is
-    the run's `Cached(Resilient(Budgeted))` stack and `budgeted` the Budgeted inside it, its limit
-    still `budget - final`; `clock` is the run's clock, `store` its open run folder. `scenarios`
-    are the user's examples, or None to synthesise them; the run folder's contract and scenarios
-    win over a new extraction, `kind` and `scenarios` (a resumed run). `log` takes GEPA's output.
+    the run's `Cached(Resilient(Budgeted))` stack, also the search's tombstone cache (SPEC R22),
+    `budgeted` the Budgeted inside it, its limit still `budget - final`; `clock` the run's clock,
+    `store` its open run folder. `scenarios` are the user's examples, or None to synthesise them;
+    the run folder's contract and scenarios win over a new extraction, `kind` and `scenarios` (a
+    resumed run). `log` takes GEPA's output.
 
     Fewer than 8 scenarios without `trust_search` keep the original before any call (SPEC R11).
     A BudgetExhausted outside the search keeps the original (SPEC R17); a CallFailed outside it
@@ -351,32 +348,33 @@ def improve(
         raise BackendError(str(error)) from error
 
 
+@dataclass
 class _Run:
     """One improve run: its fixed inputs, the steps of the flow, and the Outcome fields every
     ending shares: calls used, run folder and, once the search has ended, its stop cause and the
     original's valset score."""
 
-    def __init__(
-        self, prompt: str, plan: Plan, backend: Backend, budgeted: BudgetedBackend, store: RunStore
-    ) -> None:
-        self.prompt, self.plan, self.models = prompt, plan, plan.models
-        self.backend, self.budgeted, self.store = backend, budgeted, store
-        self.searched: dict[str, Any] = {}
+    prompt: str
+    plan: Plan
+    backend: CachedBackend
+    budgeted: BudgetedBackend
+    store: RunStore
+    searched: dict[str, Any] = field(default_factory=dict)
 
     def flow(
         self, given: list[Scenario] | None, kind: Kind | None, clock: Clock, log: TextIO
     ) -> Outcome:
-        plan, prompt = self.plan, self.prompt
+        plan, prompt, models = self.plan, self.prompt, self.plan.models
         contract = self.store.contract()
         if contract is None:
-            contract = extract_contract(self.backend, self.models.reflect, prompt, kind)
+            contract = extract_contract(self.backend, models.reflect, prompt, kind)
             self.store.save_contract(contract)
         template = reflection_template(
             contract, plan.strictness, count_tokens(prompt), plan.allow_growth
         )
         synthesising = given is None
         if given is None:
-            given = synthesize(self.backend, self.models.reflect, prompt, contract)
+            given = synthesize(self.backend, models.reflect, prompt, contract)
         if self.store.scenarios() is None:
             self.store.save_scenarios(given)
         costs = fixed_costs(plan, len(given), synthesising)
@@ -389,9 +387,9 @@ class _Run:
             seed=prompt,
             train=parts.train,
             val=parts.val,
-            make_evaluator=lambda b: Evaluator(b, contract, self.models.task, self.models.judge),
+            make_evaluator=lambda b: Evaluator(b, contract, models.task, models.judge),
             backend=self.backend,
-            reflect_model=self.models.reflect,
+            reflect_model=models.reflect,
             reflection_template=template,
             rng_seed=plan.seed,
             calls_left_at_start=(plan.budget - costs.final) - start[0],
@@ -401,6 +399,7 @@ class _Run:
             clock_share=SEARCH_CLOCK_SHARE,
             log=log,
             merge=plan.merge,
+            cache=self.backend,
         )
         self.searched = {"stop": result.stop, "search_score_before": result.seed_val_score}
         self.budgeted.raise_limit(plan.budget, plan.wall_clock_s)
@@ -412,7 +411,7 @@ class _Run:
         self, contract: Contract, text: str, holdout: Sequence[Scenario], sample: int = 0
     ) -> float:
         """`text` scored on the holdout on the target model, as the user will run it (SPEC R14a)."""
-        models = self.models
+        models = self.plan.models
         evaluator = Evaluator(self.backend, contract, models.target, models.judge, sample)
         return score_holdout(evaluator, text, holdout)
 
@@ -443,7 +442,7 @@ class _Run:
         return [
             (candidate, ratio)
             for _score, _index, candidate, ratio in best
-            if not check(self.backend, self.models.judge, contract, prompt, candidate.text)
+            if not check(self.backend, plan.models.judge, contract, prompt, candidate.text)
         ]
 
     def confirmed(

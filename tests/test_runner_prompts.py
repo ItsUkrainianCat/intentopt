@@ -254,6 +254,7 @@ def test_the_search_gets_train_and_val_only_its_share_of_the_budget_and_the_plan
     template = runner.reflection_template(contract, "balanced", runner.count_tokens(PROMPT), True)
     assert kw["reflection_template"] == template
     assert isinstance(kw["backend"], CachedBackend) and isinstance(kw["log"], io.StringIO)
+    assert kw["cache"] is kw["backend"]  # the run's cache keeps the in-search tombstones
     evaluator = kw["make_evaluator"](probe := ScriptedBackend(model()))
     assert isinstance(evaluator, Evaluator)
     evaluator(PROMPT, parts.val[:1])

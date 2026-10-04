@@ -353,6 +353,24 @@ def test_a_search_cut_short_by_its_clock_share_still_confirms_its_finalist(tmp_p
     assert raw.clock.t < 600
 
 
+def test_a_call_that_failed_inside_the_search_is_replayed_as_failed_after_a_resume(tmp_path):
+    probe = Raw()
+    improve(tmp_path / "probe", probe)
+    reflect = next(c for c in probe.calls if c.role == "reflect")  # skipped, then asked again
+    reference_raw = Raw(fails=lambda call: call == reflect)
+    reference = improve(tmp_path / "reference", reference_raw)
+    after = max(i for i, c in enumerate(reference_raw.calls, start=1) if c == reflect) + 1
+    run_id = new_run(tmp_path / "run")
+    with pytest.raises(Cut):
+        improve(tmp_path / "run", Raw(fails=lambda call: call == reflect, cut_at=after), run_id)
+    resumed = Raw()  # the model would answer it now: only the tombstone keeps the original path
+    outcome = improve(tmp_path / "run", resumed, run_id)
+    assert reflect not in resumed.calls and reference.reason_code == "improved"
+    assert replace(outcome, calls_used=0, run_dir="") == replace(
+        reference, calls_used=0, run_dir=""
+    )
+
+
 def stages(calls: list[Call]) -> dict[str, int]:
     """The 1-based index of a live call in each stage of a run."""
     reflects = [i for i, c in enumerate(calls, start=1) if c.role == "reflect"]
