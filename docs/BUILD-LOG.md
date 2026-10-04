@@ -268,3 +268,5 @@ Lows fixed on the way: safety F20 (`checkpoint.json` is now read), F22 (which de
 
 - [x] G3 round 2 vote DONE 2026-10-03 21:42: REJECTED 0-6 (record above). Fix pass written; `just check` green.
 - [ ] Pre-flight reviews of this fix (consistency and adversarial, non-voting), then G3 round 3 on the fix commit. Round 3 is the last proposal the kit allows before the decision goes to the user (BUILD-LOOP step 8).
+
+- [x] USER STEP done 2026-10-04 10:50: `git push origin main` pushed fbccc3b..234d951 to the private origin (G3 rounds 1 and 2 with all fixes). The repository stays private; going public needs the user's explicit yes and is not planned before the G6 vote and the user's live check.
