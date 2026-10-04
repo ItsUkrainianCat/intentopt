@@ -346,6 +346,23 @@ def test_a_call_that_failed_outside_the_search_is_tried_again_on_resume_and_stil
     assert outcome.calls_used == 3 + len(resumed.calls)  # three failed attempts, then this run
 
 
+def test_time_running_out_in_the_final_steps_keeps_the_original_and_its_measured_scores(tmp_path):
+    clock, healthy = FakeClock(), happy()
+
+    def script(call: Call) -> str:  # a finalist run on the target model takes 1000 s a call
+        clock.advance(1000.0 if call.model == MODELS.target and MARKER in call.user else 0.0)
+        return healthy(call)
+
+    raw = Raw(script, clock=clock)
+    outcome = improve(tmp_path, raw)
+    assert (outcome.reason_code, outcome.prompt, outcome.stop) == (
+        "unconfirmed_out_of_budget",
+        PROMPT,
+        "budget",
+    )
+    assert (outcome.score_before, outcome.noise, outcome.search_score_before) == (0.0, 0.0, 0.0)
+
+
 def test_a_search_cut_short_by_its_clock_share_still_confirms_its_finalist(tmp_path):
     raw = Raw(duration_s=10.0)
     outcome = improve(tmp_path, raw, plan=replace(PLAN, wall_clock_s=600))

@@ -350,16 +350,17 @@ def improve(
 
 @dataclass
 class _Run:
-    """One improve run: its fixed inputs, the steps of the flow, and the Outcome fields every
-    ending shares: calls used, run folder and, once the search has ended, its stop cause and the
-    original's valset score."""
+    """One improve run: its fixed inputs, the steps of the flow, and what every ending reports:
+    calls used, run folder and, in `measured`, what was measured before it: the original's
+    holdout score and noise once both seed runs ended, the stop cause and the original's valset
+    score once the search ended (SPEC R12, R17)."""
 
     prompt: str
     plan: Plan
     backend: CachedBackend
     budgeted: BudgetedBackend
     store: RunStore
-    searched: dict[str, Any] = field(default_factory=dict)
+    measured: dict[str, Any] = field(default_factory=dict)
 
     def flow(
         self, given: list[Scenario] | None, kind: Kind | None, clock: Clock, log: TextIO
@@ -381,7 +382,7 @@ class _Run:
         parts = split(given, plan.seed)
         seed = self.seed_runs(contract, parts.holdout) if parts.holdout else None
         if seed is not None and seed.score >= ALREADY_STRONG:
-            return self.outcome("already_strong", score_before=seed.score, noise=seed.noise)
+            return self.outcome("already_strong")
         start = self.store.search_start_or_record(self.budgeted.used, clock.elapsed())
         result = run_search(
             seed=prompt,
@@ -401,7 +402,7 @@ class _Run:
             merge=plan.merge,
             cache=self.backend,
         )
-        self.searched = {"stop": result.stop, "search_score_before": result.seed_val_score}
+        self.measured |= {"stop": result.stop, "search_score_before": result.seed_val_score}
         self.budgeted.raise_limit(plan.budget, plan.wall_clock_s)
         if seed is None:
             return self.trusted(contract, result)
@@ -420,7 +421,9 @@ class _Run:
         call, not a cache hit (SPEC R12)."""
         first, second = (self.on_target(contract, self.prompt, holdout, s) for s in (0, 1))
         noise = abs(first - second)
-        return _Seed((first + second) / 2, noise, max(MIN_THRESHOLD, 2 * noise))
+        seed = _Seed((first + second) / 2, noise, max(MIN_THRESHOLD, 2 * noise))
+        self.measured |= {"score_before": seed.score, "noise": seed.noise}
+        return seed
 
     def finalists(
         self, contract: Contract, result: SearchResult, above: float | None = None
@@ -458,13 +461,11 @@ class _Run:
                     "improved",
                     candidate,
                     verified=True,
-                    score_before=seed.score,
                     score_after=after,
-                    noise=seed.noise,
                     margin=margin,
                     length_ratio=ratio,
                 )
-        return self.outcome("no_reliable_improvement", score_before=seed.score, noise=seed.noise)
+        return self.outcome("no_reliable_improvement")
 
     def trusted(self, contract: Contract, result: SearchResult) -> Outcome:
         """Without a holdout (`--trust-search`): the best finalist that beats the original on the
@@ -481,7 +482,7 @@ class _Run:
     ) -> Outcome:
         """The Outcome `code`: the candidate as the answer, with its lineage notes and valset
         score, or the original unchanged."""
-        fields = {**self.searched, **fields}
+        fields = {**self.measured, **fields}
         if candidate is not None:
             fields |= {"changes": candidate.notes, "search_score_after": candidate.val_score}
         return Outcome(
