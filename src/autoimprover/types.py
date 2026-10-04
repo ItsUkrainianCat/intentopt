@@ -50,6 +50,85 @@ EXIT_INTERRUPTED = 130
 # A run id, the only form `--resume` and `clean` accept (ADR-007): never a path.
 RUN_ID_PATTERN = r"\d{8}-\d{6}-[0-9a-f]{8}(-\d+)?"
 
+# JSON schemas of the replies the model must give (SPEC R18 `--json-schema`; wire formats in
+# ADR-008). Tests build matching replies with `tests/fakes.py`.
+_CHECK_SCHEMA = {
+    "type": "object",
+    "required": ["id", "group", "text", "rule", "arg"],
+    "properties": {
+        "id": {"type": "string"},
+        "group": {"enum": ["format", "constraints", "content"]},
+        "text": {"type": "string"},
+        "rule": {"enum": [None, "contains", "not_contains", "max_chars", "min_chars"]},
+        "arg": {"type": ["string", "null"]},
+    },
+}
+INTAKE_SCHEMA = {
+    "type": "object",
+    "required": [
+        "goal",
+        "kind",
+        "keep",
+        "constraints",
+        "output_format",
+        "language",
+        "tone",
+        "checks",
+    ],
+    "properties": {
+        "goal": {"type": "string"},
+        "kind": {"enum": ["template", "task"]},
+        "keep": {"type": "array", "items": {"type": "string"}},
+        "constraints": {"type": "array", "items": {"type": "string"}},
+        "output_format": {"type": "string"},
+        "language": {"type": "string"},
+        "tone": {"type": "string"},
+        "checks": {"type": "array", "items": _CHECK_SCHEMA},
+    },
+}
+SYNTH_SCHEMA = {
+    "type": "object",
+    "required": ["scenarios"],
+    "properties": {
+        "scenarios": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "input"],
+                "properties": {"id": {"type": "string"}, "input": {"type": "string"}},
+            },
+        }
+    },
+}
+JUDGE_SCHEMA = {
+    "type": "object",
+    "required": ["results"],
+    "properties": {
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["scenario", "checks"],
+                "properties": {
+                    "scenario": {"type": "string"},
+                    "checks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "pass", "quote"],
+                            "properties": {
+                                "id": {"type": "string"},
+                                "pass": {"type": "boolean"},
+                                "quote": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    },
+}
+
 # Programmatic check rules. `regex` is not here on purpose: a pattern written by a model would run
 # in this process (SPEC R19).
 PROGRAMMATIC_RULES = ("contains", "not_contains", "max_chars", "min_chars")
@@ -129,10 +208,14 @@ class Call:
 
 @dataclass(frozen=True)
 class Reply:
+    """`duration_s` is how long the call took when it ran live; a cache hit carries the stored
+    value, so the search meter advances the same on a replay (ADR-004)."""
+
     text: str
     cached: bool = False
     tokens_in: int = 0
     tokens_out: int = 0
+    duration_s: float = 0.0
 
 
 class Backend(Protocol):
@@ -271,7 +354,9 @@ class Outcome:
     """The result of a run. `prompt` is the original when status is "unchanged" (SPEC R3).
 
     `verified` is True only when the holdout comparison on the target model decided the result;
-    a `--trust-search` win (SPEC R11) stays False. `stop` says why the search ended.
+    a `--trust-search` win (SPEC R11) stays False. `stop` says why the search ended. `changes` are
+    the 3 to 6 lines of "what changed and why" (SPEC R2). `score_*` are holdout scores on the target
+    model; `search_score_*` are on the search (task) model, reported when it differs (R14a).
     """
 
     status: Literal["improved", "unchanged"]
@@ -279,8 +364,11 @@ class Outcome:
     reason: str
     verified: bool = False
     stop: StopCause = "finished"
+    changes: tuple[str, ...] = ()
     score_before: float | None = None
     score_after: float | None = None
+    search_score_before: float | None = None
+    search_score_after: float | None = None
     noise: float | None = None
     margin: float | None = None
     length_ratio: float | None = None

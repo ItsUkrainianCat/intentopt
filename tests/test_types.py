@@ -32,6 +32,7 @@ from autoimprover.types import (
     Models,
     Outcome,
     Plan,
+    Reply,
     canonical_model,
     default_models,
 )
@@ -217,3 +218,25 @@ def test_spec_constants_are_pinned():
     assert (LENGTH_FLOOR_TOKENS, PROMPT_MAX_CHARS) == (40, 20_000)
     assert (HOLDOUT_MAX, JUDGE_BATCH_MAX) == (6, 6)
     assert BUDGET_CEILING == 300
+
+
+def test_a_reply_carries_the_duration_the_search_meter_needs():
+    assert Reply(text="x").duration_s == 0.0
+    assert Reply(text="x", cached=True, duration_s=4.5).duration_s == 4.5
+
+
+def test_outcome_carries_the_report_fields_of_r2_and_r14a():
+    out = Outcome(
+        status="improved",
+        prompt="p",
+        reason="r",
+        verified=True,
+        changes=("tightened the opening", "kept the output format"),
+        score_before=0.5,
+        score_after=0.7,
+        search_score_before=0.4,
+        search_score_after=0.8,
+    )
+    assert len(out.changes) == 2
+    assert (out.search_score_before, out.search_score_after) == (0.4, 0.8)
+    assert Outcome(status="unchanged", prompt="p", reason="r").changes == ()
