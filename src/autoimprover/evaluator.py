@@ -57,13 +57,21 @@ _JUDGE_SYSTEM = (
     "with JSON valid for the given schema: one result per scenario, by its id, holding its checks "
     "by their ids, and no scenario or check that was not asked."
 )
+# The judge sees each check id prefixed by its origin, contract or scenario, so a contract check
+# named like a scenario's own (`expected`, `crit-1`) can never clash with it (ADR-008).
+_CONTRACT_PREFIX = "c:"
+_SCENARIO_PREFIX = "s:"
 _EXPECTED_ID = "expected"
 _EXPECTED_TEXT = "the output agrees with the reference answer in substance: "
 _EXCERPT_CHARS = 300
 # A call that leaves more than this share of its judged checks unknown scores 0 (SPEC R24).
 _UNKNOWN_MAX_PERCENT = 30
+# A retry after an invalid judge reply adds this to the sample per attempt, so it can never take the
+# cache key of another run's call (the second seed run is sample 1; ADR-004, ADR-008).
+_RETRY_SAMPLE_STEP = 1000
 
-Answers = dict[str, dict[str, tuple[bool, str]]]  # scenario id -> check id -> (pass, quote)
+Answers = dict[str, dict[str, tuple[bool, str]]]  # scenario id -> id sent -> (pass, quote)
+Judged = list[tuple[str, Check]]  # the judged checks of a scenario, each with the id sent
 Entry = tuple[float, dict[str, Any]]
 
 
@@ -86,7 +94,7 @@ _RULES: dict[str, Callable[[str, str], bool]] = {
 class Evaluator:
     """Implements `types.BatchEvaluator` for one contract, one task model and one judge model.
     Every call carries `sample`, so a second run of the same scenarios is a new call and not a
-    cache hit; an invalid judge reply is asked again as `sample + 1`, then `sample + 2`."""
+    cache hit; an invalid judge reply is asked again as `sample + 1000`, then `sample + 2000`."""
 
     def __init__(
         self,
@@ -105,8 +113,8 @@ class Evaluator:
     def __call__(self, candidate: str, scenarios: Sequence[Scenario]) -> list[Entry]:
         """One (score, side_info) per scenario, in order. A scenario given twice (GEPA pads a
         minibatch with repeats) runs once and fills each of its places with its own copy. Two
-        different scenarios with one id, or a scenario whose judged checks share an id, raise
-        ValueError before any call: the judge's reply could not tell them apart."""
+        different scenarios with one id raise ValueError before any call: the judge's reply could
+        not tell them apart."""
         distinct = list(dict.fromkeys(scenarios))
         if len({scenario.id for scenario in distinct}) != len(distinct):
             raise ValueError(
@@ -118,8 +126,8 @@ class Evaluator:
         answers = self._judge(distinct, outputs, judged, failures)
         verdicts = {
             scenario.id: [
-                (check, _verdict(answers.get(scenario.id, {}).get(check.id), outputs[scenario.id]))
-                for check in judged[scenario.id]
+                (check, _verdict(answers.get(scenario.id, {}).get(sent), outputs[scenario.id]))
+                for sent, check in judged[scenario.id]
             ]
             for scenario in distinct
             if scenario.id not in failures
@@ -164,7 +172,7 @@ class Evaluator:
         self,
         scenarios: list[Scenario],
         outputs: dict[str, str],
-        judged: dict[str, list[Check]],
+        judged: dict[str, Judged],
         failures: dict[str, CallFailed],
     ) -> Answers:
         """The judge's answers for the scenarios that have an output and a judged check, from one
@@ -174,7 +182,7 @@ class Evaluator:
         answers: Answers = {}
         for start in range(0, len(pending), JUDGE_BATCH_MAX):
             chunk = pending[start : start + JUDGE_BATCH_MAX]
-            asked = {scenario.id: {check.id for check in judged[scenario.id]} for scenario in chunk}
+            asked = {scenario.id: {sent for sent, _ in judged[scenario.id]} for scenario in chunk}
             try:
                 answers.update(self._ask_judge(self._judge_call(chunk, outputs, judged), asked))
             except CallFailed as e:
@@ -183,13 +191,12 @@ class Evaluator:
 
     def _ask_judge(self, call: Call, asked: dict[str, set[str]]) -> Answers:
         """The answers of a judge reply to `call`, which asked the checks `asked` (scenario id ->
-        check ids). A reply that is not valid is asked again under a new sample, a new cache key,
+        ids sent). A reply that is not valid is asked again under a new sample, a new cache key,
         at most CALL_RETRIES times, with the same messages; then CallFailed. Backend errors are not
         caught, and the reply text is never echoed."""
-        problem = ""
+        first, problem = call, ""
         for attempt in range(1 + CALL_RETRIES):
-            if attempt:
-                call = dataclasses.replace(call, sample=call.sample + 1)
+            call = dataclasses.replace(first, sample=first.sample + _RETRY_SAMPLE_STEP * attempt)
             reply = self._backend.complete(call)
             try:
                 return _answers(reply.text, asked)
@@ -200,27 +207,26 @@ class Evaluator:
             f"last: {problem}"
         )
 
-    def _judged(self, scenario: Scenario) -> list[Check]:
+    def _judged(self, scenario: Scenario) -> Judged:
         """The judged checks of one scenario, in the order the judge is asked them: the contract's,
-        then one per criteria string, then one for the expected answer (SPEC R11)."""
-        checks = [check for check in self._contract.checks if check.rule is None]
-        checks += [
+        then one per criteria string, then one for the expected answer (SPEC R11). Each comes
+        with the id the judge sees, prefixed by its origin; the Check keeps its own id for the
+        ASI."""
+        own = [
             Check(id=f"crit-{n}", group="content", text=text)
             for n, text in enumerate(scenario.criteria, start=1)
         ]
         if scenario.expected is not None:
-            checks.append(
+            own.append(
                 Check(id=_EXPECTED_ID, group="content", text=_EXPECTED_TEXT + scenario.expected)
             )
-        if len({check.id for check in checks}) != len(checks):
-            raise ValueError(
-                f"scenario {scenario.id!r}: two judged checks share an id (a contract check named "
-                f"{_EXPECTED_ID!r} or crit-N); the judge's reply could not tell them apart"
-            )
-        return checks
+        contract = [check for check in self._contract.checks if check.rule is None]
+        return [(_CONTRACT_PREFIX + check.id, check) for check in contract] + [
+            (_SCENARIO_PREFIX + check.id, check) for check in own
+        ]
 
     def _judge_call(
-        self, chunk: list[Scenario], outputs: dict[str, str], judged: dict[str, list[Check]]
+        self, chunk: list[Scenario], outputs: dict[str, str], judged: dict[str, Judged]
     ) -> Call:
         """One judge call for a chunk of scenarios: inputs, outputs and judged checks, never the
         candidate (ADR-002, ADR-008)."""
@@ -231,7 +237,7 @@ class Evaluator:
                     "input": scenario.input,
                     "output": outputs[scenario.id],
                     "checks": [
-                        {"id": check.id, "text": check.text} for check in judged[scenario.id]
+                        {"id": sent, "text": check.text} for sent, check in judged[scenario.id]
                     ],
                 }
                 for scenario in chunk
