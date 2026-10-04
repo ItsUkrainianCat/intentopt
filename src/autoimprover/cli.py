@@ -316,12 +316,15 @@ class _Session:
     def resume(self, opts: Options) -> int:
         """The run `--resume` names, with the prompt, plan, flags, scenarios, call count and
         clock saved in its folder (SPEC R22)."""
-        _resumable(opts)
-        make_raw = self.raw_maker()
+        ignored, make_raw = _ignored(opts), self.raw_maker()
         try:
             store = self.store = RunStore.resume(runs_root(), cast(str, opts.resume))
         except RunStoreError as error:
             raise UsageError(f"--resume: {error}") from error
+        if ignored:
+            self.emit.notice(
+                f"notice: --resume continues the saved run; ignoring {', '.join(ignored)}"
+            )
         kind, trust_search = _saved(store)
         saved = store.scenarios()
         costs = runner.fixed_costs(store.plan, len(saved or ()) or SYNTH_COUNT, not saved)
@@ -404,16 +407,14 @@ def _prompt(opts: Options) -> str:
     return read_prompt(argument, opts.file, piped)
 
 
-def _resumable(opts: Options) -> None:
-    """A resumed run keeps its saved prompt, plan and flags (SPEC R22): anything that would
-    change them is refused rather than silently ignored."""
-    if opts.words:
-        raise UsageError("--resume continues the saved prompt; drop the prompt argument")
-    extra = sorted(_flag(dest) for dest in opts.given - {"resume", "json"})
-    if extra:
-        raise UsageError(
-            f"--resume continues the run with its saved plan and flags; drop {', '.join(extra)}"
-        )
+def _ignored(opts: Options) -> list[str]:
+    """What a resumed run ignores, because its prompt, plan and flags come from its folder
+    (SPEC R22; ADR-007): every flag but --resume and --json, and a prompt argument. `--dry` is a
+    usage error: there is no plan left to choose."""
+    if opts.dry:
+        raise UsageError("--dry cannot be combined with --resume: a resumed run keeps its plan")
+    ignored = sorted(_flag(dest) for dest in opts.given - {"resume", "json"})
+    return ignored + ["the prompt argument"] * bool(opts.words)
 
 
 def _saved(store: RunStore) -> tuple[Kind | None, bool]:
