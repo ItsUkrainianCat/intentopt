@@ -30,3 +30,6 @@ ruvector.db
 runs/
 .gepa_cache/
 .dspy_cache/
+
+# Git worktrees of the work packages (docs/kit/BUILD-LOOP.md, G4)
+.worktrees/
