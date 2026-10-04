@@ -7,6 +7,12 @@ from between delimiter lines (ADR-006, ADR-008); `RunState` keeps what was compl
 search stopped and what aborted it. Its stopper reads only the `SearchMeter`, which charges each
 distinct call once, live or cached, so a resumed run replays to the same stop and the same
 candidates (SPEC R22). GEPA's progress, and anything printed meanwhile, goes to the run's log.
+
+A call that failed all its attempts is charged 0 s, and its tombstone stores 0 s: above
+`Resilient` the attempts' time is unknown, and a replay must charge what the original did.
+Known limit: a judge call holds outputs, not the candidate, so candidates with identical outputs
+on the same scenarios share it; a child's tombstone on it then fails the seed's scoring with no
+live call, which ends the run (exit 3), and a resume ends it the same way.
 """
 
 from __future__ import annotations
@@ -45,8 +51,7 @@ from autoimprover.types import (
     StopCause,
 )
 
-# GEPA splices feedback into these tokens with plain string replacement, so an instruction holding
-# one cannot become a candidate (ADR-006).
+# GEPA splices feedback into these tokens by plain replacement: never in a candidate (ADR-006).
 _PLACEHOLDERS = ("<curr_param>", "<side_info>")
 # "What changed and why" lines kept per reflection reply, and per lineage (ADR-006).
 _NOTES_PER_REPLY = 3
@@ -77,9 +82,8 @@ class Candidate:
 
 @dataclass(frozen=True)
 class SearchResult:
-    """Every candidate the search scored on the whole valset without a failed call, the original
-    prompt included (its score is `seed_val_score`), in the order they were completed; why the
-    search ended; and how many GEPA iterations it started."""
+    """Every candidate scored on the whole valset without a failed call, in completion order, the
+    original included (`seed_val_score`); why the search ended; the GEPA iterations started."""
 
     candidates: tuple[Candidate, ...]
     seed_val_score: float | None
@@ -133,9 +137,8 @@ class RunState:
         self._reflections = 0
 
     def next_reflect_index(self) -> int:
-        """The `sample` of the next reflection call: 0, 1, 2... over the whole search, retries
-        included, so a stalled search never gets a cached proposal for free and a replay asks
-        exactly the calls the original asked (ADR-004)."""
+        """The next reflection call's `sample`: 0, 1, 2... over the search, retries included, so
+        a stalled search pays for each proposal and a replay asks the same calls (ADR-004)."""
         index = self._reflections
         self._reflections += 1
         return index
@@ -171,8 +174,7 @@ class RunState:
             self.abort = Abort(cause, error)
 
     def raise_if_aborted(self) -> None:
-        """Re-raise the abort's original exception, so the caller exits 3, 4 or 1; a stop is
-        not an exit and raises nothing."""
+        """Re-raise the abort's original exception (exit 3, 4 or 1); a stop raises nothing."""
         if self.abort is not None:
             raise self.abort.error
 
@@ -185,12 +187,12 @@ class RunState:
         wall_clock_s: float,
         clock_share: float,
     ) -> StopperProtocol:
-        """GEPA's stop callback, asked before every iteration (ADR-004). It reads nothing but the
-        meter, this state and these arguments, never the saved call total or the clock, so a
-        replay stops where the original did (SPEC R17, R22). `calls_left_at_start` is
-        `(budget - final) - search_start[0]`. The calls condition is checked first: a search that
-        used its share of the calls ended normally ("budget"); otherwise the one-iteration
-        look-ahead on the clock share ends it as "clock". Each go-ahead counts an iteration."""
+        """GEPA's stop callback, asked before every iteration (ADR-004). It reads only the meter,
+        this state and these arguments, never the saved call total or the clock, so a replay
+        stops where the original did (SPEC R17, R22); `calls_left_at_start` is
+        `(budget - final) - search_start[0]`. The calls condition comes first ("budget", the
+        normal ending), then the clock share's one-iteration look-ahead ("clock"); each go-ahead
+        counts an iteration."""
         meter = self.meter
         share = clock_share * wall_clock_s
 
@@ -297,12 +299,11 @@ class EvaluatorAdapter:
 
 
 class ReflectionWrapper:
-    """GEPA's `reflection_lm` (ADR-004 item 3; ADR-008 reflect row). Each call asks the reflection
-    model with GEPA's rendered prompt (the feedback of SPEC R16 inside) as the user message and the
-    next running sample. The reply's instruction, between the first `INSTRUCTION_BEGIN` line and
-    the last `INSTRUCTION_END` line, goes back to GEPA in one outer fence (GEPA keeps everything
-    from the first fence to the last, so code blocks inside stay whole); the `- ` lines after it
-    are its notes (ADR-006).
+    """GEPA's `reflection_lm` (ADR-004 item 3; ADR-008 reflect row): asks the reflection model with
+    GEPA's rendered prompt (the feedback of SPEC R16) and the next running sample. The instruction
+    between the first `INSTRUCTION_BEGIN` line and the last `INSTRUCTION_END` line goes back in one
+    outer fence (GEPA keeps all from the first fence to the last, so inner code blocks stay whole);
+    the `- ` lines after it are its notes (ADR-006).
 
     GEPA swallows what this raises, so a failed call or an unusable reply is `SkipProposal` (GEPA
     retries, then skips the iteration, SPEC R24), and anything else is first recorded in the run
@@ -370,16 +371,15 @@ class RunLogger:
 
 @contextlib.contextmanager
 def _recording_failures(cache: CachedBackend | None, on: bool) -> Iterator[None]:
-    """`cache.record_failures` set to `on` for the block, then put back as it was."""
-    if cache is None:
-        yield
-        return
-    before = cache.record_failures
-    cache.record_failures = on
+    """`cache.record_failures` set to `on` for the block, then put back, also on a raise."""
+    before = on if cache is None else cache.record_failures
+    if cache is not None:
+        cache.record_failures = on
     try:
         yield
     finally:
-        cache.record_failures = before
+        if cache is not None:
+            cache.record_failures = before
 
 
 class _Metered:
@@ -419,14 +419,15 @@ def run_search(
     log: TextIO,
     merge: bool = False,
     state: RunState | None = None,
+    cache: CachedBackend | None = None,
 ) -> SearchResult:
     """GEPA's search from `seed`, minibatches from `train`, acceptance on `val`, until the stopper
     ends it (SPEC R15, R15a, R17); the evaluator and the reflection calls use `backend` through
     the meter. GEPA runs with `parallel=False`, no run folder, the hybrid frontier, strict
     improvement, merge only with `merge`, and its output (and anything printed meanwhile) in `log`.
-    When `backend` is the run's `CachedBackend`, its `record_failures` is on for the search except
-    while the seed is scored, then put back: an in-search failure replays as failed on resume, the
-    one that ended the run is tried again (SPEC R22). A stop returns every candidate completed
+    `cache`, the run's disk cache, has `record_failures` on for the search except while the seed
+    is scored, then put back, also on a raise: an in-search failure replays as failed on resume,
+    the one that ended the run is tried again (SPEC R22). A stop returns every candidate completed
     before it; an abort raises its original exception (`RunState.raise_if_aborted`)."""
     if state is None:
         state = RunState()
@@ -455,7 +456,6 @@ def run_search(
         merge=MergeConfig() if merge else None,
         stop_callbacks=[stopper],
     )
-    cache = backend if isinstance(backend, CachedBackend) else None
     adapter = EvaluatorAdapter(make_evaluator(metered), state, seed=seed, val=val, cache=cache)
     with (
         contextlib.redirect_stdout(log),
