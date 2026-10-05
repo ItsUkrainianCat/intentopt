@@ -91,7 +91,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | Module | Responsibility and public interface | Spec |
 |---|---|---|
 | `types.py` | dataclasses, protocols, constants shared by all: `Backend`, `BatchEvaluator`, `Call`, `Reply`, `Contract`, `Check`, `Scenario`, `Models`, `Plan`, `Outcome` (with `changes` and the search-model scores), the reply schemas `INTAKE_SCHEMA`, `SYNTH_SCHEMA`, `JUDGE_SCHEMA`, exceptions (`CallError`, `CallFailed`, `BackendError`, `BudgetExhausted`, `SessionNotLockedDown`), exit codes, `canonical_model`, `default_models` | all |
-| `claude_cli.py` | `ClaudeCliBackend(clock, ...)`: the only builder of the `claude -p` command, scrubbed environment, per-call timeout, lockdown check on the first live call (section 9); depends on `Clock` from `backend.py` | R17, R18, R19 |
+| `claude_cli.py` | `ClaudeCliBackend(clock, ...)`: the only builder of the `claude -p` command, scrubbed environment, per-call timeout, lockdown check on every call from the `init` line of the stream (ADR-009, section 9); depends on `Clock` from `backend.py` | R17, R18, R19 |
 | `backend.py` | `Clock`; `BudgetedBackend(raw, limit, used, clock, deadline)` with `raise_limit`, `ResilientBackend(inner)` (failure count per model id), `CachedBackend(inner, store)` (entries store the call's `duration_s`; tombstones replay as `CallFailed`; `Reply` carries the duration for the search meter); the layers of section 6 (everything except the `claude -p` process) | R17, R19, R20, R24 |
 | `runformat.py` | the pure JSON formats of the run folder: field specs, validators, parse functions for manifest, plan, checkpoint, contract, scenarios and cache entries, the cache key hash; no file I/O, imported only by `runstore.py` | R22, R23 |
 | `runstore.py` | `RunStore`: `open_or_create` and `resume(id)` (both take `run.lock` first; `resume` then reads manifest, checkpoint, contract and scenarios), `save_progress(calls_used, elapsed_s)`, `search_start_or_record(used, elapsed)`, `cache_get/put`, `log_call`, `record_failure(call, error, duration_s)` (tombstones; the cache key is `runformat.cache_key`, re-exported by `runstore`), `save_contract` / `contract()`, `save_scenarios` / `scenarios()`, `open_log()` (for `gepa.log`), `cwd()` (the empty working folder of the child process), `clean(id=None)`, `resolve_run(id)`, `check_root()` (read-only usability test for `--dry`); the only module that touches the run folder | R22, R23 |
@@ -156,7 +156,7 @@ WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in i
 | R15a small valset, strict improvement | `search.py` (5a) | T: calls counted on `fake` |
 | R16 ASI to reflection | `evaluator.py` (4), template in `runner.py` (5b) | T: failed checks and excerpts in the reflection prompt |
 | R17 budget, reserve, clock, timeout | `backend.py` (1a), `claude_cli.py` (1b: timeout), `search.py` (5a: stopper, meter), `runner.py` (5b: reserve) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
-| R18 command, lockdown, argv rules | `claude_cli.py` (1b) | T: argv has no user text; first live call checks lockdown; S |
+| R18 command, lockdown, argv rules | `claude_cli.py` (1b) | T: argv has no user text; every call checks lockdown (so the first live call of a process too); S |
 | R19 untrusted data | `backend.py` (1), `types.py` (skeleton), `commands/improve.md` (7) | T hostile strings; `test_improve_command.py` |
 | R20 no real model or network | `tests/conftest.py` (skeleton) | T `test_guards.py` |
 | R21 slash command | `commands/*.md` (7) | T text test; S |
@@ -174,12 +174,12 @@ The single place that enforces each limit, and why nothing goes around it:
 | Search stop, replay-invariant (R17, R22) | `search.RunState.stopper` over `SearchMeter` (issued calls and seconds, hits counted like live calls) | the stopper reads nothing else, so a replay decides exactly as the original did |
 | Reserve (R17) | `BudgetedBackend.limit`, set to `budget - final`, raised only by `runner` after the search | the search has no handle on the limit |
 | Wall clock, deadline (R17) | `Clock` (shared) read by `BudgetedBackend` and `ClaudeCliBackend` | one object, monotonic |
-| Per-call timeout (R17) | `ClaudeCliBackend._run`: `min(300 s, clock.remaining(deadline))` | the only place a process starts |
+| Per-call timeout (R17) | `claude_cli._run`: `min(300 s, deadline() - clock.elapsed())` | the only place a process starts |
 | Retries, consecutive failures per model (R24) | `ResilientBackend.complete` | sits directly above `Budgeted`, so every attempt counts; the counter is keyed by model id |
 | Cache key, hits free | `CachedBackend._key` over all `Call` fields | `Call` is frozen; a field test pins the list |
 | Judge != task, target (R14) | `Models.__post_init__` after `canonical_model` | no `Models` exists without it |
-| argv, stdin, system-prompt size (R18) | `Call.__post_init__` and `ClaudeCliBackend._argv` | user text is only ever put on stdin, except a template candidate, which is the system prompt and rides in `--system-prompt=<text>` (the R18 test asserts exactly that) |
-| Lockdown (R18) | `ClaudeCliBackend` on the first live call of the process; `state.raise_if_aborted` re-raises | covers a resumed run whose first live call is a reflection |
+| argv, stdin, system-prompt size (R18) | `Call.__post_init__` and `claude_cli._argv` | user text is only ever put on stdin, except a template candidate, which is the system prompt and rides in `--system-prompt=<text>` (the R18 test asserts exactly that) |
+| Lockdown (R18) | `ClaudeCliBackend` on every call (ADR-009); `state.raise_if_aborted` re-raises | covers a resumed run whose first live call is a reflection |
 | Prompt size, NUL (R1) | `cli.read_prompt` | the only reader of the prompt |
 | Length cap (R7) | `runner.length_ok` | called by the gate that every answer passes |
 | Contract and literals (R6, R9) | `contract.check`, called only from `_Run.finalists` in `runner.py` | the answer is built only from the finalists that pass the free gates and the contract check |
@@ -214,12 +214,12 @@ Run folder files, owner `runstore.py`, schema version 1, atomic writes, how part
 
 ## 9. External calls
 
-One kind of child process, built in one place (`ClaudeCliBackend._argv`):
+One kind of child process, built in one place (`claude_cli._argv`):
 
-`claude -p --safe-mode --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 --model <full id> --output-format json [--system-prompt=<text>] [--json-schema <schema>]`
+`claude -p --safe-mode --settings '{"outputStyle":"default"}' --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 --model <full id> --output-format stream-json --verbose [--system-prompt=<text>] [--json-schema <schema>]`; the `init` line must report no tools, MCP servers, skills, slash commands or extra agents and the default output style (`plugins` is informational), the final `result` line carries the text (`structured_output` for a schema call): ADR-009, real output in `tests/fixtures/claude_cli/`
 
 - stdin: the user text of the call (prompt, scenario, outputs). A system prompt, when the call has one (a template candidate, or the fixed instruction of a role), is the one argument `--system-prompt=<text>`: at most `SYSTEM_PROMPT_MAX_BYTES`, no NUL. Template candidates therefore appear in `/proc/<pid>/cmdline` for the length of a call (readable by local users); the run folder is 0700 but this exposure is accepted, and a file option is used instead if the real-call check shows the CLI has one.
-- environment: scrubbed allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `TMPDIR`, and when set the network settings the sandboxed shell of `/improve` needs: `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` in both cases, `SSL_CERT_FILE`), no `ANTHROPIC_*`, no tokens; the exact list waits for the user's real-call output.
+- environment: scrubbed allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `TMPDIR`, and when set the network settings the sandboxed shell of `/improve` needs: `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` in both cases, `SSL_CERT_FILE`), no `ANTHROPIC_*`, no tokens; the allowlist is one constant in `claude_cli.py`.
 - working directory: the empty folder `store.cwd()` = `<run>/cwd` (so no project files are read).
 - timeout: `min(CALL_TIMEOUT_S, clock.remaining(deadline))`, where `deadline` is the current one (the search deadline until `raise_limit`, the full wall clock after); the process is killed by its exact pid; reply cap 1 MiB, larger is a `CallError`.
 - retries: `ResilientBackend`, 2, each counted.
@@ -233,7 +233,7 @@ DSPy and any second optimiser (ADR-001); GEPA merge by default (R15); the local 
 
 ## 11. Open questions (provisional choices)
 
-- Does `--safe-mode` use the subscription login, and does the JSON reply report plugins, MCP servers and tools (R18 self-check)? Provisional: check on the first live call from the reply envelope; wait for the user's real-call output before WP1.
+- (answered 2026-10-05, ADR-009) `--safe-mode` uses the subscription login; the init line of the stream reports tools, MCP servers, skills, commands, agents and the output style; plugins are listed but inactive. Still open: the init line of a schema call (probe 5).
 - Judge fallback when the target is the default judge: Sonnet 5.5 (R14).
 - The background-run mechanics of `/improve` (timeout, output retrieval, sandbox network) are checked only by `just smoke`; provisional: as in section 9.
 - `--merge` is accepted and handed to GEPA, but with a valset under GEPA's overlap floor of 5 (ours is at most 4) it never merges (probe, G3 pre-flight), so at default sizes it changes nothing; kept because SPEC R15 lists it, and a candidate for removal if the user agrees.
