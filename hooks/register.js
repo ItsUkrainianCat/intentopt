@@ -391,12 +391,12 @@ async function runDetached($, job, argv, env) {
 async function fillBox($, view) {
   const improved = view.improved
   if (improved === null) return view
-  let plan = boxPlan(view, (await $.prompt.read()).text) ?? boxRefused(view, undefined)
-  if (plan.fill) {
+  let placing = boxPlan(view, (await $.prompt.read()).text) ?? boxRefused(view, undefined)
+  if (placing.fill) {
     const filled = await $.prompt.fill({ text: improved, mode: 'replace' })
-    if (!filled.isFilled) plan = boxRefused(view, filled.refusal)
+    if (!filled.isFilled) placing = boxRefused(view, filled.refusal)
   }
-  return { ...view, box: plan.box, toast: plan.toast }
+  return { ...view, box: placing.box, toast: placing.toast }
 }
 
 /**

@@ -135,6 +135,24 @@ def test_the_module_never_submits_prompts_calls_a_model_or_an_mcp_server():
         assert word not in source, word
 
 
+def test_no_name_of_a_function_handed_dollar_is_reused():
+    """The engine follows `$` by name into the top-level functions it is handed, so validate
+    refuses a module where such a name is also a variable, a parameter or an assignment target
+    (`let plan = ...` beside `function plan($, ...)` kept the mod from loading)."""
+    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", hooks_source("register.js"), flags=re.S)
+    handed = re.findall(r"^(?:async )?function (\w+)\(\$[,)]", code, flags=re.M)
+    assert len(handed) > 10, handed
+    params = re.findall(r"\(([^()]*)\)\s*=>|\bfunction\s*\w*\s*\(([^()]*)\)", code)
+    names = {word for group in params for part in group for word in re.findall(r"[\w$]+", part)}
+    names |= set(re.findall(r"(?<![\w.$])([\w$]+)\s*=>", code))
+    for name in handed:
+        assert len(re.findall(rf"\bfunction {name}\(", code)) == 1, name
+        assert not re.search(rf"\b(?:let|const|var)\s+{name}\b", code), name
+        assert not re.search(rf"\b(?:let|const|var)\s*[{{\[][^=;]*\b{name}\b[^=;]*[}}\]]\s*=", code)
+        assert not re.search(rf"(?<![\w.$]){name}\s*[-+*/]?=(?![=>])", code), name
+        assert name not in names, name
+
+
 def test_every_module_is_an_es_module_without_dynamic_imports_or_a_home_path():
     for path in sorted(HOOKS.glob("*.js")):
         source = path.read_text(encoding="utf-8")
