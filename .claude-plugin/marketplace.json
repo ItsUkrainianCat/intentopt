@@ -1,0 +1,13 @@
+{
+  "name": "optimizer",
+  "description": "autoimprover: improve a prompt by running it on test scenarios (GEPA), from inside Claude Code",
+  "owner": { "name": "ItsUkrainianCat" },
+  "plugins": [
+    {
+      "name": "autoimprover",
+      "source": "./",
+      "version": "0.2.0.dev0",
+      "description": "/improve and /optimize: improve a prompt with the autoimprover CLI, then review the result and use it only if you choose to"
+    }
+  ]
+}

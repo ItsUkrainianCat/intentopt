@@ -1,0 +1,6 @@
+{
+  "name": "autoimprover",
+  "version": "0.2.0.dev0",
+  "description": "/improve and /optimize: improve a prompt with the autoimprover CLI (GEPA search, scored by running the prompt on test scenarios), then review the result and use it only if you choose to",
+  "author": { "name": "ItsUkrainianCat" }
+}
