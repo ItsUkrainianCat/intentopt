@@ -26,7 +26,7 @@ error: backend failure: the claude backend (autoimprover.claude_cli) is not part
 
 What works without it: `--dry`, `--help`, `clean`, the input and flag checks, and fewer than 8
 examples without `--trust-search` (the original, without a call). The live check is the user's
-`just smoke` (added before release); until it passes, nothing here claims that a live run, the
+`just smoke` (needs the real backend); until it passes, nothing here claims that a live run, the
 `/improve` command or the acceptance measure of SPEC section 5 works.
 
 ## Install and run
@@ -246,4 +246,4 @@ in"). Run folders under `$TMPDIR` may not survive a reboot.
 
 Requirements: `docs/SPEC.md`; design: `docs/ARCHITECTURE.md`, `docs/adr/`. `just check` (format,
 lint, types, tests) is the definition of done; tests use the fakes in `tests/fakes.py` and never a
-real model or the network. `legacy/` holds the 0.1.0 script until release.
+real model or the network. The 0.1.0 script is the git tag `v0.1.0-legacy`.

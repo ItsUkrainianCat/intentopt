@@ -45,7 +45,7 @@ main(argv, backend=None, now=None):
                                  stop_callbacks=[state.stopper()]))     # stdout redirected into gepa.log meanwhile
     state.raise_if_aborted()                                      # backend -> exit 3, lockdown -> exit 4, bug -> exit 1; run folder kept
     budgeted.raise_limit(budget, deadline=wall_clock)             # the final steps' share is spendable now
-    free_ok = [c for c in state.completed minus the seed if within_length(c) and literals_preserved(c)]     # R7, R9: free gates first
+    free_ok = [c for c in state.completed minus the seed if length_ok(c) and literals_preserved(c)]     # R7, R9: free gates first
     finalists = top 3 of free_ok by valset score, each contract-checked (R6; at most 3 judged checks)
     if not h:                                                     # --trust-search: only a finalist that beats the seed on the valset, verified=False (R11)
       best = first finalist with valset score > the seed's; return Improved(best, verified=False, ...) or Unchanged("no candidate beat the seed")
@@ -99,7 +99,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `scenarios.py` | `read_examples(path: Path) -> list[Scenario]` (a bad line raises `ValueError("line N: ...")`, which `cli` turns into exit 2); `synthesize(backend, model, prompt, contract) -> list[Scenario]` (`model` is the reflection model); `split_sizes(n) -> tuple[int, int, int]` (holdout, valset, dataset; n >= 8); `split(scenarios, seed) -> Split`, `Split(train, val, holdout)` being tuples of `Scenario` (n < 8: `train == val == all`, `holdout == ()`) | R11, R15 |
 | `evaluator.py` | `Evaluator(backend, contract, task_model, judge_model, sample=0)` implementing `BatchEvaluator` (the runner builds one with `models.task` for the search and one with `models.target` and `sample` 0 or 1 for the seed and finalist runs): task call per scenario, programmatic checks, one judge call per at most `JUDGE_BATCH_MAX` scenarios, quote rule; a `CallFailed` on a task call or the judge call returns an `incomplete` entry instead of raising (`BudgetExhausted`, `BackendError`, `SessionNotLockedDown` propagate); `side_info["scores"]` per group and the ASI in other keys | R10, R10a, R10b, R16, R24 |
 | `search.py` | the GEPA seam, the only importer of `gepa`: `SearchMeter` (distinct calls once, seconds), `RunState` (`abort`, `stop`, `completed`, reflection index, `raise_if_aborted`), the batch evaluator adapter, the reflection wrapper (delimiter parsing, `SkipProposal`), the stopper, the stdout redirect and `RunLogger`, `run_search(...) -> SearchResult` (candidates with valset scores and lineage notes) | R12, R15, R15a, R16, R17, R22, R24 |
-| `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `fixed_costs`, `iterations_afforded`; reflection prompt per strictness (ADR-006); `score_holdout`; gates (contract, length cap, literals); finalist selection, `--trust-search`, the final steps and the `Outcome` with its report fields | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
+| `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `fixed_costs` (its `iterations` and `iterations_best` fields are the estimate), `refusal`; reflection prompt per strictness (ADR-006); `score_holdout`; gates (contract, length cap, literals); finalist selection, `--trust-search`, the final steps and the `Outcome` with its report fields | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | `report.py` | `render(outcome, ...)`: word diff, summary lines, JSON, error object; the only writer to stdout | R2 |
 | `cli.py` | `main(argv, *, backend=None, now=None) -> int` (`backend` replaces the raw model layer, `now` the monotonic clock) and the subcommand `clean`. Flags: `--dry`, `--force-low-budget`, `--json`, `--file`, `--examples`, `--kind template\|task`, `--budget`, `--strictness`, `--allow-growth`, `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--merge`, `--trust-search`, `--resume <id>` | R1, R2, R4, R14, R22, R23 |
 | `commands/improve.md`, `commands/optimize.md` (repo root) | Claude Code slash command text (`/improve`, alias `/optimize`) | R19, R21 |
@@ -110,7 +110,7 @@ Interfaces fixed at the skeleton commit are in `types.py` (read it, not a copy h
 
 ## 3. Work packages
 
-Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `justfile` (including the `smoke` recipe added before G6), `.gitignore`, `.python-version`, `CLAUDE.md`, `docs/**`, `.claude/**`, `legacy/**` (removed at G5), `src/autoimprover/__init__.py`, `src/autoimprover/types.py`, `tests/conftest.py`, `tests/fakes.py`, `tests/test_types.py`, `tests/test_guards.py`, `tests/test_fakes.py`, `tests/test_package.py`.
+Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `justfile` (including the `smoke` recipe added before G6), `.gitignore`, `.python-version`, `CLAUDE.md`, `docs/**`, `.claude/**`, `src/autoimprover/__init__.py`, `src/autoimprover/types.py`, `tests/conftest.py`, `tests/fakes.py`, `tests/test_types.py`, `tests/test_guards.py`, `tests/test_fakes.py`, `tests/test_package.py`.
 
 | WP | Owner (agent) | Exclusive files | Needs | Proof |
 |---|---|---|---|---|
@@ -120,7 +120,7 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 | WP3 scenarios | `coder` | `scenarios.py`, `tests/test_scenarios.py` (and `tests/test_scenarios_synth.py` once the synthesis tests move there) | skeleton | R11, R15 |
 | WP4 evaluator | `coder` | `evaluator.py`, `tests/test_evaluator.py`, `tests/test_evaluator_judge.py` | WP2, WP3 | R10, R10a, R10b, R16, R24 |
 | WP5a search | `coder` | `src/autoimprover/search.py`, `tests/test_search.py`, `tests/test_search_resume.py`; one change to `backend.py` and `tests/test_backend_layers.py` (WP1a is closed): `CachedBackend` gains `record_failures`, a switch that makes it store a tombstone for every `CallFailed` it lets through while on | WP1a-WP4 (merged) | R15a, R16, R17, R22, R24 |
-| WP5b runner | `coder` | `runner.py`, `tests/test_runner.py`, `tests/test_runner_flow.py` | WP5a | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
+| WP5b runner | `coder` | `runner.py`, `tests/test_runner.py`, `tests/test_runner_flow.py`, `tests/test_runner_prompts.py` | WP5a | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | WP6 report + cli | `coder` | `report.py`, `cli.py`, `tests/test_report.py`, `tests/test_cli.py` | WP5 | R1, R2, R4, R14, R22, R23 |
 | WP7 docs | `coder` | `README.md`, `commands/improve.md`, `commands/optimize.md`, `tests/test_improve_command.py` | WP6 | R19, R21 |
 | WP8 acceptance | `tester` | `tests/acceptance/**` (including its own `conftest.py`) | skeleton only; written from the SPEC and ADR-008 without reading `src/` | the A proofs; every test that asserts a candidate is NOT returned has a twin on `happy_backend` asserting that one IS, so it cannot pass for the wrong reason |
@@ -138,7 +138,7 @@ WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in i
 | R1 input | `cli.py` (6) | T: 20,001 chars, empty, NUL byte -> exit 2; CRLF and CR are normalised to LF before anything else sees the prompt |
 | R2 output, exit codes | `report.py`, `cli.py` (6) | A: each row of section 8 |
 | R3 unchanged unless reliable | `runner.py` (5b) | A with fake: candidate gain below threshold -> original, exit 0 |
-| R4 dry run, low budget | `cli.py` (6), `runner.fixed_costs`, `runner.iterations_afforded` (5) | A: `--dry` makes zero calls, writes nothing and exits 0 even for budget 30 or an unusable state folder; T: budget 66 with 12 scenarios is refused (worst case 2 iterations); T: n = 8, 12, 40 give 6, 5, 4 worst-case iterations at budget 100, and n < 8 (no holdout) has its own fixed costs |
+| R4 dry run, low budget | `cli.py` (6), `runner.fixed_costs`, `runner.refusal` (5) | A: `--dry` makes zero calls, writes nothing and exits 0 even for budget 30 or an unusable state folder; T: budget 66 with 12 scenarios is refused (worst case 2 iterations); T: n = 8, 12, 40 give 6, 5, 4 worst-case iterations at budget 100, and n < 8 (no holdout) has its own fixed costs |
 | R5 contract, kind | `contract.py` (2) | T: kind guessed, `--kind` overrides |
 | R6 contract gate | `contract.py` (2), gate in `runner.py` (5b) | A: planted violation never returned |
 | R7 length cap | `runner.py` (5b) | T: 1.26x candidate rejected at conservative |
@@ -181,14 +181,14 @@ The single place that enforces each limit, and why nothing goes around it:
 | argv, stdin, system-prompt size (R18) | `Call.__post_init__` and `ClaudeCliBackend._argv` | user text is only ever put on stdin, except a template candidate, which is the system prompt and rides in `--system-prompt=<text>` (the R18 test asserts exactly that) |
 | Lockdown (R18) | `ClaudeCliBackend` on the first live call of the process; `state.raise_if_aborted` re-raises | covers a resumed run whose first live call is a reflection |
 | Prompt size, NUL (R1) | `cli.read_prompt` | the only reader of the prompt |
-| Length cap (R7) | `runner.within_length` | called by the gate that every answer passes |
-| Contract and literals (R6, R9) | `contract.check`, called only from `runner.gate` | the answer is built only from `gate` output |
+| Length cap (R7) | `runner.length_ok` | called by the gate that every answer passes |
+| Contract and literals (R6, R9) | `contract.check`, called only from `_Run.finalists` in `runner.py` | the answer is built only from the finalists that pass the free gates and the contract check |
 | Holdout hidden (R15) | `scenarios.split` returns a `Split`; `main` unpacks it and only `runner.score_holdout` reads the holdout | GEPA gets `train` and `val` lists only |
 | Run folder writes, atomicity (R22, R23) | `runstore._atomic_write` | no other module opens run-folder files |
 | One live run per folder (R22) | `RunStore.open_or_create`: `fcntl.flock(LOCK_EX \| LOCK_NB)` on `run.lock`, held until exit; `clean` skips a locked folder | the kernel drops the lock when the process dies, so no stale lock and no pid check (pids are namespace-local in sandboxed shells) |
 | Run id, no path (R23) | `runstore.resolve_run` (pattern `RUN_ID_PATTERN` and `is_relative_to`) | `--resume` and `clean` call it |
 | State folder writable, not in git (R23) | `RunStore.check_root` (read-only, used by `--dry`) and the same checks inside `open_or_create` and `resume` | called before any paid call |
-| stdout only the result (R2) | `report.emit` writes, `report.render` builds; `cli.main` redirects GEPA output into `store.open_log()` | one writer |
+| stdout only the result (R2) | `report.Emitter` writes, `report.render` builds; `cli.main` redirects GEPA output into `store.open_log()` | one writer |
 | No real model, network, process, home (R20) | `tests/conftest.py` `_ruv_guards`, shadowing checked at collection | tripwire for tests written in good faith |
 
 ## 7. Formats
