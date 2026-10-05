@@ -1,5 +1,5 @@
 // The world beneath the mod in its flow tests: every call the mod makes on `$` answered from
-// memory (process.run, process.spawn, fs, session, store, env, ui, prompt.fill), each recorded.
+// memory (process.run, process.spawn, fs, session, store, env, ui, the prompt box), each recorded.
 // A test describes the child's behaviour in a `Script` and reads what the mod did in the `World`.
 // Every hook is registered once here (a second registration of an event throws), so a test
 // changes behaviour through the script, which the hooks read at call time.
@@ -97,13 +97,14 @@ export function finished(result) {
  * @typedef {{ surfaces?: ('terminal' | 'desktop' | 'mobile' | 'vscode')[], model?: string,
  *   uvMissing?: boolean, taken?: string[], dry?: object, fileBytes?: number,
  *   chunks?: ProcessSpawnChunk[], end?: { code: number | null, signal: string | null },
- *   spawnFails?: boolean, gate?: Promise<void> }} Script
+ *   spawnFails?: boolean, gate?: Promise<void>, draft?: string,
+ *   boxRefuses?: 'no_composer' | 'dialog' }} Script
  * @typedef {{ runs: string[][],
  *   spawns: { argv: string[], env: Record<string, string> | undefined, cwd: string | undefined }[],
  *   writes: { path: string, text: string }[], stats: string[],
  *   registered: { name: string, immediate?: true, argumentHint?: string }[],
  *   opens: PaneOpenArgs[], statuses: (string | undefined)[], toasts: string[], logs: string[],
- *   closes: string[], copies: string[], fills: { text: string, mode: string }[],
+ *   closes: string[], copies: string[], fills: { text: string, mode: string }[], reads: number,
  *   results: (n?: number) => Promise<void>, waiting: Promise<void> }} World
  */
 
@@ -146,6 +147,7 @@ export function world(on, script = {}, store = {}) {
     closes: [],
     copies: [],
     fills: [],
+    reads: 0,
     results: (n = 1) =>
       new Promise((resolve) => {
         if (resultsSeen >= n) resolve()
@@ -225,9 +227,14 @@ export function world(on, script = {}, store = {}) {
     w.copies.push(e.text)
     return { value: { isCopied: true } }
   })
+  on('prompt.read', () => {
+    w.reads += 1
+    const text = script.draft ?? ''
+    return { value: { text, cursor: text.length } }
+  })
   on('prompt.fill', ($, e) => {
     w.fills.push({ text: e.text, mode: e.mode })
-    return { isFilled: true }
+    return script.boxRefuses ? { isFilled: false, refusal: script.boxRefuses } : { isFilled: true }
   })
   return w
 }
