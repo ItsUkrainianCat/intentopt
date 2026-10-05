@@ -21,6 +21,11 @@ a deadline or call limit reached inside a stage ends it; a rewrite that has not 
 is never returned (SPEC R17). A failed rewrite, task or judge call drops what it was for; a failed
 intake, synthesis, contract check or held-out run, or an original with no scored scenario, ends
 the run as BackendError (SPEC R24).
+
+DEBT, private names used here and in `fast_prompts` until their owners add public seams:
+`evaluator.Evaluator._task_call`, `._judged`, `._judge_call`, `._ask_judge` (and `._run`, `._judge`
+overridden by `fast_prompts._Gathered`), `contract._ask`, `runner._token_cap`, `scenarios._loads`,
+`scenarios._text_problem`.
 """
 
 from __future__ import annotations
@@ -458,6 +463,7 @@ class _Fast:
             stop=self.stop,
             calls_used=self.budgeted.used,
             run_dir=str(self.store.path),
+            mode=self.fplan.tier,
             **fields,
         )
 

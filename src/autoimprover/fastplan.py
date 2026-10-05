@@ -20,11 +20,9 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
-from autoimprover.types import StopCause
-
-Tier = Literal["quick", "fast", "checked", "deep"]
+from autoimprover.types import StopCause, Tier
 
 # Where each tier starts, in seconds of `--time` (SPEC R25); below MIN_TIME_S a run is refused.
 MIN_TIME_S = 15
