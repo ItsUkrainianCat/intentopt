@@ -146,6 +146,7 @@ def test_call_fields_are_fixed_so_the_cache_key_is_a_decision():
         "system",
         "json_schema",
         "sample",
+        "effort",  # added 2026-10-05 for the time tiers (SPEC R25): a deliberate cache-key change
     ]
 
 

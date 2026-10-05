@@ -52,6 +52,8 @@ MINIBATCH_SIZE = 3
 
 # One call: its timeout, its retries and the failures that end a run (SPEC R17, R24).
 CALL_TIMEOUT_S = 300
+# `claude --effort` levels a call may ask for; None leaves the model's default (SPEC R25).
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 CALL_RETRIES = 2
 MAX_CONSECUTIVE_FAILURES = 3
 # A system prompt travels as one argv entry; Linux caps a single entry at 131,072 bytes (SPEC R18).
@@ -225,8 +227,11 @@ class Call:
     system: str = ""
     json_schema: str | None = None
     sample: int = 0
+    effort: str | None = None
 
     def __post_init__(self) -> None:
+        if self.effort is not None and self.effort not in EFFORT_LEVELS:
+            raise ValueError(f"effort must be one of {EFFORT_LEVELS} or None (SPEC R25)")
         if "\0" in self.system or len(self.system.encode()) > SYSTEM_PROMPT_MAX_BYTES:
             raise ValueError(
                 f"system prompt has a NUL byte or exceeds {SYSTEM_PROMPT_MAX_BYTES} bytes "

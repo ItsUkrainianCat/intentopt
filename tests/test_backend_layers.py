@@ -41,6 +41,7 @@ VARIANTS = {
     "system": dataclasses.replace(BASE, system="judge the outputs strictly"),
     "json_schema": dataclasses.replace(BASE, json_schema=None),
     "sample": dataclasses.replace(BASE, sample=1),
+    "effort": dataclasses.replace(BASE, effort="low"),
 }
 
 
