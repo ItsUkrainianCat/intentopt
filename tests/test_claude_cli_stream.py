@@ -23,7 +23,6 @@ from test_claude_cli import (
     real,
 )
 
-from autoimprover import claude_cli
 from autoimprover.types import Call, CallError, SessionNotLockedDown
 
 # The final line of the user's real call with `--json-schema` (probe 4: claude 2.1.287, Haiku 4.5),
@@ -41,6 +40,9 @@ PROBE4 = {
     "structured_output": {"name": "Alice", "age": 30},
     "usage": {"input_tokens": 1149},
 }
+# The `init` line of the user's real call with `--json-schema` (probe 5) lists the schema tool.
+SCHEMA_INIT = edited(INIT, tools=["StructuredOutput"])
+HIGH = chr(0xD800)  # json.dumps writes it as the escape \ud800, which json.loads turns back
 
 
 @pytest.fixture
@@ -75,13 +77,29 @@ def test_a_session_that_is_not_locked_down_is_refused(fake, tmp_path, field, val
 
 
 @real
-def test_tools_are_checked_against_one_named_allowed_set(fake, tmp_path, monkeypatch):
-    monkeypatch.setattr(claude_cli, "_ALLOWED_TOOLS", frozenset({"StructuredOutput"}))
-    fake.answer(edited(INIT, tools=["StructuredOutput"]), *MIDDLE, RESULT)
-    assert ask(tmp_path).text == "OK"
-    fake.answer(edited(INIT, tools=["StructuredOutput", "Bash"]), *MIDDLE, RESULT)
-    with pytest.raises(SessionNotLockedDown, match="Bash"):
-        ask(tmp_path)
+def test_the_real_init_of_a_schema_call_is_accepted_for_a_schema_call(fake, tmp_path):
+    fake.answer(SCHEMA_INIT, *MIDDLE, PROBE4)
+    assert ask(tmp_path, json_schema=SCHEMA).text == json.dumps({"name": "Alice", "age": 30})
+
+
+@real
+@pytest.mark.parametrize(
+    ("tools", "schema", "shown"),
+    [
+        (["StructuredOutput"], None, "StructuredOutput"),
+        (["StructuredOutput", "Bash"], SCHEMA, "Bash"),
+        (["Bash"], SCHEMA, "Bash"),
+        (["StructuredOutput", "StructuredOutput"], SCHEMA, "twice"),
+        (["structuredoutput"], SCHEMA, "structuredoutput"),
+    ],
+    ids=["plain-call", "extra-tool", "other-tool", "twice", "other-case"],
+)
+def test_the_schema_tool_is_allowed_alone_and_only_on_a_schema_call(
+    fake, tmp_path, tools, schema, shown
+):
+    fake.answer(edited(INIT, tools=tools), *MIDDLE, PROBE4)
+    with pytest.raises(SessionNotLockedDown, match=shown):
+        ask(tmp_path, json_schema=schema)
 
 
 @real
@@ -233,3 +251,29 @@ def test_a_reply_over_one_mebibyte_is_a_call_error(fake, tmp_path):
     fake.answer(INIT, *MIDDLE, edited(RESULT, result="y" * (1 << 20)))
     with pytest.raises(CallError, match="MiB"):
         ask(tmp_path)
+
+
+@real
+@pytest.mark.parametrize(
+    ("final", "schema"),
+    [
+        (edited(RESULT, result=f"secret {HIGH} text"), None),
+        (edited(PROBE4, structured_output={"name": f"secret {HIGH} text"}), SCHEMA),
+        (edited(PROBE4, structured_output={HIGH: "secret text"}), SCHEMA),
+    ],
+    ids=["result", "structured-value", "structured-key"],
+)
+def test_a_reply_with_a_lone_surrogate_is_a_call_error_that_does_not_echo_it(
+    fake, tmp_path, final, schema
+):
+    fake.answer(INIT, *MIDDLE, json.dumps(final))  # plain ASCII, the surrogate as an escape
+    with pytest.raises(CallError, match="surrogate") as caught:
+        ask(tmp_path, json_schema=schema)
+    assert "secret" not in str(caught.value)
+
+
+@real
+def test_a_surrogate_pair_escape_in_a_reply_is_its_character(fake, tmp_path):
+    smile = chr(0x1F600)
+    fake.answer(INIT, *MIDDLE, json.dumps(edited(RESULT, result=f"smile {smile}")))
+    assert ask(tmp_path).text == f"smile {smile}"
