@@ -75,9 +75,13 @@ describe('the end of a run with a pane', () => {
     await boot($)
     await improve($, 'Summarise the meeting notes.')
     await w.results()
-    expect(w.reads).toBe(1)
     expect(w.fills).toEqual([{ text: IMPROVED.prompt, mode: 'replace' }])
-    expect(w.toasts.join('\n')).toContain(IN_THE_BOX)
+    // The mod reads the box once, before it fills; the engine may read it again after a fill,
+    // to hand the box back to a module that reads it (PromptFilled), so later reads are its.
+    expect(w.box.slice(0, 2)).toEqual(['read', 'fill'])
+    expect(w.box.slice(2).every((step) => step === 'read')).toBe(true)
+    expect(w.toasts.filter((toast) => toast.includes(IN_THE_BOX))).toHaveLength(1)
+    expect(w.opens.filter((open) => open.focus === true)).toHaveLength(1)
     const ui = await mount($)
     expect(await ui.find({ type: 'Text', text: IN_THE_BOX })).toBeDefined()
     expect((await ui.find({ key: 'use' }))?.text).toBe('Use it')
