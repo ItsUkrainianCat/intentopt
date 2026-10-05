@@ -16,6 +16,10 @@ The first live `/improve` showed the research design (GEPA search, 100 sequentia
 - Thread safety: `BudgetedBackend` counters, `ResilientBackend` failure counts, `RunStore.save_progress` and `log_call` get locks; `Evaluator` takes `workers`. Determinism: cache keys are content hashes, so a resume replays finished calls whatever the thread order; results never depend on completion order (stages gather by index).
 - The hard clock is the existing `BudgetedBackend` deadline; the fast stage runner checks the remaining time before each optional call and skips what cannot finish; if no rewrite has passed every gate by the deadline the original is returned.
 
+## Customisation (user request, 2026-10-05)
+
+Models and effort are user settings, not constants: the existing `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, and new `--effort` (all roles) with `--task-effort`, `--judge-effort`, `--reflect-effort` per role; values `low|medium|high|xhigh|max|default`. Tier defaults apply only where no flag is given (fast tiers: effort low everywhere, models task Haiku / reflect Sonnet / judge Opus; deep: effort `default`, today's models). Effort is applied in one place, a thin `EffortBackend` wrapper above the cache that sets `Call.effort` from the role when the call has none (so the cache key includes it and no module that builds calls changes); `Models` defaults become tier-dependent (`default_models(tier)`). The mod forwards every one of these flags.
+
 ## Measured facts (the user's timing probe, 2026-10-05, claude 2.1.287, about 350 output tokens, wall clock per call)
 
 | model | effort low | default effort | output tokens (low / default) |
