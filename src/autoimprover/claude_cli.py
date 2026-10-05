@@ -6,20 +6,20 @@ The child runs in the run's empty working folder with an allowlisted environment
 nothing `ANTHROPIC_*` or `CLAUDE_CODE_*`), so it uses the subscription login and reads no project
 file.
 
-Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools
-(none beyond `_ALLOWED_TOOLS`, which is empty), MCP servers, skills or slash commands, only the
-built-in agents and the default output style, or the call raises `SessionNotLockedDown` (exit 4);
-`plugins` is informational. The reply is the `result` of the last `{"type":"result"}` line; for a
-call with a schema it is the parsed `structured_output` as JSON when that is an object (the
-user's real schema call carried both, `result` holding the same answer as JSON text). Anything
-else that goes wrong with one attempt is a `CallError`, which `ResilientBackend` retries (SPEC
-R24); a missing `claude` binary can never succeed and is a `BackendError`. Each call has a timeout
-of `min(CALL_TIMEOUT_S, clock left until the current deadline)` and no call starts once the
-deadline has passed (SPEC R17); on expiry only the child this call started is killed, by its
-exact pid.
-
-Unverified against the real CLI (no test may run it; the user's `just smoke` does): whether the
-`init` line of a schema call lists a tool for the schema; until it is known none is allowed.
+Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools,
+MCP servers, skills or slash commands, only the built-in agents and the default output style, or
+the call raises `SessionNotLockedDown` (exit 4); `plugins` is informational. The one exception is
+the tool through which claude answers `--json-schema`: the user's real schema call listed
+`tools: ["StructuredOutput"]`, so a call with a schema may report that tool once and nothing else
+(`_allowed_tools`). The reply is the `result` of the last `{"type":"result"}` line; for a call
+with a schema it is the parsed `structured_output` as JSON when that is an object (the user's real
+schema call carried both, `result` holding the same answer as JSON text). A reply holding a lone
+surrogate (an unpaired \\ud800-\\udfff escape) could not be sent on to a later call and is
+refused. Anything else that goes wrong with one attempt is a `CallError`, which
+`ResilientBackend` retries (SPEC R24); a missing `claude` binary can never succeed and is a
+`BackendError`. Each call has a timeout of `min(CALL_TIMEOUT_S, clock left until the current
+deadline)` and no call starts once the deadline has passed (SPEC R17); on expiry only the child
+this call started is killed, by its exact pid.
 """
 
 from __future__ import annotations
@@ -92,12 +92,12 @@ _ENV_NAMES = frozenset(
 )
 _ENV_PREFIX = "LC_"
 # The lockdown of ADR-009: these init fields must be empty lists, the tools and agents subsets of
-# the sets below, the output style the default.
+# `_allowed_tools(call)` and the built-in agents, each name listed once, the output style the
+# default.
 _EMPTY_FIELDS = ("mcp_servers", "skills", "slash_commands")
-# Tools a session may report. Empty: `tools == []` holds strictly. Whether a call with
-# `--json-schema` lists one for the schema (for example "StructuredOutput") is not known yet; if
-# the user's real init shows one, its name goes here and nothing else changes.
-_ALLOWED_TOOLS: frozenset[str] = frozenset()
+# The tool through which claude answers `--json-schema`; the user's real schema call listed it
+# (probe 5). It is the only tool a session may report, and only on a call with a schema.
+_SCHEMA_TOOL = "StructuredOutput"
 _BUILTIN_AGENTS = frozenset({"claude", "Explore", "general-purpose", "Plan"})
 _REPLY_MAX_BYTES = 1 << 20  # ARCHITECTURE section 9: a larger reply is a CallError
 _TEXT_CHARS = 200  # the most model or stderr text an error message carries
@@ -226,7 +226,7 @@ def _reply(done: _Done, call: Call) -> tuple[str, object]:
     objects, unreadable = _objects(done.out)
     inits = [o for o in objects if o.get("type") == "system" and o.get("subtype") == "init"]
     for init in inits:
-        _check_lockdown(init)
+        _check_lockdown(init, _allowed_tools(call))
     if done.timed_out:
         raise CallError(f"claude did not answer within {done.timeout:.1f} s and was stopped")
     if done.input_error is not None:
@@ -256,10 +256,19 @@ def _reply(done: _Done, call: Call) -> tuple[str, object]:
         raise CallError(f"claude ended with terminal_reason {reason}, not 'completed'")
     shaped = final.get("structured_output")
     if call.json_schema is not None and isinstance(shaped, dict):
-        return json.dumps(shaped), final.get("usage")
-    text = final.get("result")
-    if not isinstance(text, str):
-        raise CallError(f"claude's result line has no result text: {_short(text)}")
+        text, sent = json.dumps(shaped), json.dumps(shaped, ensure_ascii=False)
+    else:
+        text = final.get("result")
+        if not isinstance(text, str):
+            raise CallError(f"claude's result line has no result text: {_short(text)}")
+        sent = text
+    try:
+        sent.encode("utf-8")
+    except UnicodeEncodeError:
+        raise CallError(
+            "claude's reply holds a lone surrogate (an unpaired \\ud800-\\udfff escape), which "
+            "could not be sent on to a later call"
+        ) from None
     return text, final.get("usage")
 
 
@@ -283,18 +292,25 @@ def _objects(out: bytes) -> tuple[list[dict[str, Any]], str | None]:
     return objects, unreadable
 
 
-def _check_lockdown(init: Mapping[str, Any]) -> None:
-    """Raise `SessionNotLockedDown` naming the first init field that fails ADR-009."""
-    problem = _lockdown_problem(init)
+def _allowed_tools(call: Call) -> frozenset[str]:
+    """The tools the session of `call` may report: the schema tool on a call with a schema, none
+    on any other (ADR-009)."""
+    return frozenset({_SCHEMA_TOOL}) if call.json_schema is not None else frozenset()
+
+
+def _check_lockdown(init: Mapping[str, Any], tools: frozenset[str]) -> None:
+    """Raise `SessionNotLockedDown` naming the first init field that fails ADR-009; `tools` are
+    the tool names this call may report."""
+    problem = _lockdown_problem(init, tools)
     if problem is not None:
         raise SessionNotLockedDown(
-            f"the claude session is not locked down: {problem}; it must report no tools, MCP "
-            "servers, skills or slash commands, only the built-in agents and the default output "
-            "style (SPEC R18, ADR-009)"
+            f"the claude session is not locked down: {problem}; it must report no tools (a call "
+            f"with a schema: {_SCHEMA_TOOL} only), MCP servers, skills or slash commands, only "
+            "the built-in agents and the default output style (SPEC R18, ADR-009)"
         )
 
 
-def _lockdown_problem(init: Mapping[str, Any]) -> str | None:
+def _lockdown_problem(init: Mapping[str, Any], tools: frozenset[str]) -> str | None:
     fields = ("tools", *_EMPTY_FIELDS, "agents", "output_style")
     missing = [name for name in fields if name not in init]
     if missing:
@@ -302,12 +318,14 @@ def _lockdown_problem(init: Mapping[str, Any]) -> str | None:
     for name in _EMPTY_FIELDS:
         if init[name] != []:
             return f"{name} = {_short(init[name])}"
-    for name, allowed in (("tools", _ALLOWED_TOOLS), ("agents", _BUILTIN_AGENTS)):
+    for name, allowed in (("tools", tools), ("agents", _BUILTIN_AGENTS)):
         names = init[name]
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
             return f"{name} = {_short(names)} is not a list of names"
         if extra := sorted(set(names) - allowed):
             return f"{name} not allowed: {_short(extra)}"
+        if len(set(names)) != len(names):
+            return f"{name} lists a name twice: {_short(names)}"
     if init["output_style"] != "default":
         return f"output_style = {_short(init['output_style'])}, not 'default'"
     return None
