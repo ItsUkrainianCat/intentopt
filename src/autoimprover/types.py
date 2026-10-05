@@ -15,6 +15,7 @@ CheckGroup = Literal["format", "constraints", "content"]
 # "budget" is the normal ending (the search used its share of the calls), "clock" means the clock
 # share ended it first. Only "clock" is reported as cut short (SPEC R2).
 StopCause = Literal["budget", "clock"]
+Tier = Literal["quick", "fast", "checked", "deep"]
 # Why a result was returned or kept; the fixed codes of the `--json` object (SPEC R2, R3, R11, R13).
 REASON_CODES = (
     "improved",
@@ -411,6 +412,7 @@ class Outcome:
     length_ratio: float | None = None
     calls_used: int = 0
     run_dir: str = ""
+    mode: Tier | None = None  # the time tier of the run (SPEC R25); None for older callers
 
     def __post_init__(self) -> None:
         if self.status not in ("improved", "unchanged"):
