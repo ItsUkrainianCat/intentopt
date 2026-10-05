@@ -16,6 +16,26 @@ The first live `/improve` showed the research design (GEPA search, 100 sequentia
 - Thread safety: `BudgetedBackend` counters, `ResilientBackend` failure counts, `RunStore.save_progress` and `log_call` get locks; `Evaluator` takes `workers`. Determinism: cache keys are content hashes, so a resume replays finished calls whatever the thread order; results never depend on completion order (stages gather by index).
 - The hard clock is the existing `BudgetedBackend` deadline; the fast stage runner checks the remaining time before each optional call and skips what cannot finish; if no rewrite has passed every gate by the deadline the original is returned.
 
+## Measured facts (the user's timing probe, 2026-10-05, claude 2.1.287, about 350 output tokens, wall clock per call)
+
+| model | effort low | default effort | output tokens (low / default) |
+|---|---|---|---|
+| haiku | 7.8 s | 7.4 s | 372 / 386 |
+| sonnet | 5.7 s | 10.3 s | 298 / 1190 |
+| opus | 7.5 s | 12.7 s | 359 / 1137 |
+
+- Output speed is about 70 to 85 tokens per second on all three models; **a call costs about 2.3 s fixed (process start, login, request) plus output tokens / 75 s**. The model's size does not change latency; the number of output tokens does.
+- `--effort low` removes the thinking tokens of Sonnet and Opus and halves their time (Haiku does not think by default).
+- Four parallel Haiku calls took 8.5 s against 7.8 s for one: parallelism is near-perfect at 4. Available memory fell by about 135 MB during the four calls (the 244 MB binary is shared), so 6 to 8 workers are affordable.
+
+## Decisions from the facts
+
+1. Every fast-tier call asks `--effort low`. Models are chosen for quality, not speed (rewrites and intake Sonnet, judge Opus per R14, task Haiku, target model only in the checked tier).
+2. **Latency is spent on output tokens, so every fast-tier reply is kept short**: the judge replies with pass/fail and a short quote (at most 8 words), the rewrites are as long as the prompt, the contract is compact, task runs are capped (a cap on output tokens, to be verified by a probe: `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, which the backend sets explicitly for task calls only).
+3. The contract check of a rewrite rides in the same judge call as that rewrite's scenario checks (the R6 format is the same JSON with a scenario `contract`), so stage C is one wave.
+4. A pure function `fast_plan(time_s, workers)` derives K (rewrites), M (scenarios), the output cap and the estimated seconds from the model above (2.4 s + tokens / 70 s per call, waves = ceil(calls / workers)); `--dry` prints it; default workers 6.
+5. Estimated critical path at the default: stage A about 9 s (intake is the longest call), stage B about 6 to 11 s, stage C about 8 to 10 s: 25 to 30 s. This is tight: the deadline degrades gracefully (fewer scenarios or rewrites, never an unvetted rewrite).
+
 ## Consequences
 
 An interactive run takes about 20 to 30 s instead of up to 45 minutes, at the price of weaker evidence in the default tier (labelled); the research mode stays for those who want proof. More concurrent `claude` processes use more memory (default 4 workers; the user's machine had about 1.6 GB free) and subscription rate. The deep tier needs no change. `Call.effort` changes every cache key once: run folders from earlier versions replay as cache misses, never as errors.
