@@ -105,6 +105,7 @@ export function finished(result) {
  *   registered: { name: string, immediate?: true, argumentHint?: string }[],
  *   opens: PaneOpenArgs[], statuses: (string | undefined)[], toasts: string[], logs: string[],
  *   closes: string[], copies: string[], fills: { text: string, mode: string }[], reads: number,
+ *   box: ('read' | 'fill')[],
  *   results: (n?: number) => Promise<void>, waiting: Promise<void> }} World
  */
 
@@ -148,6 +149,7 @@ export function world(on, script = {}, store = {}) {
     copies: [],
     fills: [],
     reads: 0,
+    box: [],
     results: (n = 1) =>
       new Promise((resolve) => {
         if (resultsSeen >= n) resolve()
@@ -229,11 +231,13 @@ export function world(on, script = {}, store = {}) {
   })
   on('prompt.read', () => {
     w.reads += 1
+    w.box.push('read')
     const text = script.draft ?? ''
     return { value: { text, cursor: text.length } }
   })
   on('prompt.fill', ($, e) => {
     w.fills.push({ text: e.text, mode: e.mode })
+    w.box.push('fill')
     return script.boxRefuses ? { isFilled: false, refusal: script.boxRefuses } : { isFilled: true }
   })
   return w
