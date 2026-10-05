@@ -6,19 +6,20 @@ The child runs in the run's empty working folder with an allowlisted environment
 nothing `ANTHROPIC_*` or `CLAUDE_CODE_*`), so it uses the subscription login and reads no project
 file.
 
-Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools,
-MCP servers, skills or slash commands, only the built-in agents and the default output style, or
-the call raises `SessionNotLockedDown` (exit 4); `plugins` is informational. The reply is the
-`result` of the last `{"type":"result"}` line. Anything else that goes wrong with one attempt is a
-`CallError`, which `ResilientBackend` retries (SPEC R24); a missing `claude` binary can never
-succeed and is a `BackendError`. Each call has a timeout of `min(CALL_TIMEOUT_S, clock left until
-the current deadline)` and no call starts once the deadline has passed (SPEC R17); on expiry only
-the child this call started is killed, by its exact pid.
+Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools
+(none beyond `_ALLOWED_TOOLS`, which is empty), MCP servers, skills or slash commands, only the
+built-in agents and the default output style, or the call raises `SessionNotLockedDown` (exit 4);
+`plugins` is informational. The reply is the `result` of the last `{"type":"result"}` line; for a
+call with a schema it is the parsed `structured_output` as JSON when that is an object (the
+user's real schema call carried both, `result` holding the same answer as JSON text). Anything
+else that goes wrong with one attempt is a `CallError`, which `ResilientBackend` retries (SPEC
+R24); a missing `claude` binary can never succeed and is a `BackendError`. Each call has a timeout
+of `min(CALL_TIMEOUT_S, clock left until the current deadline)` and no call starts once the
+deadline has passed (SPEC R17); on expiry only the child this call started is killed, by its
+exact pid.
 
-Unverified against the real CLI (no test may run it; the user's `just smoke` does): the spelling
-`--json-schema` (taken from SPEC R18) and the shape of a schema call's reply. When the final line
-of a call with a schema holds a non-null `structured_output`, the reply is that value as JSON;
-otherwise it is `result`, which the callers parse as JSON.
+Unverified against the real CLI (no test may run it; the user's `just smoke` does): whether the
+`init` line of a schema call lists a tool for the schema; until it is known none is allowed.
 """
 
 from __future__ import annotations
@@ -59,9 +60,10 @@ _HEAD = (
     "1",
 )
 _TAIL = ("--output-format", "stream-json", "--verbose")
-# What the child may see of the environment (SPEC R18, R21): the login's home, the locale, and the
-# proxy and certificate settings a sandboxed shell needs. Nothing else gets through: no API key,
-# no `ANTHROPIC_*`, no `CLAUDE_CODE_*` or `CLAUDECODE` nesting variable.
+# What the child may see of the environment (SPEC R18, R21; ARCHITECTURE section 9): the login's
+# home and config folders, the locale, and the proxy and certificate settings a sandboxed shell
+# needs. Nothing else gets through: no API key, no `ANTHROPIC_*`, no `CLAUDE_CODE_*` or
+# `CLAUDECODE` nesting variable.
 _ENV_NAMES = frozenset(
     {
         "PATH",
@@ -70,6 +72,8 @@ _ENV_NAMES = frozenset(
         "LOGNAME",
         "LANG",
         "TERM",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
         "XDG_RUNTIME_DIR",
         "TMPDIR",
         "SSL_CERT_FILE",
@@ -79,15 +83,21 @@ _ENV_NAMES = frozenset(
         "HTTPS_PROXY",
         "HTTP_PROXY",
         "NO_PROXY",
+        "ALL_PROXY",
         "https_proxy",
         "http_proxy",
         "no_proxy",
+        "all_proxy",
     }
 )
 _ENV_PREFIX = "LC_"
-# The lockdown of ADR-009: these init fields must be empty lists, the agents a subset of the
-# built-in ones, the output style the default.
-_EMPTY_FIELDS = ("tools", "mcp_servers", "skills", "slash_commands")
+# The lockdown of ADR-009: these init fields must be empty lists, the tools and agents subsets of
+# the sets below, the output style the default.
+_EMPTY_FIELDS = ("mcp_servers", "skills", "slash_commands")
+# Tools a session may report. Empty: `tools == []` holds strictly. Whether a call with
+# `--json-schema` lists one for the schema (for example "StructuredOutput") is not known yet; if
+# the user's real init shows one, its name goes here and nothing else changes.
+_ALLOWED_TOOLS: frozenset[str] = frozenset()
 _BUILTIN_AGENTS = frozenset({"claude", "Explore", "general-purpose", "Plan"})
 _REPLY_MAX_BYTES = 1 << 20  # ARCHITECTURE section 9: a larger reply is a CallError
 _TEXT_CHARS = 200  # the most model or stderr text an error message carries
@@ -245,7 +255,7 @@ def _reply(done: _Done, call: Call) -> tuple[str, object]:
         reason = _short(final.get("terminal_reason"))
         raise CallError(f"claude ended with terminal_reason {reason}, not 'completed'")
     shaped = final.get("structured_output")
-    if call.json_schema is not None and shaped is not None:
+    if call.json_schema is not None and isinstance(shaped, dict):
         return json.dumps(shaped), final.get("usage")
     text = final.get("result")
     if not isinstance(text, str):
@@ -285,17 +295,19 @@ def _check_lockdown(init: Mapping[str, Any]) -> None:
 
 
 def _lockdown_problem(init: Mapping[str, Any]) -> str | None:
-    missing = [name for name in (*_EMPTY_FIELDS, "agents", "output_style") if name not in init]
+    fields = ("tools", *_EMPTY_FIELDS, "agents", "output_style")
+    missing = [name for name in fields if name not in init]
     if missing:
         return f"{missing[0]} is missing"
     for name in _EMPTY_FIELDS:
         if init[name] != []:
             return f"{name} = {_short(init[name])}"
-    agents = init["agents"]
-    if not isinstance(agents, list) or not all(isinstance(a, str) for a in agents):
-        return f"agents = {_short(agents)} is not a list of names"
-    if extra := sorted(set(agents) - _BUILTIN_AGENTS):
-        return f"agents beyond the built-in ones: {_short(extra)}"
+    for name, allowed in (("tools", _ALLOWED_TOOLS), ("agents", _BUILTIN_AGENTS)):
+        names = init[name]
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            return f"{name} = {_short(names)} is not a list of names"
+        if extra := sorted(set(names) - allowed):
+            return f"{name} not allowed: {_short(extra)}"
     if init["output_style"] != "default":
         return f"output_style = {_short(init['output_style'])}, not 'default'"
     return None
