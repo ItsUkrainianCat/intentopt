@@ -8,6 +8,10 @@ The call cache of `CachedBackend` lives here too: one file per call, named by th
 `Call` fields, holding the reply and its duration, or a tombstone for a call that failed inside
 the search (SPEC R17, R24; ADR-004). Prompts and replies are data, never part of a path (SPEC R19).
 The JSON formats and their reading rules are in `runformat.py`.
+
+The threads of a fast-pipeline stage share one store (SPEC R25; ADR-011): the progress, the call
+log, the tombstones and the search start are written under a lock, so each log line goes in
+whole; every other file write goes through a temporary file of its own.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,6 +77,7 @@ class RunStore:
     def __init__(self, path: Path, lock: int, manifest: dict[str, Any], plan: Plan) -> None:
         self._path = path
         self._lock: int | None = lock  # the flock is held as long as this descriptor is open
+        self._writing = threading.Lock()  # one thread at a time writes progress, log, tombstones
         self._manifest = manifest
         self._plan = plan
         self._search_start: tuple[int, float] | None = None
@@ -235,16 +241,18 @@ class RunStore:
     def save_progress(self, calls_used: int, elapsed_s: float) -> None:
         """The paid calls and monotonic seconds used so far, saved after every paid call so a
         resume continues the same budget and clock (SPEC R17, R22)."""
-        manifest = {**self._manifest, "calls_used": calls_used, "elapsed_s": elapsed_s}
-        self._manifest, _ = self._save(_MANIFEST, manifest, parse_manifest)
+        with self._writing:
+            manifest = {**self._manifest, "calls_used": calls_used, "elapsed_s": elapsed_s}
+            self._manifest, _ = self._save(_MANIFEST, manifest, parse_manifest)
 
     def search_start_or_record(self, used: int, elapsed: float) -> tuple[int, float]:
         """The call count and clock reading when the search first began: recorded by the first
         call and returned unchanged ever after, also on resume (ADR-004)."""
-        if self._search_start is None:
-            doc = {"search_start": {"used": used, "elapsed": elapsed}}
-            self._search_start = self._save(_CHECKPOINT, doc, parse_checkpoint)
-        return self._search_start
+        with self._writing:
+            if self._search_start is None:
+                doc = {"search_start": {"used": used, "elapsed": elapsed}}
+                self._search_start = self._save(_CHECKPOINT, doc, parse_checkpoint)
+            return self._search_start
 
     def save_contract(self, contract: Contract) -> None:
         doc = {"contract": dataclasses.asdict(contract)}
@@ -289,7 +297,8 @@ class RunStore:
     def record_failure(self, call: Call, error: str, duration_s: float) -> None:
         """A tombstone for a call that failed all its attempts inside the search: `CachedBackend`
         replays it as `CallFailed`, so a resume decides as the original run did (SPEC R22)."""
-        self._write_cache(call, outcome="failed", error=error, duration_s=duration_s)
+        with self._writing:
+            self._write_cache(call, outcome="failed", error=error, duration_s=duration_s)
 
     def log_call(
         self,
@@ -304,15 +313,16 @@ class RunStore:
         entry = {"role": role, "model": model, "tokens_in": tokens_in, "tokens_out": tokens_out}
         entry |= {"cached": cached, "duration_s": duration_s, "schema_version": SCHEMA_VERSION}
         line = _dumps(entry).encode() + b"\n"
-        fd = _open_private(self._path / "calls.jsonl", os.O_RDWR | os.O_APPEND)
-        try:
-            size = os.fstat(fd).st_size
-            if size and os.pread(fd, 1, size - 1) != b"\n":
-                line = b"\n" + line
-            while line:
-                line = line[os.write(fd, line) :]
-        finally:
-            os.close(fd)
+        with self._writing:
+            fd = _open_private(self._path / "calls.jsonl", os.O_RDWR | os.O_APPEND)
+            try:
+                size = os.fstat(fd).st_size
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    line = b"\n" + line
+                while line:
+                    line = line[os.write(fd, line) :]
+            finally:
+                os.close(fd)
 
     def open_log(self) -> TextIO:
         """`gepa.log`, opened for appending; the caller closes it."""
@@ -334,9 +344,12 @@ class RunStore:
         return parsed
 
     def _write_cache(self, call: Call, **fields: object) -> None:
+        """One cache entry, through a temporary file of its own, so writers of one key on several
+        threads leave one whole entry."""
         folder = self._path / _CACHE
         if not folder.is_dir():
-            _make_dir(folder)
+            with contextlib.suppress(FileExistsError):  # another thread created it meanwhile
+                _make_dir(folder)
         doc = {"schema_version": SCHEMA_VERSION, "key_fields": dataclasses.asdict(call), **fields}
         _write_json(folder / f"{cache_key(call)}.json", doc)
 

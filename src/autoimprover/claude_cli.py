@@ -1,7 +1,8 @@
 """The raw model layer: one `claude -p` child process per call (ADR-004, ADR-009), and the only
-code that builds that command (SPEC R18). The flags are those of R18; the system prompt is the
-single argument `--system-prompt=<text>` and the reply schema follows `--json-schema`. The user
-text goes to the child's stdin only, never into an argument, and no shell is involved (SPEC R19).
+code that builds that command (SPEC R18). The flags are those of R18, plus `--effort <level>`
+after the model when the call asks for one (SPEC R25); the system prompt is the single argument
+`--system-prompt=<text>` and the reply schema follows `--json-schema`. The user text goes to the
+child's stdin only, never into an argument, and no shell is involved (SPEC R19).
 The child runs in the run's empty working folder with an allowlisted environment (no API key,
 nothing `ANTHROPIC_*` or `CLAUDE_CODE_*`), so it uses the subscription login and reads no project
 file.
@@ -20,6 +21,9 @@ refused. Anything else that goes wrong with one attempt is a `CallError`, which
 `BackendError`. Each call has a timeout of `min(CALL_TIMEOUT_S, clock left until the current
 deadline)` and no call starts once the deadline has passed (SPEC R17); on expiry only the child
 this call started is killed, by its exact pid.
+
+Calls may run on several threads at once (SPEC R25): the backend holds only what it was built
+with, and each call makes its own child, pipes, feeder thread and timer.
 """
 
 from __future__ import annotations
@@ -150,8 +154,12 @@ def _environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def _argv(binary: str, call: Call) -> list[str]:
-    """The whole command; the user text is never part of it (SPEC R18, R19)."""
-    argv = [binary, *_HEAD, "--model", call.model, *_TAIL]
+    """The whole command; the user text is never part of it (SPEC R18, R19). A call that asks
+    for an effort level gets `--effort <level>` after its model (SPEC R25)."""
+    argv = [binary, *_HEAD, "--model", call.model]
+    if call.effort is not None:
+        argv += ["--effort", call.effort]
+    argv += _TAIL
     if call.system:
         argv.append(f"--system-prompt={call.system}")
     if call.json_schema is not None:
