@@ -206,7 +206,8 @@ class BudgetExhausted(Exception):
 
 
 class SessionNotLockedDown(Exception):
-    """The claude session reported plugins, MCP servers or tools (SPEC R18, exit code 4)."""
+    """The claude session reported tools, MCP servers, skills, slash commands, extra agents or a
+    non-default output style (SPEC R18, ADR-009, exit code 4)."""
 
 
 @dataclass(frozen=True)
