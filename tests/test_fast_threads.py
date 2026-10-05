@@ -20,6 +20,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     World,
     no_disk_flush,
     run,
+    tagged,
 )
 
 from autoimprover.types import Backend, Call, Reply, Scenario
@@ -30,18 +31,20 @@ THREE = (BETTER, CLEAR, VERY_CLEAR)
 
 
 def barrier_world(roles: set[str], parties: int, rewrites=THREE) -> World:
+    """Every call of `roles` waits until `parties` of them are in flight. Each prompt's outputs
+    differ (`tagged`), so no two judge calls are one call the cache would answer."""
     barrier = threading.Barrier(parties)
 
     def hook(call: Call) -> None:
         if call.role in roles:
             barrier.wait(WAIT)  # BrokenBarrierError unless all `parties` calls are in flight
 
-    return World(rewrites=rewrites, hook=hook)
+    return World(rewrites=rewrites, hook=hook, task=tagged)
 
 
-def test_stage_a_runs_the_intake_and_the_rewrites_side_by_side(tmp_path):
-    result = run(tmp_path, barrier_world({"intake", "reflect"}, 4), K3M3, workers=4)
-    assert result.outcome.prompt == BETTER
+def test_stage_a_runs_the_intake_the_synthesis_and_the_rewrites_in_one_wave(tmp_path):
+    world = barrier_world({"intake", "synth", "reflect"}, 5)
+    assert run(tmp_path, world, K3M3, workers=5).outcome.prompt == BETTER
 
 
 def test_stage_b_runs_every_prompt_on_every_scenario_in_one_wave(tmp_path):
@@ -50,8 +53,9 @@ def test_stage_b_runs_every_prompt_on_every_scenario_in_one_wave(tmp_path):
     assert result.outcome.prompt == BETTER
 
 
-def test_stage_c_runs_one_judge_call_per_prompt_in_one_wave(tmp_path):
-    result = run(tmp_path, barrier_world({"judge"}, 4), K3M3, workers=4)
+def test_stage_c_runs_the_judge_calls_and_the_contract_check_in_one_wave(tmp_path):
+    """4 prompts: 4 judge calls and 1 contract check, K + 2 calls at once."""
+    result = run(tmp_path, barrier_world({"judge"}, 5), K3M3, workers=5)
     assert result.outcome.prompt == BETTER
 
 

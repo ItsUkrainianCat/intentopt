@@ -22,6 +22,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     prompt_of,
     run,
     scenario_of,
+    scoring_judges,
 )
 
 from autoimprover.fastplan import FastPlan
@@ -143,27 +144,32 @@ def test_the_comparison_uses_only_the_scenarios_both_completed(tmp_path, fails, 
 
 
 @dataclasses.dataclass
-class InvalidFirstContractReply(World):
-    """The first reply to a judge call that holds the contract scenario is not JSON."""
+class InvalidFirstReplies(World):
+    """The first reply to the contract check and to the rewrite's judge call is not JSON."""
 
     def __call__(self, call: Call) -> str | Exception:
-        if call.role == "judge" and call.sample == 0 and '"contract"' in call.user:
+        first = call.role == "judge" and call.sample == 0
+        if first and ('"contract-1"' in call.user or "answer A" in call.user):
             return "not json"
         return super().__call__(call)
 
 
 def test_an_invalid_judge_reply_is_asked_again_as_a_new_sample(tmp_path):
-    """The evaluator's rule (ADR-008), kept for the call that carries the contract check."""
-    retried = InvalidFirstContractReply(**vars(world({"O": (5, 5), "A": (7, 7)})))
+    """The evaluator's rule for a judge call (sample + 1000) and `contract.check`'s for the
+    contract check (sample + 1) (ADR-008), with the same messages."""
+    retried = InvalidFirstReplies(**vars(world({"O": (5, 5), "A": (7, 7)})))
     result = run(tmp_path, retried, K1M2_EXAMPLES, examples=EXAMPLES)
     judges = result.calls("judge")
-    assert [c.sample for c in judges] == [0, 0, 1000] and result.outcome.prompt == A
-    assert (judges[2].user, judges[2].system) == (judges[1].user, judges[1].system)
+    assert [c.sample for c in judges] == [0, 1, 0, 0, 1000] and result.outcome.prompt == A
+    assert (judges[1].user, judges[1].system) == (judges[0].user, judges[0].system)
+    assert (judges[4].user, judges[4].system) == (judges[3].user, judges[3].system)
 
 
-def test_the_original_is_never_shown_its_prompt(tmp_path):
+def test_no_judge_call_that_grades_outputs_is_shown_a_prompt(tmp_path):
+    """ADR-002: only the contract check, a veto, sees the original and the rewrite."""
     result = run(tmp_path, world({"O": (5, 5), "A": (7, 7)}), K1M2_EXAMPLES, examples=EXAMPLES)
-    assert PROMPT not in result.calls("judge")[0].user
+    grading = scoring_judges(result)
+    assert len(grading) == 2 and not any(t in c.user for c in grading for t in (PROMPT, A))
 
 
 @pytest.mark.parametrize(("passed", "returned"), [(1, False), (2, True)])

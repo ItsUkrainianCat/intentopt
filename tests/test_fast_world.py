@@ -45,12 +45,12 @@ WAIT = 10.0  # seconds; only a broken implementation ever waits this long
 
 # Plans by shape: K rewrites, M scenarios, H held out (worked out in test_fastplan.py).
 QUICK = fast_plan(15, 4, SHORT, False)  # K=1
-K1M2 = fast_plan(30, 4, SHORT, False)  # synthesises 2
-K2M2 = fast_plan(30, 6, SHORT, False)  # synthesises 2
-K3M3 = fast_plan(45, 4, SHORT, False)  # synthesises 3
-K3M2_EXAMPLES = fast_plan(30, 4, SHORT, True)
+K1M2 = fast_plan(25, 4, SHORT, False)  # synthesises 2
+K2M2 = fast_plan(30, 4, SHORT, False)  # synthesises 2
+K3M3 = fast_plan(30, 6, SHORT, False)  # synthesises 3: the default time and workers
+K3M2_EXAMPLES = fast_plan(25, 8, SHORT, True)
 K1M2_EXAMPLES = fast_plan(25, 4, SHORT, True)
-CHECKED = fast_plan(60, 4, SHORT, False)  # K=3, M=2, H=4: synthesises 6
+CHECKED = fast_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
 
 
 class Verbatim(str):
@@ -59,6 +59,12 @@ class Verbatim(str):
 
 def good_by_marker(call: Call) -> str:
     return "GOOD answer" if MARKER in call.system + call.user else "BAD answer"
+
+
+def tagged(call: Call) -> str:
+    """As good_by_marker, but each prompt's outputs differ (by its length), so no two prompts'
+    judge calls are the same call (the cache would answer the second)."""
+    return f"{good_by_marker(call)} {len(prompt_of(call))}"
 
 
 @dataclass
@@ -92,7 +98,7 @@ class World:
             call,
             lambda scenario, check_id, output: (
                 self.contract_ok(output)
-                if scenario == "contract"
+                if scenario.startswith("contract")
                 else self.passes(scenario, check_id, output)
             ),
         )
@@ -120,6 +126,15 @@ def scenario_of(call: Call) -> str:
 
 def judged_scenarios(call: Call) -> list[str]:
     return [item["scenario"] for item in json.loads(call.user)["scenarios"]]
+
+
+def is_contract_check(call: Call) -> bool:
+    return call.role == "judge" and judged_scenarios(call)[0].startswith("contract")
+
+
+def scoring_judges(result: Result) -> list[Call]:
+    """The judge calls that grade outputs, not the contract checks."""
+    return [c for c in result.calls("judge") if not is_contract_check(c)]
 
 
 def run(
@@ -205,7 +220,7 @@ def test_the_world_passes_good_outputs_and_the_contract():
                 "checks": [{"id": "a", "text": "t"}],
             },
             {
-                "scenario": "contract",
+                "scenario": "contract-1",
                 "input": "p",
                 "output": "not",
                 "checks": [{"id": "k", "text": "t"}],

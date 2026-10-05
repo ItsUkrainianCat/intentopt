@@ -22,15 +22,18 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     QUICK,
     Verbatim,
     World,
+    is_contract_check,
     judged_scenarios,
     no_disk_flush,
     prompt_of,
     run,
     scenario_of,
+    scoring_judges,
+    tagged,
 )
 
-from autoimprover.evaluator import Evaluator
-from autoimprover.fast_prompts import FAST_JUDGE_SYSTEM, STRATEGY_NOTES
+from autoimprover.evaluator import _JUDGE_SYSTEM, Evaluator
+from autoimprover.fast_prompts import STRATEGY_NOTES
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import BackendError, Call, CallError, Scenario
@@ -58,12 +61,13 @@ def test_a_rewrite_that_wins_is_returned_unverified_with_its_report(tmp_path):
 
 
 def test_the_stages_make_the_calls_of_the_plan(tmp_path):
-    """K=3 rewrites that all propose the same text are scored once: one intake, three rewrite
-    calls, one synthesis of M=3, then the original and the rewrite on 3 scenarios, then one judge
-    call each."""
+    """K=3 rewrites that all propose the same text are scored once: stage A is the intake, the
+    synthesis of M=3 and three rewrite calls; then the original and the rewrite on 3 scenarios;
+    then the contract check and one judge call each."""
     result = run(tmp_path, World(), K3M3)
     roles = [call.role for call in result.raw.calls]
-    assert roles == ["intake"] + ["reflect"] * 3 + ["synth"] + ["task"] * 6 + ["judge"] * 2
+    assert roles == ["intake", "synth"] + ["reflect"] * 3 + ["task"] * 6 + ["judge"] * 3
+    assert "contract" not in result.calls("synth")[0].user  # it runs beside the intake
     assert json.loads(result.calls("synth")[0].user)["count"] == 3
     tasks = result.calls("task")
     assert [prompt_of(c) for c in tasks] == [PROMPT] * 3 + [BETTER] * 3
@@ -99,7 +103,7 @@ def test_a_rewrite_that_drops_a_literal_is_never_run_or_returned(tmp_path, rewri
     assert any(prompt_of(c) == rewrite for c in result.calls("task")) is returned
     if not returned:
         assert result.outcome.reason_code == "no_reliable_improvement"
-        assert result.calls("synth") == [] and result.calls("judge") == []
+        assert result.calls("task") == [] and result.calls("judge") == []
 
 
 @pytest.mark.parametrize(("extra", "returned"), [(41, False), (40, True)])
@@ -118,7 +122,7 @@ def test_allow_growth_lifts_the_length_cap(tmp_path):
     assert run(tmp_path, World(rewrites=(rewrite,)), K1M2, plan=plan).outcome.prompt == rewrite
 
 
-# --- the contract check rides in the rewrite's judge call (SPEC R6; ADR-011 decision 3) -----------
+# --- the judge sees outputs only; one contract check vetoes the rewrites (SPEC R6; ADR-002) -------
 
 
 @pytest.mark.parametrize("keeps", [False, True])
@@ -128,24 +132,28 @@ def test_a_rewrite_failing_the_contract_check_is_never_returned(tmp_path, keeps)
     assert outcome.status == ("improved" if keeps else "unchanged")
 
 
-def test_one_judge_call_per_prompt_and_only_a_rewrites_holds_the_contract(tmp_path):
-    result = run(tmp_path, World(rewrites=(BETTER, f"{PROMPT} {MARKER} Be brief.")), K3M3)
-    judges = result.calls("judge")
-    assert [judged_scenarios(c) for c in judges] == [
-        ["s1", "s2", "s3"],
-        ["s1", "s2", "s3", "contract"],
-        ["s1", "s2", "s3", "contract"],
+SECOND = f"{PROMPT} {MARKER} Be brief."
+
+
+def test_the_judge_grades_outputs_only_and_one_contract_check_holds_every_rewrite(tmp_path):
+    result = run(tmp_path, World(rewrites=(BETTER, SECOND), task=tagged), K3M3)
+    scoring = scoring_judges(result)
+    assert [judged_scenarios(c) for c in scoring] == [["s1", "s2", "s3"]] * 3
+    for call in scoring:  # the evaluator's own calls: never a prompt (ADR-002)
+        assert call.system == _JUDGE_SYSTEM
+        assert not any(text in call.user for text in (PROMPT, BETTER, SECOND))
+    (contract,) = [c for c in result.calls("judge") if is_contract_check(c)]
+    sent = json.loads(contract.user)["scenarios"]
+    assert [(s["scenario"], s["input"], s["output"]) for s in sent] == [
+        ("contract-1", PROMPT, BETTER),
+        ("contract-2", PROMPT, SECOND),
     ]
-    contract = json.loads(judges[1].user)["scenarios"][-1]
-    assert (contract["input"], contract["output"]) == (PROMPT, BETTER)
-    assert [check["id"] for check in contract["checks"]] == [
+    assert [check["id"] for check in sent[0]["checks"]] == [
         "no-new-goal",
         "same-language",
         "same-format",
     ]
-    assert PROMPT not in judges[0].user  # the original's call shows no prompt
-    assert {c.model for c in judges} == {MODELS.judge}
-    assert {c.system for c in judges} == {FAST_JUDGE_SYSTEM}  # one instruction grades all
+    assert {c.model for c in result.calls("judge")} == {MODELS.judge}
 
 
 @dataclasses.dataclass
@@ -154,10 +162,10 @@ class QuotesTheOriginal(World):
 
     def __call__(self, call: Call) -> str | Exception:
         reply = super().__call__(call)
-        if call.role != "judge" or "contract" not in judged_scenarios(call):
+        if not is_contract_check(call):
             return reply
         body = json.loads(str(reply))
-        for check in body["results"][-1]["checks"]:
+        for check in body["results"][0]["checks"]:
             check["quote"] = "request."
         return json.dumps(body)
 
@@ -177,7 +185,13 @@ def test_every_rewrite_dropped_leaves_the_original_without_scoring(tmp_path):
         PROMPT,
         "no_reliable_improvement",
     )
-    assert [c.role for c in result.raw.calls] == ["intake", "reflect", "reflect", "reflect"]
+    assert [c.role for c in result.raw.calls] == [
+        "intake",
+        "synth",
+        "reflect",
+        "reflect",
+        "reflect",
+    ]
     assert "rewrite 0 dropped" in result.log
 
 
@@ -318,7 +332,7 @@ GOOD_CHECK = {"id": "g", "group": "format", "text": "says GOOD", "rule": "contai
 
 def test_programmatic_checks_alone_need_no_judge_call_for_the_original(tmp_path):
     result = run(tmp_path, World(intake=intake_reply(checks=[GOOD_CHECK])), K1M2)
-    assert [judged_scenarios(c) for c in result.calls("judge")] == [["contract"]]
+    assert [judged_scenarios(c) for c in result.calls("judge")] == [["contract-1"]]
     outcome = result.outcome
     assert (outcome.prompt, outcome.score_before, outcome.score_after) == (BETTER, 0.0, 1.0)
 
