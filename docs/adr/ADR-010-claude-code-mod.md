@@ -15,6 +15,10 @@
 - `commands/improve.md` and `commands/optimize.md` are removed (a mod command with a taken name fails to register).
 - Tests: `claude plugin test` (`*.test.ts`) for argument parsing, argv building, report rendering, cancel, missing `uv`, not-logged-in; pytest drift tests (plugin version equals `pyproject.toml`, `hooks.json` module path exists, no hardcoded home path, the install tree holds `src/` and `uv.lock`).
 
+## Amendment 2026-10-05 (user request)
+
+An improved prompt is put into the prompt box automatically (`$.prompt.read` first: a draft the user already typed is never overwritten), so the next step is the user pressing Enter or editing; the pane keeps Use it, Copy and Close.
+
 ## Consequences
 
 The login and sandbox problems disappear (the child is outside the sandbox, as any process a mod starts), nothing relays the prompt through the model, progress and review are real UI, and runs can last the full 45 minutes. The cost: a mod runs with the user's full permissions and unsandboxed, so the trust surface is the mod's code (small, listed by `validate`, public in the repository); mods do not draw in `claude -p` or the VS Code chat panel (the command's text is the fallback) and are off under `--safe-mode`, which our backend uses, so the model-calling child never loads the mod. The mods API can change between Claude Code releases; the README names the tested version.
