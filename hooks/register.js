@@ -2,13 +2,15 @@
 // autoimprover CLI as a child process: by an argument list (no shell), with a typed prompt in a
 // file inside a private folder made by `mktemp -d`, the session's model as the target model, and
 // the tool's virtual environment in the person's cache folder. The child's stderr feeds the
-// status line and its one JSON object the report pane; "Use it" puts the improved prompt into
-// the prompt box, the only way a result reaches the session. The model never sees the prompt:
+// status line and its one JSON object the report pane; an improved prompt goes into an empty
+// prompt box by itself as an editable draft (a typed draft is kept; "Use it" replaces it), and
+// nothing is sent until the person presses Enter. The model never sees the prompt:
 // the module hooks `session.start`, `command.run` and the drawing of its own pane, nothing else.
 // Every call on `$` is in this file; parsing, command lines and the report view are the pure
 // modules beside it.
 
 import { RUN_ID, parseArgs, usageText } from './args.js'
+import { boxPlan, boxRefused } from './box.js'
 import {
   childEnv, cleanArgs, cliArgv, needsDryFirst, resolvePath, resumeArgs, runArgs, targetModelOf,
   tmpTemplate, venvFolder,
@@ -22,7 +24,7 @@ import { Progress } from './stream.js'
 
 /**
  * @import { CommandRunResult, EngineInterface as E, HookStream, On } from 'claude-code'
- * @import { ProcessRunResult, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+ * @import { ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
  * @import { RenderElement, RenderSurface, UiPressArgument } from 'claude-code'
  */
 /** @import { Request } from './args.js' */
@@ -40,6 +42,7 @@ const ALIAS = 'Alias of /improve'
 const HINT = '<prompt> | --file PATH | --dry <prompt> | --resume [ID] | clean [ID] | cancel'
 // Both commands run at once when typed mid-turn, so `cancel` can stop a run while Claude works.
 const COMMAND = { argumentHint: HINT, immediate: /** @type {const} */ (true) }
+const FOCUS = /** @type {const} */ (true)
 // `uv run` may build the tool's environment first, so a plan or a clean may take this long.
 const ONE_SHOT_MS = 300_000
 
@@ -91,30 +94,23 @@ async function startSession($, e, next) {
  * @returns {Promise<CommandRunResult>}
  */
 async function runCommand($, e) {
+  const { command } = e
   const request = parseArgs(e.args)
   try {
-    return await answer($, e.command, request)
+    if (request.kind === 'usage') return { text: usageText(command, request.message), exitCode: 2 }
+    if (request.kind === 'help') return { text: usageText(command) }
+    if (request.kind === 'cancel') return await cancelRun(command)
+    if (request.kind === 'clean') return await cleanRun($, command, request.id)
+    if (current !== null) {
+      const id = runIdOf(current.runDir)
+      const which = id === null ? 'a run is already going' : `run ${id} is still going`
+      return { text: `${which}; /${command} cancel stops it`, exitCode: 2 }
+    }
+    return await startRun($, command, request)
   } catch (error) {
     if (error instanceof Refusal) return error.result
     return { text: `autoimprover: failed: ${messageOf(error)}`, exitCode: 1 }
   }
-}
-
-/**
- * @param {E} $ @param {string} command @param {Request} request
- * @returns {Promise<CommandRunResult>}
- */
-async function answer($, command, request) {
-  if (request.kind === 'usage') return { text: usageText(command, request.message), exitCode: 2 }
-  if (request.kind === 'help') return { text: usageText(command) }
-  if (request.kind === 'cancel') return cancelRun(command)
-  if (request.kind === 'clean') return cleanRun($, command, request.id)
-  if (current !== null) {
-    const id = runIdOf(current.runDir)
-    const which = id === null ? 'a run is already going' : `run ${id} is still going`
-    return { text: `${which}; /${command} cancel stops it`, exitCode: 2 }
-  }
-  return startRun($, command, request)
 }
 
 /**
@@ -169,7 +165,7 @@ async function startRun($, command, request) {
     if (job.cancelled) return { text: cancelledText(null, command), exitCode: 130 }
     const argv = cliArgv($.plugin.root, args)
     if ((await $.session.surfaces()).length === 0) {
-      const view = await drive($, job, argv, setup.env)
+      const view = await fillBox($, await drive($, job, argv, setup.env))
       return { text: renderText(view), exitCode: view.exitCode }
     }
     shown = runningView({ status: null, runDir: null, command })
@@ -189,15 +185,10 @@ async function startRun($, command, request) {
  * @returns {Promise<Setup>}
  */
 async function prepare($) {
-  /** @type {ProcessRunResult} */
-  let uv
-  try {
-    uv = await $.process.run(['uv', '--version'])
-  } catch (error) {
+  const uv = await $.process.run(['uv', '--version']).catch((error) => {
     const why = `uv did not start (${messageOf(error)})`
-    const fix = 'install it on the PATH Claude Code runs with'
-    throw new Refusal(`autoimprover needs uv: ${why}; ${fix}`, 2)
-  }
+    throw new Refusal(`autoimprover needs uv: ${why}; put it on the PATH Claude Code runs with`, 2)
+  })
   if (uv.exitCode !== 0) {
     throw new Refusal(`autoimprover needs uv; \`uv --version\` failed: ${lastLines(uv.stderr)}`, 2)
   }
@@ -274,11 +265,10 @@ async function targetModel($, request) {
  */
 async function fileSize($, file) {
   if (file === undefined) return null
-  try {
-    return (await $.fs.stat(file)).size
-  } catch (error) {
+  const stat = await $.fs.stat(file).catch((error) => {
     throw new Refusal(`--file: cannot read ${file}: ${messageOf(error)}`, 2)
-  }
+  })
+  return stat.size
 }
 
 /**
@@ -386,10 +376,27 @@ async function runDetached($, job, argv, env) {
   } finally {
     await finishJob($, job)
   }
-  shown = view
+  shown = view = await fillBox($, view)
   $.ui.invalidate('ui.render')
   $.ui.toast(view.toast)
   if (!(await openPane($, true))) $.ui.log(renderText(view))
+}
+
+/**
+ * An improved prompt into the prompt box by itself, unless a draft the person typed is there
+ * (SPEC R21); the view then says which happened. Nothing is sent.
+ * @param {E} $ @param {View} view
+ * @returns {Promise<View>}
+ */
+async function fillBox($, view) {
+  const improved = view.improved
+  if (improved === null) return view
+  let plan = boxPlan(view, (await $.prompt.read()).text) ?? boxRefused(view, undefined)
+  if (plan.fill) {
+    const filled = await $.prompt.fill({ text: improved, mode: 'replace' })
+    if (!filled.isFilled) plan = boxRefused(view, filled.refusal)
+  }
+  return { ...view, box: plan.box, toast: plan.toast }
 }
 
 /**
@@ -418,10 +425,8 @@ async function finishJob($, job) {
  */
 async function openPane($, result) {
   try {
-    const opened = result
-      ? await $.ui.open({ id: 'improve', title: 'improve', focus: true, closeOnEscape: true })
-      : await $.ui.open({ id: 'improve', title: 'improve' })
-    return opened.isPlaced
+    const asks = result ? { focus: FOCUS, closeOnEscape: FOCUS } : {}
+    return (await $.ui.open({ id: 'improve', title: 'improve', ...asks })).isPlaced
   } catch (error) {
     $.ui.log(`autoimprover: the report pane did not open: ${messageOf(error)}`)
     return false
@@ -439,8 +444,8 @@ function drawPane($, e) {
 }
 
 /**
- * "Use it" (the person's yes, SPEC R21), Copy and Keep original for an improved prompt; Close
- * (Hide while it runs) otherwise.
+ * "Use it" (puts the improved prompt into the box again, over a draft), Copy and Close for an
+ * improved prompt; Close (Hide while it runs) otherwise.
  * @param {E} $ @param {any} Button the surface's Button element @param {View} view
  */
 function buttonsOf($, Button, view) {
@@ -449,7 +454,7 @@ function buttonsOf($, Button, view) {
   const dismiss = { role: 'dismiss' }
   if (prompt === null || view.useLabel === null) {
     const label = view.state === 'running' ? 'Hide' : 'Close'
-    return [h(Button, { key: 'close', label, hotkey: 'c', ...dismiss, onPress: close })]
+    return [h(Button, { key: 'close', label, hotkey: 'x', ...dismiss, onPress: close })]
   }
   const use = () => useImproved($, prompt)
   /** @param {UiPressArgument} press */
@@ -458,7 +463,7 @@ function buttonsOf($, Button, view) {
   return [
     h(Button, { key: 'use', label: view.useLabel, hotkey: 'u', ...main, onPress: use }),
     h(Button, { key: 'copy', label: 'Copy', hotkey: 'c', onPress: copy }),
-    h(Button, { key: 'keep', label: 'Keep original', hotkey: 'k', ...dismiss, onPress: close }),
+    h(Button, { key: 'close', label: 'Close', hotkey: 'x', ...dismiss, onPress: close }),
   ]
 }
 

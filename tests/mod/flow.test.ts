@@ -89,9 +89,9 @@ describe('a run with a pane', () => {
   })
 
   test(
-    'the pane shows the result; Use it fills the prompt box and closes the pane',
+    'the pane shows the result; Use it replaces a kept draft and closes the pane',
     async ($, on) => {
-      const w = world(on, { chunks: finished(IMPROVED) })
+      const w = world(on, { chunks: finished(IMPROVED), draft: 'my own draft' })
       await boot($)
       await improve($, 'Summarise the meeting notes.')
       await w.results()
@@ -108,17 +108,19 @@ describe('a run with a pane', () => {
     },
   )
 
-  test('Copy copies the improved prompt; Keep original closes and fills nothing', async ($, on) => {
+  test('Copy copies the improved prompt; Close closes and fills nothing more', async ($, on) => {
     const w = world(on, { chunks: finished(IMPROVED) })
     await boot($)
     await improve($, 'Summarise the meeting notes.')
     await w.results()
+    const filled = [{ text: IMPROVED.prompt, mode: 'replace' }]
+    expect(w.fills).toEqual(filled)
     const ui = await mount($)
     await ui.press({ key: 'copy' })
     expect(w.copies).toEqual([IMPROVED.prompt])
-    await ui.press({ key: 'keep' })
+    await ui.press({ key: 'close' })
     expect(w.closes).toEqual(['improve'])
-    expect(w.fills).toEqual([])
+    expect(w.fills).toEqual(filled)
     await ui.unmount()
   })
 

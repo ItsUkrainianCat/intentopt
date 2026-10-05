@@ -239,21 +239,28 @@ What the mod does, and nothing more:
 
 - It writes a typed prompt to `prompt.txt` in a folder that `mktemp -d` makes under `$TMPDIR`
   (else `/tmp`) with mode 0700, then sets the file to mode 0600 with `chmod` (Claude Code's file
-  write takes no mode; until the `chmod`, the 0700 folder keeps other users out), and starts `uv run --frozen --project <plugin folder> autoimprover
-  --json --file <that file> --target-model <the session's model>` plus your flags, as an argument
-  list with no shell. The folder is removed when the child ends, also when it fails or is
-  cancelled. The prompt never goes through the model.
+  write takes no mode; until the `chmod`, the 0700 folder keeps other users out), and starts
+  `uv run --frozen --project <plugin folder> autoimprover --json --file <that file>
+  --target-model <the session's model>` plus your flags, as an argument list with no shell. The
+  folder is removed when the child ends, also when it fails or is cancelled. The prompt never
+  goes through the model.
 - A prompt longer than 2,000 characters (a `--file` larger than 2,000 bytes) gets a `--dry` run
   first; when the plan says a real run would refuse, the mod stops there with that reason.
 - The tool's virtual environment is `$XDG_CACHE_HOME/autoimprover/venv` (by default
   `~/.cache/autoimprover/venv`, through `UV_PROJECT_ENVIRONMENT`), never the plugin's folder.
-- The child's last line on stderr is the status line; its JSON object becomes a pane: the result
-  and reason, the scores, the margin over the noise, the length ratio, what changed and the
-  improved prompt. "Use it" puts that prompt into the prompt box as a draft you can edit and send
-  ("Use it (not verified)" for a `--trust-search` result), "Copy" copies it, "Keep original"
-  closes the pane. Where nothing can draw a pane (`claude -p "/improve ..."`), the command waits
-  for the run, prints the report as its text and exits with the tool's exit code (1 for a failure
-  of the mod itself, 2 when `uv` is missing).
+- The child's last line on stderr is the status line. When the run ends with an improved
+  prompt, that prompt appears in the prompt box by itself, as a draft: edit it if you want and
+  press Enter to send it. The mod sends nothing. If the box already holds a draft you typed, the
+  draft is kept and the pane says so. A result that is not verified on a holdout
+  (`--trust-search`) goes in too, and the toast and the pane say "NOT verified". A kept original,
+  a failure, a cancel or a plan (`--dry`) puts nothing in the box.
+- The run's JSON object becomes a pane: the result and reason, what happened to the prompt box,
+  the scores, the margin over the noise, the length ratio, what changed and the improved prompt.
+  "Use it" puts the improved prompt into the box again, replacing what is there ("Use it (not
+  verified)" for a `--trust-search` result), "Copy" copies it, "Close" closes the pane. Where
+  nothing can draw a pane (`claude -p "/improve ..."`), the command waits for the run, prints the
+  report as its text (including whether the prompt went into the box) and exits with the tool's
+  exit code (1 for a failure of the mod itself, 2 when `uv` is missing).
 - It keeps the last run id in the plugin's store for `--resume` and `clean`. Run data lives in the
   default state folder, `~/.local/state/autoimprover/runs/<id>/` (see "Run folders").
 
@@ -263,7 +270,8 @@ Trust surface: `claude plugin validate --strict` lists what the module hooks and
 `process.run` (`uv --version`, `mktemp`, `chmod`, `rm`, the plan, `clean`), `process.spawn` (the
 run), `fs.write` (the prompt file), `fs.stat` (the size of a `--file`), `env.get` (`HOME`,
 `XDG_CACHE_HOME`, `TMPDIR`), `session.model`, `session.cwd`, `session.surfaces`, `store.*`,
-`prompt.fill`, `command.register` and `ui.*`; no model, MCP or network call.
+`prompt.read` (to keep a draft you typed), `prompt.fill`, `command.register` and `ui.*`; no
+model, MCP or network call.
 `tests/test_mod_package.py` pins these lists. A mod runs inside Claude Code with your permissions,
 and what it starts runs outside Claude Code's sandbox with your normal login, which is how the
 tool's `claude -p` calls find it; those calls run with `--safe-mode`, so this mod is off in them.
@@ -271,7 +279,8 @@ tool's `claude -p` calls find it; those calls run with `--safe-mode`, so this mo
 Not verified until your live run: the mod is type-checked against the declarations of Claude Code
 2.1.287 and its tests (`tests/mod/*.test.ts`, run by `claude plugin test`) use a stubbed engine.
 Whether it loads in a live session, finds `uv`, gets a model id `--target-model` accepts from
-the session, kills the child on `cancel`, and how the pane looks, are checked only by running it.
+the session, kills the child on `cancel`, puts the prompt into the box, and how the pane looks,
+are checked only by running it.
 
 ## Limits and non-goals
 
