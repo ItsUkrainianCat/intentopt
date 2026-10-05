@@ -31,6 +31,14 @@ Loop state for the self-paced `/loop` build (started 2026-10-03 13:23 in a sessi
 - [ ] G6 release vote, user `just smoke`
 - [ ] G7 tag (needs user yes)
 
+## RESUME (2026-10-05 01:30, loop stopped: every remaining item needs the user)
+
+Built, merged and green on `main` (fb5c3b9, 1343 tests, `just check`): WP1a, WP2 (+ placeholder follow-up), WP3, WP4, WP5a, WP5b, WP6, WP7, WP8, G5 cleanup. Blockers, one line each:
+1. USER: the two real `claude -p` outputs (USER STEP 12:00 commands below) so `coder` can build WP1b `claude_cli.py`; the cli already expects `ClaudeCliBackend(clock, cwd=Path, deadline=Callable[[], float])`. Without it every real run exits 3.
+2. USER: `git push origin main` (about 25 commits after b0dfb49; no credentials in the sandbox).
+3. USER (optional): `rm -rf .git/worktrees` in a terminal (stale metadata the sandbox cannot delete); the one-line edit of `.claude/agents/tester.md` line 20; the decision on `--merge` (never merges at valset <= 4: keep or drop).
+4. After WP1b: G6 eight-seat release vote on the code (needs the machine headroom go-ahead again), then the user's `just smoke` and the SPEC section 5 A/B on 8 to 10 real prompts, then the tag (needs the user's explicit yes). Open lows: see the OPEN LOW lines in this log (`--resume ../x` exit code order, whitespace-only synthesised input, shared-judge-call tombstone corner).
+
 ## RESUME CHECKLIST (written 12:00, loop paused)
 
 The `/loop 1m` job was cancelled at 12:00 because every remaining step is blocked outside the lead's reach:
