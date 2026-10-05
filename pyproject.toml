@@ -24,8 +24,7 @@ dev = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-# legacy/ is the 0.1.0 script, kept for reference until gate G5 replaces it
-extend-exclude = ["legacy", ".worktrees"]
+extend-exclude = [".worktrees"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

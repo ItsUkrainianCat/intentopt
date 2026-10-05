@@ -13,7 +13,7 @@ A command-line prompt optimizer: GEPA search over a prompt, scored by running th
 - `docs/ARCHITECTURE.md` how: modules, interfaces, the work-package table
 - `docs/adr/` decisions that are hard to reverse
 - `docs/kit/` the process this repository is built with (`START.md`, `BUILD-LOOP.md`)
-- `legacy/autoimprover/` the 0.1.0 script (tag `v0.1.0-legacy`), kept for reference; outside the checks; gate G5 removes it
+- the 0.1.0 script is the git tag `v0.1.0-legacy` (its folder `legacy/` was removed at gate G5)
 
 ## How work is done here
 

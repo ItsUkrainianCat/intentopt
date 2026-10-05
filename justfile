@@ -23,3 +23,12 @@ fmt:
 
 fmt-check:
     uv run --frozen ruff format --check .
+
+# the user's live check (SPEC section 5): runs the real tool once on a small prompt with the real
+# backend (`claude -p`), so it spends subscription calls; never part of `check`. Needs the real
+# backend module (WP1b) and a logged-in `claude`.
+
+# live check on one small prompt (spends real calls): the plan, then the run
+smoke prompt="Summarise the meeting notes for the team in five bullet points.":
+    uv run --frozen autoimprover --dry "{{ prompt }}"
+    uv run --frozen autoimprover "{{ prompt }}"
