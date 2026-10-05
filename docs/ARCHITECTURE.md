@@ -102,7 +102,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `fixed_costs` (its `iterations` and `iterations_best` fields are the estimate), `refusal`; reflection prompt per strictness (ADR-006); `score_holdout`; gates (contract, length cap, literals); finalist selection, `--trust-search`, the final steps and the `Outcome` with its report fields | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | `report.py` | `render(outcome, ...)`: word diff, summary lines, JSON, error object; the only writer to stdout | R2 |
 | `cli.py` | `main(argv, *, backend=None, now=None) -> int` (`backend` replaces the raw model layer, `now` the monotonic clock) and the subcommand `clean`. Flags: `--dry`, `--force-low-budget`, `--json`, `--file`, `--examples`, `--kind template\|task`, `--budget`, `--strictness`, `--allow-growth`, `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--merge`, `--trust-search`, `--resume <id>` | R1, R2, R4, R14, R22, R23 |
-| `commands/improve.md`, `commands/optimize.md` (repo root) | Claude Code slash command text (`/improve`, alias `/optimize`) | R19, R21 |
+| `.claude-plugin/`, `hooks/` (repo root) | the Claude Code mod: `plugin.json`, `marketplace.json`, `hooks.json`, `register.js` (every `$` call), pure modules `args.js`, `argv.js`, `report.js`, `stream.js`, `pane.js`; `/improve` and `/optimize` run the CLI as a child process (ADR-010) | R19, R21 |
 
 Dependencies point one way: `cli -> runner -> search -> {evaluator, backend}`, `runner -> {contract, scenarios}`, `{evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `search.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
 
@@ -122,7 +122,8 @@ Every file has exactly one owner. The lead owns `pyproject.toml`, `uv.lock`, `ju
 | WP5a search | `coder` | `src/autoimprover/search.py`, `tests/test_search.py`, `tests/test_search_resume.py`; one change to `backend.py` and `tests/test_backend_layers.py` (WP1a is closed): `CachedBackend` gains `record_failures`, a switch that makes it store a tombstone for every `CallFailed` it lets through while on | WP1a-WP4 (merged) | R15a, R16, R17, R22, R24 |
 | WP5b runner | `coder` | `runner.py`, `tests/test_runner.py`, `tests/test_runner_flow.py`, `tests/test_runner_prompts.py` | WP5a | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | WP6 report + cli | `coder` | `report.py`, `cli.py`, `tests/test_report.py`, `tests/test_cli.py` | WP5 | R1, R2, R4, R14, R22, R23 |
-| WP7 docs | `coder` | `README.md`, `commands/improve.md`, `commands/optimize.md`, `tests/test_improve_command.py` | WP6 | R19, R21 |
+| WP7 docs | `coder` | `README.md` | WP6 | R19, R21 |
+| WP9 mod | `coder` | `.claude-plugin/**`, `hooks/**`, `tests/mod/*.test.ts` (run by `claude plugin test`), `tests/test_mod_package.py`, the README section on the mod | WP6, WP7 | R19, R21 |
 | WP8 acceptance | `tester` | `tests/acceptance/**` (including its own `conftest.py`) | skeleton only; written from the SPEC and ADR-008 without reading `src/` | the A proofs; every test that asserts a candidate is NOT returned has a twin on `happy_backend` asserting that one IS, so it cannot pass for the wrong reason |
 
 WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in its own worktree). pytest runs with `--import-mode=importlib` and `pythonpath = ["tests"]`, so `tests/test_cli.py` and `tests/acceptance/test_cli.py` coexist and helpers come from `from fakes import ...`.
@@ -157,9 +158,9 @@ WP1a, WP2, WP3 and WP8 can run in parallel (at most 2 writers at once, each in i
 | R16 ASI to reflection | `evaluator.py` (4), template in `runner.py` (5b) | T: failed checks and excerpts in the reflection prompt |
 | R17 budget, reserve, clock, timeout | `backend.py` (1a), `claude_cli.py` (1b: timeout), `search.py` (5a: stopper, meter), `runner.py` (5b: reserve) | T, A: limit, deadline, stop keeps candidates, resume keeps the count; T with `FakeClock`: the stopper's one-iteration look-ahead keeps the search inside its clock share; T: an identical repeated call is charged once |
 | R18 command, lockdown, argv rules | `claude_cli.py` (1b) | T: argv has no user text; every call checks lockdown (so the first live call of a process too); S |
-| R19 untrusted data | `backend.py` (1), `types.py` (skeleton), `commands/improve.md` (7) | T hostile strings; `test_improve_command.py` |
+| R19 untrusted data | `backend.py` (1), `types.py` (skeleton), the mod (9: the prompt goes through a file and an argument list, never through the model) | T hostile strings; `tests/mod/flow.test.ts`, `test_mod_package.py` |
 | R20 no real model or network | `tests/conftest.py` (skeleton) | T `test_guards.py` |
-| R21 slash command | `commands/*.md` (7) | T text test; S |
+| R21 `/improve` mod | `.claude-plugin/**`, `hooks/**` (9) | T `claude plugin test`, `claude plugin validate`, drift test; S |
 | R22 resume | `runstore.py` (1a), `search.py` (5a), `runner.py` (5b), `cli.py` (6) | A: a run cut at each stage (mid-search, last iteration, final steps) resumes with zero repeated successful paid calls, the same budget and the same finalists; T: a call that failed before the cut is tried again live |
 | R23 run folder, clean | `runstore.py` (1), `cli.py` (6) | T: 0700, not in git, `clean <id>` rejects a path |
 | R24 failures, retries, exit 3 | `backend.py` (1a), `evaluator.py` (4), `search.py` (5a), `runner.py` (5b) | A with `failing()`: the first failed call outside the search (intake) -> exit 3 with the run folder; T: three consecutive failed calls to one model inside the search -> exit 3 even while another model succeeds; one failed reflection call only skips an iteration |
@@ -223,7 +224,7 @@ One kind of child process, built in one place (`claude_cli._argv`):
 - working directory: the empty folder `store.cwd()` = `<run>/cwd` (so no project files are read).
 - timeout: `min(CALL_TIMEOUT_S, clock.remaining(deadline))`, where `deadline` is the current one (the search deadline until `raise_limit`, the full wall clock after); the process is killed by its exact pid; reply cap 1 MiB, larger is a `CallError`.
 - retries: `ResilientBackend`, 2, each counted.
-- how `/improve` starts the tool (R21): `commands/improve.md` tells Claude to write the prompt to a 0600 file under `$TMPDIR`, run `autoimprover --file <path>` in a **background** Bash call with an explicit timeout above the wall clock (the foreground limit is 10 minutes, the default background limit 30; a run can take 45), read the output when it ends, and delete the prompt file. The run folder and the `XDG_STATE_HOME` it used are printed, so `--resume` and `clean` can be run later with the same variable.
+- how `/improve` starts the tool (R21, ADR-010): the mod writes the prompt to a file in a private 0700 folder, spawns `uv run --frozen --project <plugin root> autoimprover --json --file <file> --target-model <session model>` by argument list with `$.process.spawn` (a process a mod starts runs outside Claude Code's sandbox, with the user's login), streams stderr into the status line, reads the one JSON object of R2 from stdout, shows it in a pane, deletes the prompt file in every path, and puts the improved prompt into the prompt box only when the user presses "Use it". Cancel ends the stream, which kills the child by its exact pid.
 
 No other child process, no network call, no `shell=True`.
 

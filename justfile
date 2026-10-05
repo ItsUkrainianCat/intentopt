@@ -32,3 +32,10 @@ fmt-check:
 smoke prompt="Summarise the meeting notes for the team in five bullet points.":
     uv run --frozen autoimprover --dry "{{ prompt }}"
     uv run --frozen autoimprover "{{ prompt }}"
+
+# the Claude Code mod (needs `claude` on PATH, makes no model call): manifests, hooks and API calls
+# it declares, and its own tests; the plugin root is the repo, so the CLAUDE.md warning is expected
+mod-check:
+    claude plugin validate .claude-plugin/marketplace.json --strict
+    claude plugin validate .claude-plugin/plugin.json
+    claude plugin test .
