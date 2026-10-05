@@ -16,9 +16,13 @@ The user ran the call of R18 in their own terminal (BUILD-LOG, USER STEP 12:00, 
 ## Decision
 
 - Every call uses `--output-format stream-json --verbose` and `--settings '{"outputStyle":"default"}'` in addition to the flags of R18. One code path: the backend reads the `init` line and the last `{"type":"result"}` line and ignores the rest.
-- The lockdown check runs on every call (a superset of "the first live call of every process"): it aborts with `SessionNotLockedDown` (exit 4) unless `tools == []`, `mcp_servers == []`, `skills == []`, `slash_commands == []`, `agents` is a subset of the four built-ins (`claude`, `Explore`, `general-purpose`, `Plan`) and `output_style == "default"`. `plugins` is informational and never checked. A missing or malformed `init` line is also `SessionNotLockedDown`.
+- The lockdown check runs on every call (a superset of "the first live call of every process"): it aborts with `SessionNotLockedDown` (exit 4) unless `tools == []` (on a call with a `--json-schema`: `tools` is `[]` or exactly `["StructuredOutput"]`, the internal tool that returns the parsed answer: seen in the user's first real run, 2026-10-05), `mcp_servers == []`, `skills == []`, `slash_commands == []`, `agents` is a subset of the four built-ins (`claude`, `Explore`, `general-purpose`, `Plan`) and `output_style == "default"`. `plugins` is informational and never checked. A missing or malformed `init` line is also `SessionNotLockedDown`.
 - The reply text is the `result` field of the final object; `is_error: true`, a `terminal_reason` other than `completed`, a missing final object or a non-JSON line before it are a `CallError` (retried by the Resilient layer, R24). Tokens come from `usage`, `duration_s` from the clock, not from `duration_ms`.
 - The working directory of the child is a fresh empty folder under the run folder (so no project file can be read), the environment is scrubbed as in R18.
+
+## Amendment 2026-10-05
+
+The user's first real `/improve` run showed that the `init` line of a schema call lists `tools: ["StructuredOutput"]`; the first version of the check refused it (exit 4 on intake). `StructuredOutput` is allowed in `tools` on calls that carry a schema and nowhere else.
 
 ## Consequences
 
