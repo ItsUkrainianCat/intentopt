@@ -4,11 +4,11 @@ time, from the measured latency model of ADR-011: a call costs OVERHEAD_S plus i
 at TOKENS_PER_S, and a stage of parallel calls costs one slowest call per wave of `workers` calls.
 
 Stages of the quick tier: the intake and one rewrite side by side, then the contract check (no
-scoring). Stages of the fast and checked tiers: A the intake beside the K rewrites, then the
-scenario synthesis, which needs the intake's contract (none when the user gives examples); B the
-original and every rewrite run on the M scenarios; C one judge call per prompt, a rewrite's
-contract check riding in it (ADR-011 decision 3); D the free gates and the pick; E (checked only)
-the winner against the original on the held-out scenarios, on the target model.
+scoring). Stages of the fast and checked tiers: A one wave of the intake, the synthesis of the
+scenarios (none when the user gives examples) and the K rewrites; B the original and every
+rewrite run on the M scenarios; C one judge call per prompt, which sees outputs only (ADR-002),
+and one contract check of every rewrite, K + 2 calls; D the free gates and the pick; E (checked
+only) the winner against the original on the held-out scenarios, on the target model.
 
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
 run time (`tail`, `misfit`, `shrink`) to shrink what the time or the calls left cannot cover
@@ -111,27 +111,35 @@ def rewrite_tokens(prompt_tokens: int) -> float:
     return min(REWRITE_MAX_TOKENS, max(REWRITE_MIN_TOKENS, REWRITE_GROWTH * prompt_tokens))
 
 
-def judge_seconds(scenarios: int, contract: bool) -> float:
-    """One judge call over `scenarios` outputs, with a rewrite's contract check in it or not."""
-    checks = JUDGED_CHECKS_PER_SCENARIO * scenarios + (CONTRACT_CHECKS if contract else 0)
-    return call_seconds(JUDGE_TOKENS_PER_CHECK * checks)
+def judge_seconds(scenarios: int) -> float:
+    """One judge call over the outputs of `scenarios` scenarios."""
+    return call_seconds(JUDGE_TOKENS_PER_CHECK * JUDGED_CHECKS_PER_SCENARIO * scenarios)
 
 
-def intake_stage(rewrites: int, workers: int, prompt_tokens: int) -> Stage:
-    """Stage A's first wave: the intake beside the rewrites (none needs the other's reply)."""
-    slowest = max(call_seconds(INTAKE_TOKENS), call_seconds(rewrite_tokens(prompt_tokens)))
-    name = "A: intake and rewrite" if rewrites == 1 else "A: intake and rewrites"
-    return Stage(name, 1 + rewrites, wave_seconds(1 + rewrites, workers, slowest))
+def contract_seconds(candidates: int) -> float:
+    """One contract check of `candidates` rewrites (`contract.check_many`)."""
+    return call_seconds(JUDGE_TOKENS_PER_CHECK * CONTRACT_CHECKS * candidates)
 
 
-def synthesis_stage(count: int) -> Stage:
-    """Stage A's second step: one synthesis call for `count` scenarios, after the intake."""
-    return Stage("A: scenario synthesis", 1, call_seconds(SYNTH_TOKENS_PER_SCENARIO * count))
+def stage_a(rewrites: int, synthesis: int, workers: int, prompt_tokens: int) -> Stage:
+    """Stage A, one wave: the intake, the synthesis of `synthesis` scenarios (none for 0) and the
+    rewrites; none of them needs another's reply."""
+    slowest = max(
+        call_seconds(INTAKE_TOKENS),
+        call_seconds(rewrite_tokens(prompt_tokens)),
+        call_seconds(SYNTH_TOKENS_PER_SCENARIO * synthesis),
+    )
+    calls = 1 + rewrites + (1 if synthesis else 0)
+    name = "A: intake, synthesis and " if synthesis else "A: intake and "
+    name += "rewrite" if rewrites == 1 else "rewrites"
+    return Stage(name, calls, wave_seconds(calls, workers, slowest))
 
 
 def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, ...]:
-    """Stages B, C and D for the original and `rewrites` rewrites on `scenarios` scenarios."""
+    """Stages B, C and D for the original and `rewrites` rewrites on `scenarios` scenarios; stage
+    C is a judge call per prompt and one contract check of every rewrite."""
     prompts = rewrites + 1
+    judging = max(judge_seconds(scenarios), contract_seconds(rewrites))
     return (
         Stage(
             "B: task runs",
@@ -139,9 +147,7 @@ def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, 
             wave_seconds(prompts * scenarios, workers, call_seconds(TASK_TOKENS)),
         ),
         Stage(
-            "C: judge and contract checks",
-            prompts,
-            wave_seconds(prompts, workers, judge_seconds(scenarios, rewrites > 0)),
+            "C: judge and contract checks", prompts + 1, wave_seconds(prompts + 1, workers, judging)
         ),
         Stage("D: free gates and pick", 0, 0.0),
     )
@@ -151,13 +157,13 @@ def holdout_stage(holdout: int, workers: int) -> Stage:
     """Stage E: the winner and the original on `holdout` held-out scenarios on the target model,
     a wave of task runs, then a judge call each."""
     seconds = wave_seconds(2 * holdout, workers, call_seconds(TASK_TOKENS))
-    seconds += wave_seconds(2, workers, judge_seconds(holdout, contract=False))
+    seconds += wave_seconds(2, workers, judge_seconds(holdout))
     return Stage("E: held-out check on the target model", 2 * holdout + 2, seconds)
 
 
 def contract_stage() -> Stage:
-    """The quick tier's contract check of its one rewrite: a judge call with no scenario."""
-    return Stage("contract check", 1, judge_seconds(0, contract=True))
+    """The quick tier's contract check of its one rewrite."""
+    return Stage("contract check", 1, contract_seconds(1))
 
 
 def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool) -> FastPlan:
@@ -173,15 +179,14 @@ def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool
     if workers < 1 or prompt_tokens < 0:
         raise ValueError("workers must be at least 1 and prompt_tokens not negative")
     if tier == "quick":
-        stages = (intake_stage(1, workers, prompt_tokens), contract_stage())
+        stages = (stage_a(1, 0, workers, prompt_tokens), contract_stage())
         return _plan(tier, time_s, workers, 1, 0, 0, stages)
     holdout = CHECKED_HOLDOUT if tier == "checked" else 0
     plans = []
     for rewrites in range(MAX_REWRITES[tier], 0, -1):
         for scenarios in range(MAX_SCENARIOS, MIN_SCENARIOS - 1, -1):
-            stages = (intake_stage(rewrites, workers, prompt_tokens),)
-            if not have_examples:
-                stages += (synthesis_stage(scenarios + holdout),)
+            synthesis = 0 if have_examples else scenarios + holdout
+            stages = (stage_a(rewrites, synthesis, workers, prompt_tokens),)
             stages += scoring_stages(rewrites, scenarios, workers)
             if holdout:
                 stages += (holdout_stage(holdout, workers),)

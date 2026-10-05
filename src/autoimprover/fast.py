@@ -1,25 +1,26 @@
 """The pipeline of the quick, fast and checked tiers (SPEC R25; ADR-011) and the gates every
 rewrite it returns has passed (SPEC R6, R7, R9, R14a, R17, R24).
 
-Stage A runs the intake beside the K rewrites, then the synthesis, which needs the intake's
-contract (the user's examples replace it); a rewrite failing a free gate (length cap, literals) is
-dropped there, before it costs a call. Stage B runs the original and every rewrite on the M
-scenarios in one wave; stage C asks one judge call per prompt in one wave, a rewrite's contract
-check riding in it (ADR-011 decision 3). Stage D returns a rewrite only when it kept the contract
-and beats the original's mean judged score by at least FAST_MARGIN on the scenarios both
-completed, winning on more of them than it loses; the highest gain wins, a tie goes to the
-shorter, then the earlier. Stage E (checked tier) runs the winner against the original on the
-held-out scenarios on the target model, decided as `runner` decides with MIN_THRESHOLD as the
-margin (SPEC R14a). The quick tier only checks its one rewrite's contract.
+Stage A is one wave: the intake, the synthesis of the scenarios (the user's examples replace it)
+and the K rewrites, none of which needs another's reply; a rewrite failing a free gate (length
+cap, literals) is dropped there, before it costs a call. Stage B runs the original and every
+rewrite on the M scenarios in one wave. Stage C is one wave too: the evaluator's judge call for
+each prompt, which sees outputs only (ADR-002), and one contract check of every rewrite
+(`contract.check_many`). Stage D returns a rewrite only when it kept the contract and beats the
+original's mean judged score by at least FAST_MARGIN on the scenarios both completed, winning on
+more of them than it loses; the highest gain wins, a tie goes to the shorter, then the earlier.
+Stage E (checked tier) runs the winner against the original on the held-out scenarios on the
+target model, decided as `runner` decides with MIN_THRESHOLD as the margin (SPEC R14a). The quick
+tier only checks its one rewrite's contract.
 
 Task and judge calls are the evaluator's, scored by its own code (SPEC R10). A stage's calls run
 on `workers` threads, gathered by index, so the Outcome does not depend on the order they end in;
-finished calls are cached by content (SPEC R22). Before each stage the time and calls left are
-compared with its estimate (`fastplan`): what does not fit is shrunk, scenarios first, and a
-deadline or call limit reached inside a stage ends it; a rewrite that has not passed every gate is
-never returned (SPEC R17). A failed rewrite, task or judge call drops what it was for; a failed
-intake, synthesis, quick contract check or held-out run, or an original with no scored scenario,
-ends the run as BackendError (SPEC R24).
+finished calls are cached by content (SPEC R22). Before stages B, C and E the time and calls left
+are compared with their estimate (`fastplan`): what does not fit is shrunk, scenarios first, and
+a deadline or call limit reached inside a stage ends it; a rewrite that has not passed every gate
+is never returned (SPEC R17). A failed rewrite, task or judge call drops what it was for; a failed
+intake, synthesis, contract check or held-out run, or an original with no scored scenario, ends
+the run as BackendError (SPEC R24).
 """
 
 from __future__ import annotations
@@ -30,17 +31,23 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TextIO, cast
 
 from autoimprover.backend import BudgetedBackend, Clock
-from autoimprover.contract import _contract_checks, check, extract_contract, literals_preserved
+from autoimprover.contract import (
+    Violation,
+    _ask,
+    check,
+    check_many,
+    extract_contract,
+    literals_preserved,
+)
 from autoimprover.evaluator import Answers, Evaluator
 from autoimprover.fast_prompts import (
-    CONTRACT_SCENARIO,
     STRATEGY_NOTES,
     gathered_scores,
-    keeps_contract,
     parse_rewrite,
+    parse_synth,
     rewrite_call,
-    stage_c_call,
     strategy,
+    synth_call,
 )
 from autoimprover.fastplan import (
     FastPlan,
@@ -49,13 +56,11 @@ from autoimprover.fastplan import (
     misfit,
     scoring_stages,
     shrink,
-    synthesis_stage,
     tail,
 )
 from autoimprover.parallel import parallel_map
 from autoimprover.runner import MIN_THRESHOLD, count_tokens, length_ok, score_holdout
 from autoimprover.runstore import RunStore
-from autoimprover.scenarios import synthesize
 from autoimprover.types import (
     Backend,
     BackendError,
@@ -172,24 +177,19 @@ class _Fast:
     measured: dict[str, Any] = field(default_factory=dict)
 
     def flow(self, given: list[Scenario] | None, kind: Kind | None) -> Outcome:
-        contract, rewrites = self.stage_a(kind)
+        contract, scenarios, rewrites = self.stage_a(kind, given)
         if self.fplan.tier == "quick":
             return self.quick(contract, rewrites)
+        if self.store.scenarios() is None:
+            self.store.save_scenarios(scenarios)
         if not rewrites:
             return self.kept("no rewrite passed the free gates (length cap, literals)")
-        if given is None and (given := self.synthesis(contract)) is None:
-            return self.kept("")
-        if self.store.scenarios() is None:
-            self.store.save_scenarios(given)
         m, h = self.fplan.scenarios, self.fplan.holdout
-        pick = [s for s in given[:m] if s.id != CONTRACT_SCENARIO]  # that id is the judge's own
-        if not pick:
-            return self.kept("no scenario left to compare the rewrites on")
-        win = self.contest(contract, rewrites, pick, h)
+        win = self.contest(contract, rewrites, scenarios[:m], h)
         if win is None:
             return self.kept(_NO_WIN)
         if self.fplan.tier == "checked":
-            return self.confirm(contract, win, given[m : m + h])
+            return self.confirm(contract, win, scenarios[m : m + h])
         return self.outcome(
             "improved",
             win.rewrite,
@@ -201,25 +201,33 @@ class _Fast:
 
     # --- stage A -----------------------------------------------------------------------------
 
-    def stage_a(self, kind: Kind | None) -> tuple[Contract, list[_Rewrite]]:
-        """The contract (the run folder's, or a new intake) and the rewrites that pass the free
-        gates; the intake and the rewrite calls in one wave."""
-        saved, k = self.store.contract(), self.fplan.rewrites
-        jobs: list[int | None] = ([] if saved else [None]) + list(range(k))
-        self.note(f"stage A: {'intake and ' if saved is None else ''}{k} rewrite call(s)")
+    def stage_a(
+        self, kind: Kind | None, given: list[Scenario] | None
+    ) -> tuple[Contract, list[Scenario], list[_Rewrite]]:
+        """In one wave: the contract (the run folder's, or a new intake), the scenarios (`given`,
+        else one synthesis call; none in the quick tier) and the rewrites that pass the free
+        gates."""
+        saved, fp, reflect = self.store.contract(), self.fplan, self.plan.models.reflect
+        k, count = fp.rewrites, 0 if given else fp.scenarios + fp.holdout  # quick: 0 + 0
+        jobs = (["intake"] if saved is None else []) + (["synth"] if count else []) + [*range(k)]
+        self.note(f"stage A: {', '.join(map(str, jobs))}")
 
-        def job(variant: int | None) -> Contract | str | _Dropped:
-            if variant is None:
-                return extract_contract(self.backend, self.plan.models.reflect, self.prompt, kind)
-            return self.draft(variant)
+        def job(name: str | int) -> Contract | list[Scenario] | str | _Dropped:
+            if name == "intake":
+                return extract_contract(self.backend, reflect, self.prompt, kind)
+            if name == "synth":
+                call = synth_call(self.prompt, count, reflect)
+                return _ask(self.backend, call, lambda text: parse_synth(text, count))
+            return self.draft(cast(int, name))
 
-        results = parallel_map(job, jobs, self.workers)
-        contract = saved or cast(Contract, results[0])
+        results = dict(zip(jobs, parallel_map(job, jobs, self.workers), strict=True))
+        contract = saved or cast(Contract, results["intake"])
         if saved is None:
             self.store.save_contract(contract)
-        drafts = cast(list[str | _Dropped], results[len(jobs) - k :])
+        drafts = [cast(str | _Dropped, results[v]) for v in range(k)]
         self.absorb([(f"rewrite {v}", draft) for v, draft in enumerate(drafts)])
-        return contract, self.gates([(v, d) for v, d in enumerate(drafts) if isinstance(d, str)])
+        rewrites = self.gates([(v, d) for v, d in enumerate(drafts) if isinstance(d, str)])
+        return contract, given or cast(list[Scenario], results.get("synth", [])), rewrites
 
     def draft(self, variant: int) -> str | _Dropped:
         plan = self.plan
@@ -254,15 +262,6 @@ class _Fast:
             self.note(f"rewrite {variant} dropped: it {why}")
         return kept
 
-    def synthesis(self, contract: Contract) -> list[Scenario] | None:
-        """The scenarios to pick on, then those to hold out, from one synthesis call; None when
-        not even the smallest rest of the run fits after it."""
-        count = self.fplan.scenarios + self.fplan.holdout
-        if not self.fits((synthesis_stage(count), *tail(1, 1, self.fplan.holdout, self.workers))):
-            return None
-        self.note(f"stage A: synthesis of {count} scenarios")
-        return synthesize(self.backend, self.plan.models.reflect, self.prompt, contract, count)
-
     # --- stages B, C and D -------------------------------------------------------------------
 
     def contest(
@@ -283,7 +282,7 @@ class _Fast:
         if self.ended:
             return None
         outputs = [
-            {s.id: _output(r) for s, r in zip(pick, results[n * m : (n + 1) * m], strict=True)}
+            {s.id: _failed(r) for s, r in zip(pick, results[n * m : (n + 1) * m], strict=True)}
             for n in range(len(texts))
         ]
         ran = [any(isinstance(out, str) for out in outputs[n].values()) for n in range(len(texts))]
@@ -322,38 +321,40 @@ class _Fast:
         outputs: list[dict[str, str | CallFailed]],
         pick: list[Scenario],
     ) -> tuple[list[dict[str, float]], list[bool]]:
-        """Stage C: one judge call per prompt, in one wave (the original's first); each prompt's
-        score per scenario it completed, and whether it kept the contract."""
-        evaluator = Evaluator(self.backend, contract, "", self.plan.models.judge)
+        """Stage C, one wave: the contract check of every rewrite (first, the longest call) and the
+        evaluator's judge call for each prompt, which sees outputs only (ADR-002); each prompt's
+        score per scenario it completed, and whether it kept the contract (the original does). A
+        failed contract check ends the run (SPEC R24)."""
+        judge_model = self.plan.models.judge
+        evaluator = Evaluator(self.backend, contract, "", judge_model)
         judged = {s.id: evaluator._judged(s) for s in pick}
-        checks = _contract_checks(contract)
-        self.note(f"stage C: {len(texts)} judge calls")
+        self.note(f"stage C: a contract check and {len(texts)} judge calls")
 
-        def judge(n: int) -> Answers | _Dropped:
-            ok = {sid: out for sid, out in outputs[n].items() if isinstance(out, str)}
-            pending = [s for s in pick if s.id in ok and judged[s.id]]
-            asked = {s.id: {sent for sent, _ in judged[s.id]} for s in pending}
-            if n:
-                asked[CONTRACT_SCENARIO] = {check_id for check_id, _ in checks}
-            elif not pending:
-                return {}
-            base = evaluator._judge_call(pending, ok, judged)
-            call = stage_c_call(base, self.prompt, texts[n] if n else None, checks)
+        def job(n: int) -> list[Violation | None] | Answers | _Dropped:
             try:
-                return evaluator._ask_judge(call, asked)
-            except (CallFailed, BudgetExhausted) as error:
+                if n < 0:
+                    return check_many(self.backend, judge_model, contract, self.prompt, texts[1:])
+                ok = {sid: out for sid, out in outputs[n].items() if isinstance(out, str)}
+                pending = [s for s in pick if s.id in ok and judged[s.id]]
+                if not pending:
+                    return {}
+                asked = {s.id: {sent for sent, _ in judged[s.id]} for s in pending}
+                return evaluator._ask_judge(evaluator._judge_call(pending, ok, judged), asked)
+            except CallFailed as error:
+                if n < 0:
+                    raise
+                return _dropped(error)
+            except BudgetExhausted as error:
                 return _dropped(error)
 
-        answers = parallel_map(judge, range(len(texts)), self.workers)
-        self.absorb([(f"judge call {n}", answer) for n, answer in enumerate(answers)])
-        scores, keeps = [], []
-        for n, (text, got) in enumerate(zip(texts, answers, strict=True)):
-            found = {} if isinstance(got, _Dropped) else dict(got)
-            verdicts = found.pop(CONTRACT_SCENARIO, {})
-            judged_by = CallFailed(got.why) if isinstance(got, _Dropped) else found
-            scores.append(gathered_scores(contract, text, pick, outputs[n], judged_by))
-            keeps.append(n == 0 or keeps_contract(verdicts, checks, text))
-        return scores, keeps
+        verdicts, *answers = parallel_map(job, range(-1, len(texts)), self.workers)
+        self.absorb([("contract", verdicts), *((f"judge {n}", a) for n, a in enumerate(answers))])
+        vetoes = verdicts if isinstance(verdicts, list) else [verdicts] * (len(texts) - 1)
+        scores = [
+            gathered_scores(contract, text, pick, outputs[n], cast(Any, _failed(got)))
+            for n, (text, got) in enumerate(zip(texts, answers, strict=True))
+        ]
+        return scores, [True, *(veto is None for veto in vetoes)]
 
     # --- stage E and the quick tier ----------------------------------------------------------
 
@@ -401,9 +402,8 @@ class _Fast:
 
     def left(self) -> tuple[float, int]:
         """The seconds to the deadline and the calls to the limit."""
-        return self.clock.remaining(
-            self.budgeted.deadline
-        ), self.budgeted.limit - self.budgeted.used
+        budgeted = self.budgeted
+        return self.clock.remaining(budgeted.deadline), budgeted.limit - budgeted.used
 
     def fits(self, stages: Sequence[Stage]) -> bool:
         """Whether `stages` fit in what is left; the cause of a misfit is kept in `stop`."""
@@ -469,9 +469,8 @@ def _dropped(error: CallFailed | BudgetExhausted) -> _Dropped:
     return _Dropped(f"cut: {error}", "clock" if error.cause == "clock" else "budget")
 
 
-def _output(result: str | _Dropped) -> str | CallFailed:
-    """A task run's result as the evaluator takes it: a dropped run is the CallFailed it stands
-    for."""
+def _failed[T](result: T | _Dropped) -> T | CallFailed:
+    """A call's result as the evaluator takes it: a dropped call is the CallFailed it stands for."""
     return CallFailed(result.why) if isinstance(result, _Dropped) else result
 
 

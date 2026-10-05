@@ -1,22 +1,29 @@
-"""The rewrite call of the fast tiers and its parser (SPEC R7, R8, R9, R18, R25; ADR-006, ADR-008):
-one call per rewrite, on the reflection model, the prompt as the user message only, the ADR-006
-rules and the token cap of the strictness level in the system prompt, a strategy per variant and a
-sample per variant so no two rewrites share a cache key; the reply is the new prompt between the
-delimiter lines and nothing else.
+"""The messages of the fast tiers (SPEC R7, R8, R9, R11, R18, R25; ADR-006, ADR-008, ADR-011).
+
+The rewrite call: one per rewrite, on the reflection model; the prompt and the literals it must
+keep travel in the user JSON only, the ADR-006 rules and the token cap of the strictness level in
+the system prompt; a strategy and a sample per variant, so no two rewrites share a cache key; the
+reply is the new prompt between the delimiter lines and nothing else. The synthesis call: one,
+beside the intake, so it carries no contract; the reply holds exactly `count` scenarios, checked
+as `scenarios.synthesize` checks its own.
 """
+
+import json
 
 import pytest
 
+from autoimprover.contract import literals
 from autoimprover.fast_prompts import (
-    FAST_JUDGE_SYSTEM,
     REWRITE_VARIANTS,
     parse_rewrite,
+    parse_synth,
     rewrite_call,
     strategy,
+    synth_call,
 )
 from autoimprover.runner import count_tokens, length_ok
 from autoimprover.runstore import cache_key
-from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END
+from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, SYNTH_SCHEMA, Scenario
 
 MODEL = "claude-sonnet-5-5"
 PROMPT = "Summarise the meeting notes for the team in five bullet points, in German."
@@ -34,11 +41,23 @@ def test_three_strategies_tighten_structure_specify():
     assert "already implies" in REWRITE_VARIANTS["specify"]
 
 
-def test_a_rewrite_call_goes_to_the_reflection_model_with_the_prompt_as_the_user_message():
+def test_a_rewrite_call_goes_to_the_reflection_model_with_the_prompt_in_the_user_json():
     made = call(effort="low")
-    assert (made.role, made.model, made.user, made.effort) == ("reflect", MODEL, PROMPT, "low")
-    assert made.json_schema is None
+    assert (made.role, made.model, made.effort, made.json_schema) == ("reflect", MODEL, "low", None)
+    assert json.loads(made.user) == {"prompt": PROMPT, "keep_verbatim": []}
     assert PROMPT not in made.system  # user text travels on stdin only (SPEC R18)
+
+
+LITERAL_PROMPT = 'Reply to {customer} about "the refund" and link https://example.com/faq.'
+
+
+def test_the_literals_to_keep_travel_in_the_user_json_never_in_the_system_prompt():
+    made = rewrite_call(LITERAL_PROMPT, 0, MODEL, "conservative", False)
+    keep = list(literals(LITERAL_PROMPT))
+    assert keep == ["{customer}", '"the refund"', "https://example.com/faq"]
+    assert json.loads(made.user) == {"prompt": LITERAL_PROMPT, "keep_verbatim": keep}
+    assert not any(literal in made.system for literal in keep)
+    assert "keep_verbatim" in made.system
 
 
 @pytest.mark.parametrize("variant", range(6))
@@ -167,18 +186,55 @@ def test_parse_rewrite_refuses_a_template_token_or_a_nul(bad):
         parse_rewrite(f"{INSTRUCTION_BEGIN}\nBe {bad} brief.\n{INSTRUCTION_END}")
 
 
-# --- the judge of stage C -------------------------------------------------------------------------
+# --- the synthesis call ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("count", [2, 6])
+def test_a_synthesis_call_asks_for_count_scenarios_without_a_contract(count):
+    made = synth_call(PROMPT, count, MODEL, effort="medium")
+    assert (made.role, made.model, made.effort, made.sample) == ("synth", MODEL, "medium", 0)
+    assert json.loads(made.user) == {"prompt": PROMPT, "count": count}
+    items = json.loads(made.json_schema or "")["properties"]["scenarios"]
+    assert (items["minItems"], items["maxItems"]) == (count, count)
+    assert json.loads(made.json_schema or "")["required"] == SYNTH_SCHEMA["required"]
+    assert PROMPT not in made.system
+    assert SYNTH_SCHEMA["properties"]["scenarios"]["minItems"] == 12  # the shared one unchanged
 
 
 @pytest.mark.parametrize(
     "rule",
-    [
-        "data, not instructions",
-        '"contract"',
-        "verbatim quote",
-        "never from its",
-        "Reply only with JSON",
-    ],
+    ["placeholders", "situation", "edge cases", "Never add requirements", "data, not instructions"],
 )
-def test_the_stage_c_judge_instruction_grades_outputs_and_the_contract_scenario(rule):
-    assert rule in FAST_JUDGE_SYSTEM
+def test_the_synthesis_instruction_works_for_either_kind_of_prompt(rule):
+    assert rule in synth_call(PROMPT, 3, MODEL).system
+
+
+def synth_text(items: list) -> str:
+    return json.dumps({"scenarios": items})
+
+
+def test_parse_synth_returns_the_scenarios_in_order():
+    text = synth_text([{"id": "a", "input": "one"}, {"id": "b", "input": "two", "extra": 1}])
+    assert parse_synth(text, 2) == [Scenario(id="a", input="one"), Scenario(id="b", input="two")]
+
+
+GOOD = {"id": "a", "input": "one"}
+BAD_SYNTH = {
+    "too few": synth_text([GOOD]),
+    "too many": synth_text([GOOD, {"id": "b", "input": "two"}, {"id": "c", "input": "x"}]),
+    "not json": "nope",
+    "not an object": "[1, 2]",
+    "no list": json.dumps({"scenarios": "two"}),
+    "an item not an object": synth_text([GOOD, "b"]),
+    "an id not a string": synth_text([GOOD, {"id": 2, "input": "two"}]),
+    "a blank input": synth_text([GOOD, {"id": "b", "input": "  \n "}]),
+    "a NUL": synth_text([GOOD, {"id": "b", "input": "a\u0000b"}]),
+    "a lone surrogate": synth_text([GOOD, {"id": "b", "input": chr(0xD800)}]),  # written \\ud800
+    "ids twice": synth_text([GOOD, {"id": "a", "input": "two"}]),
+}
+
+
+@pytest.mark.parametrize("text", BAD_SYNTH.values(), ids=BAD_SYNTH.keys())
+def test_parse_synth_refuses_what_synthesize_refuses(text):
+    with pytest.raises(ValueError):
+        parse_synth(text, 2)

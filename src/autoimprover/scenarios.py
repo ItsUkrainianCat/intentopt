@@ -8,7 +8,6 @@ call cache cannot serve the bad reply back (ADR-004, ADR-008).
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
 import random
@@ -184,25 +183,18 @@ def _loads(text: str) -> object:
         raise ValueError(f"not valid JSON ({type(e).__name__})") from None
 
 
-def synthesize(
-    backend: Backend, model: str, prompt: str, contract: Contract, count: int = SYNTH_COUNT
-) -> list[Scenario]:
-    """`count` scenarios from one synthesis call to `model`, the reflection model, with the fixed
-    instruction for the contract's kind (SPEC R11; ADR-005, ADR-008); the fast tiers ask for the
-    few their plan affords (SPEC R25). An invalid reply is asked again as `sample + 1`, a new
-    cache key, at most CALL_RETRIES times, then CallFailed; whatever the backend raises
-    propagates unchanged."""
-    if count < 1:
-        raise ValueError(f"a synthesis call asks for at least 1 scenario, not {count}")
-    schema = copy.deepcopy(SYNTH_SCHEMA)
-    schema["properties"]["scenarios"] |= {"minItems": count, "maxItems": count}
-    request = {"prompt": prompt, "contract": dataclasses.asdict(contract), "count": count}
+def synthesize(backend: Backend, model: str, prompt: str, contract: Contract) -> list[Scenario]:
+    """SYNTH_COUNT scenarios from one synthesis call to `model`, the reflection model, with the
+    fixed instruction for the contract's kind (SPEC R11; ADR-005, ADR-008). An invalid reply is
+    asked again as `sample + 1`, a new cache key, at most CALL_RETRIES times, then CallFailed;
+    whatever the backend raises propagates unchanged."""
+    request = {"prompt": prompt, "contract": dataclasses.asdict(contract), "count": SYNTH_COUNT}
     call = Call(
         role="synth",
         model=model,
         user=json.dumps(request),
         system=_SYNTH_SYSTEM[contract.kind],
-        json_schema=json.dumps(schema),
+        json_schema=json.dumps(SYNTH_SCHEMA),
     )
     problem = ""
     for attempt in range(1 + CALL_RETRIES):
@@ -210,7 +202,7 @@ def synthesize(
             call = dataclasses.replace(call, sample=call.sample + 1)
         reply = backend.complete(call)
         try:
-            return _synthesised(reply.text, count)
+            return _synthesised(reply.text)
         except ValueError as e:
             problem = str(e)
     raise CallFailed(
@@ -218,14 +210,13 @@ def synthesize(
     )
 
 
-def _synthesised(text: str, count: int) -> list[Scenario]:
-    """The scenarios of a synthesis reply; ValueError when it does not hold exactly `count`, is not
-    valid for SYNTH_SCHEMA, an input could not be sent on, or two scenarios share an id. Reply
-    text is never echoed."""
+def _synthesised(text: str) -> list[Scenario]:
+    """The scenarios of a synthesis reply; ValueError when it is not valid for SYNTH_SCHEMA, an
+    input could not be sent on, or two scenarios share an id. Reply text is never echoed."""
     reply = _loads(text)
     items = reply.get("scenarios") if isinstance(reply, dict) else None
-    if not isinstance(items, list) or len(items) != count:
-        raise ValueError(f"not an object with a list of exactly {count} scenarios")
+    if not isinstance(items, list) or len(items) != SYNTH_COUNT:
+        raise ValueError(f"not an object with a list of exactly {SYNTH_COUNT} scenarios")
     found = []
     for item in items:
         if not isinstance(item, dict):
