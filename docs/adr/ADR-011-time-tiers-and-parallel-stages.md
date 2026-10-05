@@ -9,7 +9,7 @@ The first live `/improve` showed the research design (GEPA search, 100 sequentia
 
 ## Decision
 
-- `--time` is the primary knob (default 30 s). It selects a tier: quick (15 to 24 s), fast (25 to 59 s), checked (1 to 4 min), deep (5 min and up, the existing GEPA search with this clock). `--deep` is `--time 20m`.
+- `--time` is the primary knob (default 30 s). It selects a tier: quick (15 to 24 s), fast (25 to 59 s), checked (1 to 9 min), deep (10 min and up, the existing GEPA search with this clock). `--deep` is `--time 20m`.
 - Fast and quick are pipelines of **stages whose calls run in parallel** (a thread pool, `--workers`, default 4): intake, synthesis and K rewrites together; then all task runs together; then all judge calls and contract checks together; then free gates and the pick. No iterative search.
 - Calls ask `claude --effort low` (a new `Call.effort` field, part of the cache key); models per role are chosen for speed (task Haiku; intake and rewrites Sonnet; the judge by the timing probe, default Sonnet with `--effort low` unless measured otherwise). R14 still holds (judge is neither task nor target model).
 - **Evidence level is stated, not hidden**: fast and quick results are `verified: false` ("fast check": picked and scored on the same few scenarios, no noise measured); checked and deep are holdout-verified as before.
