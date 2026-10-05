@@ -350,3 +350,20 @@ def test_stage_b_asks_the_very_task_calls_of_the_evaluator(tmp_path):
     for text in (PROMPT, BETTER):
         Evaluator(model, contract, MODELS.task, MODELS.judge)(text, scenarios[:2])
     assert result.calls("task") == [c for c in model.calls if c.role == "task"]
+
+
+MODE_CASES = {
+    "fast improved": (World(), K3M3, {}),
+    "fast unchanged": (World(rewrites=("Answer the request well.",)), K3M3, {}),
+    "fast out of time": (World(), K3M3, {"deadline": 0}),
+    "quick improved": (World(), QUICK, {}),
+    "quick unchanged": (World(contract_ok=lambda _text: False), QUICK, {}),
+    "checked improved": (World(), CHECKED, {}),
+    "checked without a holdout": (World(), CHECKED, {"examples": EXAMPLES[:2]}),
+}
+
+
+@pytest.mark.parametrize("case", MODE_CASES)
+def test_every_outcome_names_the_tier_of_the_run(tmp_path, case):
+    world, fplan, extra = MODE_CASES[case]
+    assert run(tmp_path, world, fplan, **extra).outcome.mode == fplan.tier
