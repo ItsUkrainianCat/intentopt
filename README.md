@@ -137,7 +137,7 @@ on stderr. GEPA's own progress goes to `gepa.log` in the run folder, never to st
 | 1 | internal error (a bug); stderr names the run folder and the resume line when there is one |
 | 2 | bad input or usage, or a refusal before any paid call (budget, judge model, state folder) |
 | 3 | backend failure: a failed call outside the search, or three failed calls in a row of one kind to one model |
-| 4 | the `claude` session was not locked down (it reported plugins, MCP servers or tools) |
+| 4 | the `claude` session was not locked down (it reported tools, MCP servers, skills, slash commands, extra agents or a non-default output style) |
 | 130 | interrupted (Ctrl-C) |
 
 Every non-zero exit writes `error: <what, and the flag or folder to change>` to stderr and nothing
