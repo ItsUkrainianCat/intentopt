@@ -222,8 +222,10 @@ def _synthesised(text: str) -> list[Scenario]:
         if not isinstance(item, dict):
             raise ValueError("a scenario is not an object")
         scenario_id, given = item.get("id"), item.get("input")
-        if not isinstance(scenario_id, str) or not isinstance(given, str) or not given:
-            raise ValueError("a scenario lacks a string `id` or a non-empty string `input`")
+        if not isinstance(scenario_id, str) or not isinstance(given, str) or not given.strip():
+            raise ValueError(
+                "a scenario lacks a string `id` or an `input` with more than whitespace"
+            )
         if problem := _text_problem(given):
             raise ValueError(f"a scenario input {problem}")
         found.append(Scenario(id=scenario_id, input=given))
