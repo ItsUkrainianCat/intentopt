@@ -311,3 +311,30 @@ def test_budget_exhausted_says_whether_the_limit_or_the_clock_ended_it():
     assert BudgetExhausted("calls").cause == "budget"
     assert BudgetExhausted("deadline", cause="clock").cause == "clock"
     assert str(BudgetExhausted("calls")) == "calls"
+
+
+def test_fast_tiers_rewrite_on_sonnet_and_deep_keeps_opus():
+    # SPEC R25: Opus thinking is for the deep search; the fast tiers rewrite on Sonnet.
+    from autoimprover.types import FALLBACK_JUDGE_MODEL, default_models
+
+    assert default_models(tier="fast").reflect == FALLBACK_JUDGE_MODEL
+    assert default_models(tier="deep").reflect == default_models().reflect
+    assert default_models(tier="fast").judge == default_models(tier="deep").judge
+
+
+def test_efforts_default_to_low_in_the_fast_tiers_and_the_models_own_in_deep():
+    from autoimprover.types import Efforts, default_efforts
+
+    assert default_efforts("fast") == Efforts("low", "low", "low")
+    assert default_efforts("deep") == Efforts()
+    with pytest.raises(ValueError):
+        Efforts(task="turbo")
+
+
+def test_plan_workers_are_bounded():
+    from autoimprover.types import Plan, default_models
+
+    assert Plan(default_models()).workers == 6
+    for bad in (0, 17, True):
+        with pytest.raises(ValueError):
+            Plan(default_models(), workers=bad)  # type: ignore[arg-type]

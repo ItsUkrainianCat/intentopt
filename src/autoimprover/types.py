@@ -349,14 +349,33 @@ class Models:
             )
 
 
-def default_models(target: str | None = None) -> Models:
-    """The default roles for a target model. When the target is the default judge, the judge falls
-    back to Sonnet 5.5, so `/improve` works in an Opus session (SPEC R14, R21)."""
+def default_models(target: str | None = None, tier: Tier = "deep") -> Models:
+    """The default roles for a target model and a time tier. When the target is the default judge,
+    the judge falls back to Sonnet 5.5, so `/improve` works in an Opus session (SPEC R14, R21). The
+    quick, fast and checked tiers rewrite and run intake on Sonnet 5.5, not Opus (SPEC R25)."""
     target_id = canonical_model(target) if target else DEFAULT_TARGET_MODEL
     judge = FALLBACK_JUDGE_MODEL if target_id == DEFAULT_JUDGE_MODEL else DEFAULT_JUDGE_MODEL
-    return Models(
-        task=DEFAULT_TASK_MODEL, judge=judge, reflect=DEFAULT_REFLECT_MODEL, target=target_id
-    )
+    reflect = DEFAULT_REFLECT_MODEL if tier == "deep" else FALLBACK_JUDGE_MODEL
+    return Models(task=DEFAULT_TASK_MODEL, judge=judge, reflect=reflect, target=target_id)
+
+
+@dataclass(frozen=True)
+class Efforts:
+    """`claude --effort` per role; None leaves the model's own default (SPEC R25)."""
+
+    task: str | None = None
+    judge: str | None = None
+    reflect: str | None = None
+
+    def __post_init__(self) -> None:
+        for level in (self.task, self.judge, self.reflect):
+            if level is not None and level not in EFFORT_LEVELS:
+                raise ValueError(f"effort must be one of {EFFORT_LEVELS} or None (SPEC R25)")
+
+
+def default_efforts(tier: Tier = "deep") -> Efforts:
+    """`low` for every role in the quick, fast and checked tiers, the model's own in deep."""
+    return Efforts() if tier == "deep" else Efforts("low", "low", "low")
 
 
 DEFAULT_MODELS = default_models()
@@ -373,8 +392,15 @@ class Plan:
     allow_growth: bool = False
     merge: bool = False
     seed: int = 0
+    tier: Tier = "deep"
+    workers: int = 6
+    efforts: Efforts = Efforts()
 
     def __post_init__(self) -> None:
+        if self.tier not in get_args(Tier):
+            raise ValueError(f"unknown tier {self.tier!r}")
+        if type(self.workers) is not int or not 1 <= self.workers <= 16:
+            raise ValueError("workers must be a whole number between 1 and 16 (SPEC R25)")
         if self.strictness not in LENGTH_CAP:
             raise ValueError(f"unknown strictness {self.strictness!r}")
         if type(self.budget) is not int or not 1 <= self.budget <= BUDGET_CEILING:

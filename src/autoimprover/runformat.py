@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from autoimprover.types import Call, Check, Contract, Models, Plan, Reply, Scenario
+from autoimprover.types import Call, Check, Contract, Efforts, Models, Plan, Reply, Scenario
 
 SCHEMA_VERSION = 1
 
@@ -59,6 +59,10 @@ _MANIFEST_SPEC = {"schema_version": _VERSION, "prompt": str, "plan": dict, "opts
 _MANIFEST_SPEC |= {"created": str, "elapsed_s": _SECONDS, "calls_used": _COUNT}
 _PLAN_SPEC = {"models": dict, "strictness": str, "budget": int, "wall_clock_s": int}
 _PLAN_SPEC |= {"allow_growth": bool, "merge": bool, "seed": int}
+_PLAN_SPEC |= {"tier": str, "workers": int, "efforts": dict}
+# A manifest from before the time tiers (SPEC R25) lacks the last three fields: a deep run.
+_PLAN_DEFAULTS: dict[str, Any] = {"tier": "deep", "workers": 6, "efforts": {}}
+_EFFORTS_SPEC: dict[str, object] = dict.fromkeys(("task", "judge", "reflect"), _OPTIONAL)
 _MODELS_SPEC: dict[str, object] = dict.fromkeys(("task", "judge", "reflect", "target"), str)
 _CONTRACT_SPEC = {"goal": str, "kind": str, "keep": _TEXTS, "constraints": _TEXTS, "checks": list}
 _CONTRACT_SPEC |= dict.fromkeys(("output_format", "language", "tone"), str)
@@ -72,9 +76,12 @@ _ENTRY_SPEC |= {"duration_s": _SECONDS}
 def parse_manifest(doc: Any) -> tuple[dict[str, Any], Plan]:
     """The manifest (with `elapsed_s` as a float) and the `Plan` it holds."""
     manifest = _typed(doc, _MANIFEST_SPEC)
-    plan = _typed(manifest["plan"], _PLAN_SPEC)
+    plan = _typed({**_PLAN_DEFAULTS, **manifest["plan"]}, _PLAN_SPEC)
     models = Models(**_typed(plan["models"], _MODELS_SPEC))
-    return manifest, Plan(**{**plan, "models": models})
+    efforts = Efforts(
+        **_typed({"task": None, "judge": None, "reflect": None, **plan["efforts"]}, _EFFORTS_SPEC)
+    )
+    return manifest, Plan(**{**plan, "models": models, "efforts": efforts})
 
 
 def parse_checkpoint(doc: Any) -> tuple[int, float]:

@@ -151,7 +151,7 @@ The keys of the object on stdout, in order:
 
 - finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`
 - dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`
-- dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`
+- dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`, `tier`, `workers`, `efforts`
 - error: `status`, `code`, `error`, `run_dir`
 - clean: `status`, `removed`, `skipped`
 
