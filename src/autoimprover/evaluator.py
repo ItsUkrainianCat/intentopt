@@ -1,5 +1,5 @@
 """Scores a candidate prompt by running it on scenarios and checking the outputs (SPEC R10, R10a,
-R10b, R11, R16, R24).
+R10b, R11, R16, R24, R25).
 
 One task call per scenario runs the candidate, shaped by the prompt's kind (SPEC R10a): for a
 `template` the candidate is the system prompt and the scenario input the user message; for a
@@ -15,6 +15,10 @@ in `side_info["scores"]`; the failed checks, a short excerpt of the output and t
 the ASI for reflection (SPEC R16). A call that leaves more than 30 % of its judged checks unknown
 scores 0, and a call that fails all its attempts makes its scenarios incomplete (SPEC R24).
 
+With `workers` above 1 the task calls run side by side, then the judge calls (SPEC R25); their
+results are gathered by scenario, so a batch scores the same whatever order its calls end in, and
+the first error that propagates is the first by scenario order.
+
 Outputs are untrusted data: they travel inside the judge's user JSON only, and a reply is parsed as
 JSON and never evaluated. A reply that is not valid is asked again as a new sample, so the call
 cache cannot serve the bad reply back (ADR-004, ADR-008). Only CallFailed is handled; whatever
@@ -29,6 +33,7 @@ import json
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from autoimprover.parallel import parallel_map
 from autoimprover.types import (
     CALL_RETRIES,
     JUDGE_BATCH_MAX,
@@ -94,7 +99,9 @@ _RULES: dict[str, Callable[[str, str], bool]] = {
 class Evaluator:
     """Implements `types.BatchEvaluator` for one contract, one task model and one judge model.
     Every call carries `sample`, so a second run of the same scenarios is a new call and not a
-    cache hit; an invalid judge reply is asked again as `sample + 1000`, then `sample + 2000`."""
+    cache hit; an invalid judge reply is asked again as `sample + 1000`, then `sample + 2000`.
+    `workers` is how many calls of one stage may run at a time; 1 runs them in order on the
+    calling thread."""
 
     def __init__(
         self,
@@ -103,12 +110,14 @@ class Evaluator:
         task_model: str,
         judge_model: str,
         sample: int = 0,
+        workers: int = 1,
     ) -> None:
         self._backend = backend
         self._contract = contract
         self._task_model = task_model
         self._judge_model = judge_model
         self._sample = sample
+        self._workers = workers
 
     def __call__(self, candidate: str, scenarios: Sequence[Scenario]) -> list[Entry]:
         """One (score, side_info) per scenario, in order. A scenario given twice (GEPA pads a
@@ -157,16 +166,23 @@ class Evaluator:
     def _run(
         self, candidate: str, scenarios: list[Scenario], failures: dict[str, CallFailed]
     ) -> dict[str, str]:
-        """Scenario id -> output, from one task call per scenario in order; a call that failed
-        all its attempts goes to `failures` instead."""
+        """Scenario id -> output, from one task call per scenario; a call that failed all its
+        attempts goes to `failures` instead."""
+        calls = [self._task_call(candidate, scenario) for scenario in scenarios]
+        results = parallel_map(self._output, calls, self._workers)
         outputs: dict[str, str] = {}
-        for scenario in scenarios:
-            call = self._task_call(candidate, scenario)
-            try:
-                outputs[scenario.id] = self._backend.complete(call).text
-            except CallFailed as e:
-                failures[scenario.id] = e
+        for scenario, result in zip(scenarios, results, strict=True):
+            if isinstance(result, CallFailed):
+                failures[scenario.id] = result
+            else:
+                outputs[scenario.id] = result
         return outputs
+
+    def _output(self, call: Call) -> str | CallFailed:
+        try:
+            return self._backend.complete(call).text
+        except CallFailed as e:
+            return e
 
     def _judge(
         self,
@@ -176,18 +192,29 @@ class Evaluator:
         failures: dict[str, CallFailed],
     ) -> Answers:
         """The judge's answers for the scenarios that have an output and a judged check, from one
-        call per chunk of at most JUDGE_BATCH_MAX of them, in order. A chunk whose call failed all
-        its attempts puts each of its scenarios in `failures`; the other chunks go on."""
+        call per chunk of at most JUDGE_BATCH_MAX of them. A chunk whose call failed all its
+        attempts puts each of its scenarios in `failures`; the other chunks go on."""
         pending = [s for s in scenarios if s.id not in failures and judged[s.id]]
-        answers: Answers = {}
+        asks: list[tuple[Call, dict[str, set[str]]]] = []
         for start in range(0, len(pending), JUDGE_BATCH_MAX):
             chunk = pending[start : start + JUDGE_BATCH_MAX]
             asked = {scenario.id: {sent for sent, _ in judged[scenario.id]} for scenario in chunk}
-            try:
-                answers.update(self._ask_judge(self._judge_call(chunk, outputs, judged), asked))
-            except CallFailed as e:
-                failures.update(dict.fromkeys(asked, e))
+            asks.append((self._judge_call(chunk, outputs, judged), asked))
+        answers: Answers = {}
+        for (_, asked), result in zip(
+            asks, parallel_map(self._verdicts, asks, self._workers), strict=True
+        ):
+            if isinstance(result, CallFailed):
+                failures.update(dict.fromkeys(asked, result))
+            else:
+                answers.update(result)
         return answers
+
+    def _verdicts(self, ask: tuple[Call, dict[str, set[str]]]) -> Answers | CallFailed:
+        try:
+            return self._ask_judge(*ask)
+        except CallFailed as e:
+            return e
 
     def _ask_judge(self, call: Call, asked: dict[str, set[str]]) -> Answers:
         """The answers of a judge reply to `call`, which asked the checks `asked` (scenario id ->
