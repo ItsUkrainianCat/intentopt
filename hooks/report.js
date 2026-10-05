@@ -48,7 +48,8 @@ const SHOWN_CHARS = 9000
  * @typedef {{ state: 'improved' | 'unchanged' | 'error' | 'cancelled' | 'running' | 'plan',
  *   title: string, status: string, reason: string | null, meaning: string | null,
  *   scores: string[], margin: string | null, lengthRatio: string | null, changes: string[],
- *   improved: string | null, shown: string | null, useLabel: string | null,
+ *   improved: string | null, shown: string | null, useLabel: string | null, verified: boolean,
+ *   box: string | null,
  *   runDir: string | null, resume: string | null, hint: string | null, plan: string[],
  *   exitCode: number, toast: string }} View
  * @typedef {{ stdout: string, stderr: string, code: number | null, signal: string | null,
@@ -173,6 +174,7 @@ function outcomeView(result, end) {
     improved: prompt,
     shown: prompt === null ? null : shownPart(prompt),
     useLabel: improved ? (verified ? 'Use it' : 'Use it (not verified)') : null,
+    verified,
     exitCode: 0,
     toast: improved ? 'autoimprover: a prompt to review' : 'autoimprover: the original is kept',
   }
@@ -340,6 +342,7 @@ export function rowsOf(view, full) {
     { kind: 'title', text: `autoimprover: ${view.title}` },
     { kind: 'line', text: view.status },
   ]
+  if (view.box !== null) rows.push({ kind: 'hint', text: view.box })
   /** @param {Row['kind']} kind @param {string | null} text */
   const add = (kind, text) => {
     if (text !== null) rows.push({ kind, text })
@@ -414,6 +417,8 @@ function blank(end, runDir) {
     improved: null,
     shown: null,
     useLabel: null,
+    verified: false,
+    box: null,
     runDir: runDir ?? end?.runDir ?? null,
     resume: null,
     hint: null,

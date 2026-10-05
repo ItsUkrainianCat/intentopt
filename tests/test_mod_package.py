@@ -40,6 +40,7 @@ CALLS = {
     "process.run",
     "process.spawn",
     "prompt.fill",
+    "prompt.read",
     "session.cwd",
     "session.model",
     "session.surfaces",
