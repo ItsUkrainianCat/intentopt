@@ -1,0 +1,4 @@
+{
+  "description": "The autoimprover mod: /improve and /optimize run the autoimprover CLI and show its report",
+  "modules": ["./register.js"]
+}

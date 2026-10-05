@@ -15,19 +15,12 @@ you pass `--trust-search`, which marks the result as not verified.
 
 Version 0.2.0.dev0, not released. Built and tested end to end with a scripted fake model (no test
 calls a real model or the network): input checks, contract, scenarios, scoring, GEPA search, final
-checks, report, run folders and `--resume`. Not built yet: the real model backend,
-`src/autoimprover/claude_cli.py` (the one place that starts `claude -p`, SPEC R18), which waits for
-two real `claude -p` outputs (`docs/BUILD-LOG.md`). Until it exists, every run that needs a model
-call, `--resume` included, ends with exit 3:
-
-```
-error: backend failure: the claude backend (autoimprover.claude_cli) is not part of this build, so no model can be called; install a complete release
-```
-
-What works without it: `--dry`, `--help`, `clean`, the input and flag checks, and fewer than 8
-examples without `--trust-search` (the original, without a call). The live check is the user's
-`just smoke` (needs the real backend); until it passes, nothing here claims that a live run, the
-`/improve` command or the acceptance measure of SPEC section 5 works.
+checks, report, run folders and `--resume`. The real model backend,
+`src/autoimprover/claude_cli.py` (the one place that starts `claude -p`, SPEC R18), is built and
+tested with a fake `claude` script that prints the format of real `claude -p` output
+(`tests/fixtures/claude_cli/`, ADR-009). It is not verified against live runs: the live check is
+the user's `just smoke` or a first `/improve`; until it passes, nothing here claims that a live
+run, the `/improve` command or the acceptance measure of SPEC section 5 works.
 
 ## Install and run
 
@@ -208,30 +201,77 @@ there is nothing to remove. Both accept only a run id, never a path. Nothing exp
   pass counts only with a verbatim quote found in the output. The final contract check sees the
   candidate and can only reject it. The judge is never the task or the target model.
 - Text a model wrote is stripped of terminal escape sequences and control characters when printed.
-- Specified for the real backend (SPEC R18), not built yet: `claude -p --safe-mode --tools ""
-  --strict-mcp-config ...`, user text on stdin, a scrubbed environment, a 300 s timeout per call,
-  and exit 4 if the session reports plugins, MCP servers or tools.
+- Every model call is `claude -p --safe-mode --settings '{"outputStyle":"default"}' --tools ""
+  --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 ...` (SPEC
+  R18, ADR-009), with user text on stdin, a scrubbed environment and a 300 s timeout per call. A
+  call ends the run with exit 4 when its session reports tools, MCP servers, skills, slash
+  commands, agents beyond the four built-in ones, or an output style other than the default; the
+  installed plugins it lists are not active under `--safe-mode` and do not count. Built and tested
+  with a fake `claude`; not yet verified against live runs (see "Status").
 
-## The `/improve` command in Claude Code
+## Use it inside Claude Code
 
-`commands/improve.md` is a Claude Code slash command; `commands/optimize.md` is the same file with
-another description, because commands have no alias field. To use them, copy both into
-`~/.claude/commands/` (every project) or a project's `.claude/commands/`. They expect the checkout
-at `~/projects/optimizer`; if it is elsewhere, change the `--project` path in both files.
+This repository is also a Claude Code plugin whose mod (`hooks/register.js`, ADR-010) adds
+`/improve` and its alias `/optimize`. It needs Claude Code 2.1.287 or later (the first with mods),
+`uv` on the PATH Claude Code runs with, and `claude` logged in to your subscription. Install it
+from the repository (private: adding the marketplace needs access to it), then run
+`/reload-plugins` in a running session:
 
-`/improve <prompt>` writes the prompt with the Write tool into a private folder under `$TMPDIR` and
-passes it with `--file` (never in a shell line), sets `XDG_STATE_HOME` to
-`$TMPDIR/autoimprover-state` (the sandboxed shell cannot write `~/.local/state`), passes the
-session's model as `--target-model`, runs `--dry` first for a prompt over 2,000 characters, then
-runs the tool in a background shell call with a 50-minute timeout that also deletes the prompt
-file. It shows the report, the run folder and the `XDG_STATE_HOME` it used (both are needed for
-`--resume` and `clean`), and waits for your yes before it uses the returned prompt as the task.
-Its frontmatter pre-approves only Write, Read, `mktemp -d` and `wc -m`; the run itself goes
-through Claude Code's normal permission check.
+```
+claude plugin marketplace add ItsUkrainianCat/optimizer
+claude plugin install autoimprover@optimizer
+```
 
-Not checked yet (part of `just smoke`): the background-run mechanics, and whether `claude -p` can
-use your login from Claude Code's sandboxed shell (from the lead's sandbox it answered "Not logged
-in"). Run folders under `$TMPDIR` may not survive a reboot.
+For one session from a checkout instead: `claude --plugin-dir <path to the checkout>`.
+
+| Command | What it does |
+|---|---|
+| `/improve <prompt>` | improve the prompt (it may span lines); CLI flags such as `--budget 60` or `--strictness balanced` go before it, and a prompt that starts with `--` goes after a lone `--` |
+| `/improve --file PATH` | the prompt from a file; a relative path is read from the session's folder |
+| `/improve --dry <prompt>` | the plan only: no model call, nothing written |
+| `/improve --resume [ID]` | continue the last run, or the run with that id |
+| `/improve clean [ID]` | remove the last run's folder, or that run's |
+| `/improve cancel` | stop the run in progress; it stays resumable |
+
+`/optimize` takes the same. One run at a time per session; `cancel` works while Claude is busy.
+
+What the mod does, and nothing more:
+
+- It writes a typed prompt to `prompt.txt` in a folder that `mktemp -d` makes under `$TMPDIR`
+  (else `/tmp`) with mode 0700, then sets the file to mode 0600 with `chmod` (Claude Code's file
+  write takes no mode; until the `chmod`, the 0700 folder keeps other users out), and starts `uv run --frozen --project <plugin folder> autoimprover
+  --json --file <that file> --target-model <the session's model>` plus your flags, as an argument
+  list with no shell. The folder is removed when the child ends, also when it fails or is
+  cancelled. The prompt never goes through the model.
+- A prompt longer than 2,000 characters (a `--file` larger than 2,000 bytes) gets a `--dry` run
+  first; when the plan says a real run would refuse, the mod stops there with that reason.
+- The tool's virtual environment is `$XDG_CACHE_HOME/autoimprover/venv` (by default
+  `~/.cache/autoimprover/venv`, through `UV_PROJECT_ENVIRONMENT`), never the plugin's folder.
+- The child's last line on stderr is the status line; its JSON object becomes a pane: the result
+  and reason, the scores, the margin over the noise, the length ratio, what changed and the
+  improved prompt. "Use it" puts that prompt into the prompt box as a draft you can edit and send
+  ("Use it (not verified)" for a `--trust-search` result), "Copy" copies it, "Keep original"
+  closes the pane. Where nothing can draw a pane (`claude -p "/improve ..."`), the command waits
+  for the run, prints the report as its text and exits with the tool's exit code (1 for a failure
+  of the mod itself, 2 when `uv` is missing).
+- It keeps the last run id in the plugin's store for `--resume` and `clean`. Run data lives in the
+  default state folder, `~/.local/state/autoimprover/runs/<id>/` (see "Run folders").
+
+Trust surface: `claude plugin validate --strict` lists what the module hooks and calls. It hooks
+`session.start` (to register the two commands), `command.run` (its own commands) and `ui.render`
+(its own pane only); never `prompt.submit`, so it does not see your other prompts. It calls
+`process.run` (`uv --version`, `mktemp`, `chmod`, `rm`, the plan, `clean`), `process.spawn` (the
+run), `fs.write` (the prompt file), `fs.stat` (the size of a `--file`), `env.get` (`HOME`,
+`XDG_CACHE_HOME`, `TMPDIR`), `session.model`, `session.cwd`, `session.surfaces`, `store.*`,
+`prompt.fill`, `command.register` and `ui.*`; no model, MCP or network call.
+`tests/test_mod_package.py` pins these lists. A mod runs inside Claude Code with your permissions,
+and what it starts runs outside Claude Code's sandbox with your normal login, which is how the
+tool's `claude -p` calls find it; those calls run with `--safe-mode`, so this mod is off in them.
+
+Not verified until your live run: the mod is type-checked against the declarations of Claude Code
+2.1.287 and its tests (`tests/mod/*.test.ts`, run by `claude plugin test`) use a stubbed engine.
+Whether it loads in a live session, finds `uv`, gets a model id `--target-model` accepts from
+the session, kills the child on `cancel`, and how the pane looks, are checked only by running it.
 
 ## Limits and non-goals
 
