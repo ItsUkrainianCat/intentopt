@@ -402,7 +402,6 @@ class Plan:
     tier: Tier = "deep"
     workers: int = 6
     efforts: Efforts = Efforts()
-    ungated: bool = False  # a measuring aid (SPEC R25): the best-ranked candidate is returned without a win
 
     def __post_init__(self) -> None:
         if self.tier not in get_args(Tier):
