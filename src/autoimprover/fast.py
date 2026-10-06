@@ -44,7 +44,7 @@ from autoimprover.fast_stages import (
 )
 from autoimprover.fastplan import FastPlan, contract_stage, tail
 from autoimprover.parallel import parallel_map
-from autoimprover.runner import MIN_THRESHOLD, score_holdout
+from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
     Backend,
@@ -185,7 +185,7 @@ class _Fast(Stages):
         """Stage E: the winner is returned, verified, only when it beats the original on the
         held-out scenarios on the target model by more than MIN_THRESHOLD (SPEC R3, R14a)."""
         self.measured["search_score_before"] = win.before
-        if not self.fits(tail(0, 0, len(holdout), self.workers)):
+        if not self.fits(tail(0, 0, len(holdout), self.workers, count_tokens(self.prompt))):
             return self.kept("")
         self.note(f"stage E: the winner and the original on {len(holdout)} held-out scenarios")
         models, inner = self.plan.models, max(1, self.workers // 2)

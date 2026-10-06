@@ -22,10 +22,15 @@ is cut, the first generation's result stands.
 
 Before each stage the time and calls left are compared with its estimate (`fastplan`): what does
 not fit is shrunk, scenarios first, and a deadline or call limit reached inside a stage ends it
-(`ended`). A failed rewrite, reflection, task or pairwise call drops what it was for (a pairwise
-order that failed makes its scenarios ties); an original run left with no answer, a noise pair with
-no scenario both runs answered or that the judge could not compare, or a failed contract check,
-ends the run as BackendError (SPEC R24).
+(`ended`). Stage B's calls end by the deadline less the cheapest stage C (and E), so a task run
+that cannot finish by then is abandoned (ADR-011 decision 2); after such a cut the scenarios that
+both runs of the original and a rewrite answered in time go on to stage C, shrunk to the time
+left, or on one rewrite and one scenario when the time left covers one pairwise call
+(`fastplan.last_chance`). The deadline itself is never passed (SPEC R17, R25). A failed rewrite,
+reflection, task or pairwise call drops what it was for (a pairwise order that failed makes its
+scenarios ties); an original run left with no answer, a noise pair with no scenario both runs
+answered or that the judge could not compare, or a failed contract check, ends the run as
+BackendError (SPEC R24).
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ from autoimprover.fast_prompts import (
 from autoimprover.fastplan import (
     FastPlan,
     Stage,
+    last_chance,
     misfit,
     scoring_stages,
     second_stages,
@@ -177,8 +183,8 @@ class Stages:
         self, contract: Contract, rewrites: list[Rewrite], pick: list[Scenario], holdout: int
     ) -> Win | None:
         """Stages B, C, the second generation and D: the best rewrite by the pick rule, or None."""
-        w = self.workers
-        shape = self.shrunk(len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w))
+        w, p = self.workers, count_tokens(self.prompt)
+        shape = self.shrunk(len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p))
         if shape is None:
             return None
         rewrites, pick = rewrites[: shape[0]], pick[: shape[1]]
@@ -186,17 +192,24 @@ class Stages:
         self.note(
             f"stage B: the original twice and {len(rewrites)} rewrite(s) on {shape[1]} scenarios"
         )
-        if (outputs := self.stage_b(contract, runs, pick)) is None:
-            return None
-        ran = [any(isinstance(out, str) for out in outputs[n].values()) for n in range(len(runs))]
+
+        def judging(k: int, m: int) -> tuple[Stage, ...]:  # stage C, then E
+            return (scoring_stages(k, m, w, p)[1], *tail(0, 0, holdout, w, p))
+
+        outputs = self.stage_b(contract, runs, pick, judging(1, 1))
+        if self.ended:  # cut: the scenarios every run answered in time go on (ADR-011 decision 2)
+            self.ended = False
+            pick = [s for s in pick if answered(outputs, s.id)]
+            if not pick:
+                return None
+        ran = [any(isinstance(outputs[n].get(s.id), str) for s in pick) for n in range(len(runs))]
         if not (ran[0] and ran[1]):
             raise BackendError("every task run of one of the original's two runs failed")
         alive = [n for n in range(2, len(runs)) if ran[n]]
-
-        def judging(k: int, m: int) -> tuple[Stage, ...]:  # stage C, then E
-            return (scoring_stages(k, m, w)[1], *tail(0, 0, holdout, w))
-
-        if (shape := self.shrunk(len(alive), len(pick), judging)) is None:
+        shape = self.shrunk(len(alive), len(pick), judging)
+        if shape is None and alive and self.fits(last_chance(holdout, w, p)):
+            shape = (1, 1)  # stage B ended late: the time left covers one pairwise call
+        if shape is None:
             return None
         alive, pick = alive[: shape[0]], pick[: shape[1]]
         chosen = [rewrites[n - 2] for n in alive]
@@ -226,11 +239,8 @@ class Stages:
     ) -> list[Win]:
         """The second generation's winners (stages R, B2, C2), or none when it does not fit the
         time and calls left or is cut: then the first generation's result stands."""
-        w, plan, k2 = self.workers, self.plan, self.fplan.rewrites2
-        later = (
-            *second_stages(k2, len(pick), w, count_tokens(self.prompt)),
-            *tail(0, 0, holdout, w),
-        )
+        w, plan, k2, p = self.workers, self.plan, self.fplan.rewrites2, count_tokens(self.prompt)
+        later = (*second_stages(k2, len(pick), w, p), *tail(0, 0, holdout, w, p))
         if not self.fits(later):
             return []
         kept = sorted(
@@ -260,7 +270,8 @@ class Stages:
             return []
         runs = [(r.text, 0) for r in rewrites]
         self.note(f"stage B2: {len(rewrites)} reflection(s) on {len(pick)} scenarios")
-        if (outputs := self.stage_b(contract, runs, pick)) is None:
+        outputs = self.stage_b(contract, runs, pick)
+        if self.ended:
             return []
         found = self.stage_c(contract, rewrites, outputs, original, pick, None)
         if found is None or self.ended:
@@ -268,18 +279,27 @@ class Stages:
         return [win for j in found[0] if (win := won(j, noise, len(pick))) is not None]
 
     def stage_b(
-        self, contract: Contract, runs: list[tuple[str, int]], pick: list[Scenario]
-    ) -> list[dict[str, str | CallFailed]] | None:
+        self,
+        contract: Contract,
+        runs: list[tuple[str, int]],
+        pick: list[Scenario],
+        then: Sequence[Stage] = (),
+    ) -> list[dict[str, str | CallFailed]]:
         """One wave of task runs, each (prompt, sample) on every scenario: the evaluator's very
         calls with the fast tiers' suffix (`FastEvaluator`); each run's output or the CallFailed it
-        gave per scenario, None when cut."""
+        gave per scenario (a cut is kept in `ended`). The calls end by the deadline less the
+        seconds of `then`, the stages that must still fit after this one: until it ends, that is
+        the deadline of the Budgeted and so the timeout of every call (ADR-011 decision 2)."""
         model = self.plan.models.task
         task = {n: FastEvaluator(self.backend, contract, model, "", n) for n in (0, 1)}
         calls = [task[sample]._task_call(text, s) for text, sample in runs for s in pick]
-        results = parallel_map(self.ask, calls, self.workers)
+        budgeted, deadline = self.budgeted, self.budgeted.deadline
+        budgeted.raise_limit(budgeted.limit, deadline - sum(stage.seconds for stage in then))
+        try:
+            results = parallel_map(self.ask, calls, self.workers)
+        finally:
+            budgeted.raise_limit(budgeted.limit, deadline)
         self.absorb([(f"task run {n}", result) for n, result in enumerate(results)])
-        if self.ended:
-            return None
         m = len(pick)
         return [
             {s.id: failed(r) for s, r in zip(pick, results[n * m : (n + 1) * m], strict=True)}
@@ -415,6 +435,12 @@ def dropped(error: CallFailed | BudgetExhausted) -> Dropped:
 def failed[T](result: T | Dropped) -> T | CallFailed:
     """A call's result as the evaluator takes it: a dropped call is the CallFailed it stands for."""
     return CallFailed(result.why) if isinstance(result, Dropped) else result
+
+
+def answered(outputs: Sequence[dict[str, str | CallFailed]], scenario: str) -> bool:
+    """Whether the original's two runs (the first two) and a rewrite's answered `scenario`."""
+    first, second, *rewrites = (isinstance(out.get(scenario), str) for out in outputs)
+    return first and second and any(rewrites)
 
 
 def meaning_words(text: str) -> tuple[str, ...]:
