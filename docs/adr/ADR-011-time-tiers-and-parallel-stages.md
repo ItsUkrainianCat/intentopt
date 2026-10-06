@@ -24,6 +24,10 @@ Models and effort are user settings, not constants: the existing `--task-model`,
 
 The first live runs returned rewrites that only fixed grammar ("a", "?"), and one user screenshot confirmed it. Causes: candidates are written blind (before any output is seen), `conservative` strictness plus "prefer deleting" leaves only trimming, and no strategy makes an implicit request explicit. Decisions: fast tiers default to `balanced`; strategies `clarify`, `structure`, `tighten` (+ `specify` from K=4); near-identity rewrites are dropped; the original is run twice to measure noise (WP10b); from 45 s a second generation reflects on the first one's failed checks and outputs (K2 rewrites, GEPA's reflective mutation), which needs about 18 s more (reflect 9 s, run 6 s, judge 6 s, estimated with the 3.4 s overhead) and is therefore not part of the 30 s default.
 
+## Amendment 2026-10-06 (third live run)
+
+A `--time 45s` run on a vague prompt ("so im building a prompt improver app. i think it should have multiple features. and be customizable") rewrote it well (`clarify`: it added the request for features, customisation and design) but the contract check vetoed the rewrite with `no-new-goal`, because intake had recorded the goal as "without making a specific request"; the run returned the original. Decision: the intake goal is the request the prompt clearly implies (R5), and `no-new-goal` allows making a stated or clearly implied request explicit (R6); an unrelated task, topic, fact or requirement still fails it. Same run: the six Haiku task runs took 10 to 13 s each (600-token answers), so stage B took 12.8 s instead of 6.3 s and the first generation used 33 s of 45; decision: scoring runs in the fast tiers carry a fixed "at most 120 words" suffix for every candidate alike (R25), the planner assumes 150 output tokens per task call.
+
 ## Measured facts (the user's timing probe, 2026-10-05, claude 2.1.287, about 350 output tokens, wall clock per call)
 
 | model | effort low | default effort | output tokens (low / default) |
