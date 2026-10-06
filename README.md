@@ -61,7 +61,7 @@ fewer workers shrink the plan.
 |---|---|---|---|---|
 | 15 to 24 s | quick | the intent contract and one `clarify` rewrite side by side, then the contract check; no scenario is scored | 3 at 15 s (about 13 s) | no |
 | 25 to 59 s | fast | the stages below on 2 to 4 scenarios with up to 3 rewrites; from 45 s, when it fits, a second round of up to 2 rewrites | 17 at 30 s (about 25 s), 25 at 45 s (34 s), 35 at 59 s (48 s) | no |
-| 1 to 9 min | checked | the fast stages with up to 6 rewrites (2 at 1 min), then the winner and the original on 4 held-out scenarios on the target model | 33 at 1 min (50 s), 58 at 90 s (75 s), 80 at 5 min | yes |
+| 1 to 9 min | checked | the fast stages with up to 6 rewrites (2 at 1 min), then the winner and the original on 2 to 4 held-out scenarios on the target model | 33 at 1 min (50 s), 58 at 90 s (75 s), 80 at 5 min | yes |
 | 10 min and up | deep | the GEPA search ("The deep tier" below), one call at a time; `--deep` is `--time 20m` | its budget: 100 at 20 min | yes |
 
 How to choose: the default 30 s for a short run whose result you read before using it;
@@ -140,7 +140,7 @@ The fast and checked tiers are stages whose calls run side by side (`--workers`,
    with the same answers of the original.
 6. **D**: the winner with the largest lead is picked (a tie goes to the shorter). In the fast tier
    it is returned, labelled a fast check; with no winner the original is.
-7. **E** (checked only): the winner and the original run once each on 4 held-out scenarios on the
+7. **E** (checked only): the winner and the original run once each on 2 to 4 held-out scenarios on the
    target model, with the same 120-word request; the winner is returned, verified, only when it
    beats the original there by more than 0.05 (no noise is measured on the held-out scenarios).
 
