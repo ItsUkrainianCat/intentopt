@@ -16,6 +16,7 @@ from autoimprover.fastplan import (
     Stage,
     fast_plan,
     misfit,
+    second_stages,
     shrink,
     stage_a,
     tail,
@@ -40,57 +41,68 @@ def test_a_time_below_15_seconds_is_refused_naming_the_flag_and_the_minimum(time
         tier_for(time_s)
 
 
-# (time, workers, prompt tokens, user examples) -> (tier, rewrites, scenarios, holdout, seconds)
+# (time, workers, prompt tokens, user examples) -> (tier, rewrites, scenarios, holdout, generations,
+# second-generation rewrites, seconds)
 # Calls at 3.4 s + tokens / 70: intake I = 3.4 + 380/70 = 8.828571; rewrite of SHORT (60 tokens, the
-# floor) 4.257143, of LONG (600) Rl = 11.971429; task T = 3.4 + 200/70 = 6.257143; a judge call
+# floor) Rs = 4.257143, of LONG (600) Rl = 11.971429; task T = 3.4 + 200/70 = 6.257143; a judge call
 # over n outputs or a contract check of n rewrites J(n) = 3.4 + 75 n/70: J1 4.471429, J2 5.542857,
 # J3 6.614286, J4 7.685714, J5 8.757143, J6 9.828571. Stage A: 1 + K (+ 1 synthesis) calls of at
 # most I (a synthesis of 8 is 8.542857). Stage B: (K + 2) M task runs, the original twice. Stage
-# C: K + 3 calls (a judge call per run, one contract check) of J(max(M, K)). Stage E (H = 4):
+# C: K + 3 calls (a judge call per run, one contract check) of J(max(M, K)). From 45 s a second
+# generation: R, K2 reflections of a rewrite's length; B2, K2 M task runs; C2, K2 + 1 calls of
+# J(max(M, K2)); at M = 2 and K2 = 2 on 4 or more workers Rs + T + J2 = 16.057143. Stage E (H = 4):
 # ceil(8/w) T + ceil(2/w) J4 = 65.428571 (w 1), 20.2 (w 4, 6), 13.942857 (w 8). A stage costs its
-# slowest call once per wave of w calls; a plan fits when it is at most 0.85 x time.
+# slowest call once per wave of w calls; a plan fits when it is at most 0.85 x time; from 45 s the
+# largest plan with two generations that fits wins, else the largest with one.
 TABLE = [
-    ((15, 1, SHORT, False), ("quick", 1, 0, 0, 22.128571)),  # 2 I + J1
-    ((15, 4, SHORT, False), ("quick", 1, 0, 0, 13.3)),  # I + J1
-    ((15, 4, LONG, False), ("quick", 1, 0, 0, 16.442857)),  # Rl + J1
-    ((24, 6, SHORT, False), ("quick", 1, 0, 0, 13.3)),  # I + J1
-    ((25, 4, SHORT, False), ("fast", 1, 2, 0, 26.885714)),  # nothing fits: I + 2 T + J2 > 21.25
-    ((25, 6, SHORT, False), ("fast", 1, 2, 0, 20.628571)),  # I + T + J2; K=2: I + 2 T + J2
-    ((25, 8, SHORT, False), ("fast", 2, 2, 0, 20.628571)),  # I + T + J2; K=3: I + 2 T + J3
-    ((30, 1, SHORT, False), ("fast", 1, 2, 0, 86.2)),  # nothing fits: 3 I + 6 T + 4 J2
-    ((30, 4, SHORT, False), ("fast", 1, 2, 0, 26.885714)),  # nothing fits: I + 2 T + J2 > 25.5
-    ((30, 4, LONG, False), ("fast", 1, 2, 0, 30.028571)),  # nothing fits: Rl + 2 T + J2
-    ((30, 6, SHORT, False), ("fast", 1, 2, 0, 20.628571)),  # I + T + J2; K=2: 26.885714
-    ((30, 6, LONG, False), ("fast", 1, 2, 0, 23.771429)),  # Rl + T + J2
-    ((30, 8, SHORT, False), ("fast", 2, 2, 0, 20.628571)),  # I + T + J2; K=3: I + 2 T + J3
-    ((45, 4, SHORT, False), ("fast", 2, 2, 0, 32.428571)),  # I + 2 T + 2 J2; M=3: 40.828571
-    ((45, 4, LONG, False), ("fast", 2, 2, 0, 35.571429)),  # Rl + 2 T + 2 J2
-    ((45, 6, SHORT, False), ("fast", 3, 3, 0, 34.214286)),  # I + 3 T + J3; M=4: I + 4 T + J4
-    ((45, 8, SHORT, False), ("fast", 3, 4, 0, 35.285714)),  # I + 3 T + J4
-    ((59, 1, SHORT, False), ("fast", 1, 2, 0, 86.2)),  # nothing fits, as at 30 s
-    ((59, 4, SHORT, False), ("fast", 3, 2, 0, 49.657143)),  # 2 I + 3 T + 2 J3; M=3: 55.914286
-    ((59, 4, SHORT, True), ("fast", 3, 3, 0, 47.085714)),  # no synthesis: I + 4 T + 2 J3
-    ((59, 6, SHORT, False), ("fast", 3, 4, 0, 41.542857)),  # I + 4 T + J4
-    ((60, 1, SHORT, False), ("checked", 1, 2, 4, 151.628571)),  # 3 I + 6 T + 4 J2 + 65.428571
-    ((60, 4, SHORT, False), ("checked", 1, 2, 4, 47.085714)),  # I + 2 T + J2 + E; K=2: 52.63
-    ((60, 6, SHORT, False), ("checked", 3, 2, 4, 48.157143)),  # I + 2 T + J3 + E; K=4: 56.91
-    ((60, 8, SHORT, False), ("checked", 5, 3, 4, 50.3)),  # I + 3 T + J5 + E; K=6: 54.942857
-    ((120, 4, SHORT, False), ("checked", 6, 2, 4, 92.371429)),  # 2 I + 4 T + 3 J6 + E; M=3: 104.89
-    ((120, 6, SHORT, False), ("checked", 6, 4, 4, 95.057143)),  # 2 I + 6 T + 2 J6 + E
-    ((240, 1, SHORT, False), ("checked", 2, 2, 4, 178.514286)),  # 4 I + 8 T + 5 J2 + E; K=3: 211.83
+    ((15, 1, SHORT, False), ("quick", 1, 0, 0, 1, 0, 22.128571)),  # 2 I + J1
+    ((15, 4, SHORT, False), ("quick", 1, 0, 0, 1, 0, 13.3)),  # I + J1
+    ((15, 4, LONG, False), ("quick", 1, 0, 0, 1, 0, 16.442857)),  # Rl + J1
+    ((24, 6, SHORT, False), ("quick", 1, 0, 0, 1, 0, 13.3)),  # I + J1
+    ((25, 4, SHORT, False), ("fast", 1, 2, 0, 1, 0, 26.885714)),  # none fits: I + 2 T + J2
+    ((25, 6, SHORT, False), ("fast", 1, 2, 0, 1, 0, 20.628571)),  # I + T + J2
+    ((25, 8, SHORT, False), ("fast", 2, 2, 0, 1, 0, 20.628571)),  # I + T + J2; K=3: 27.957143
+    ((30, 1, SHORT, False), ("fast", 1, 2, 0, 1, 0, 86.2)),  # none fits: 3 I + 6 T + 4 J2
+    ((30, 4, SHORT, False), ("fast", 1, 2, 0, 1, 0, 26.885714)),  # none fits: I + 2 T + J2
+    ((30, 4, LONG, False), ("fast", 1, 2, 0, 1, 0, 30.028571)),  # none fits: Rl + 2 T + J2
+    ((30, 6, SHORT, False), ("fast", 1, 2, 0, 1, 0, 20.628571)),  # I + T + J2; K=2: 26.885714
+    ((30, 6, LONG, False), ("fast", 1, 2, 0, 1, 0, 23.771429)),  # Rl + T + J2
+    ((30, 8, SHORT, False), ("fast", 2, 2, 0, 1, 0, 20.628571)),  # I + T + J2
+    ((45, 4, SHORT, False), ("fast", 2, 2, 0, 1, 0, 32.428571)),  # 2 gens: 26.885714 + 16.057143
+    ((45, 4, LONG, False), ("fast", 2, 2, 0, 1, 0, 35.571429)),  # Rl + 2 T + 2 J2
+    ((45, 6, SHORT, False), ("fast", 1, 2, 0, 2, 2, 36.685714)),  # I + T + J2 + 16.057143
+    ((45, 8, SHORT, False), ("fast", 2, 2, 0, 2, 2, 36.685714)),  # I + T + J2 + 16.057143
+    ((59, 1, SHORT, False), ("fast", 1, 2, 0, 1, 0, 86.2)),  # none fits, as at 30 s
+    ((59, 4, SHORT, False), ("fast", 2, 2, 0, 2, 2, 48.485714)),  # I + 2 T + 2 J2 + 16.057143
+    ((59, 4, SHORT, True), ("fast", 2, 2, 0, 2, 2, 48.485714)),  # the same: A is one wave
+    ((59, 6, SHORT, False), ("fast", 3, 2, 0, 2, 2, 44.014286)),  # I + 2 T + J3 + 16.057143
+    ((60, 1, SHORT, False), ("checked", 1, 2, 4, 1, 0, 151.628571)),  # 3 I + 6 T + 4 J2 + E
+    ((60, 4, SHORT, False), ("checked", 1, 2, 4, 1, 0, 47.085714)),  # 2 gens: 63.14
+    ((60, 6, SHORT, False), ("checked", 3, 2, 4, 1, 0, 48.157143)),  # 2 gens, K=1: 56.89
+    ((60, 8, SHORT, False), ("checked", 2, 2, 4, 2, 2, 50.628571)),  # I + T + J2 + 16.06 + 13.94
+    ((90, 4, SHORT, False), ("checked", 2, 2, 4, 2, 2, 68.685714)),  # I + 2 T + 2 J2 + 16.06 + E
+    ((90, 6, SHORT, False), ("checked", 4, 2, 4, 2, 2, 72.971429)),  # I + 2 T + 2 J4 + 16.06 + E
+    ((120, 4, SHORT, False), ("checked", 5, 2, 4, 2, 2, 96.457143)),  # 2 I + 4 T + 2 J5 + ...
+    (
+        (120, 6, SHORT, False),
+        ("checked", 6, 3, 4, 2, 2, 99.671429),
+    ),  # 2 I + 4 T + 2 J6 + Rs + T + J3
+    ((240, 1, SHORT, False), ("checked", 1, 2, 4, 2, 2, 201.8)),  # 86.2 + 2 Rs + 4 T + 3 J2 + E
 ]
 
 
 @pytest.mark.parametrize(("given", "expected"), TABLE, ids=[str(given) for given, _ in TABLE])
 def test_the_plan_table(given, expected):
     plan = fast_plan(*given)
-    tier, rewrites, scenarios, holdout, seconds = expected
-    assert (plan.tier, plan.rewrites, plan.scenarios, plan.holdout) == (
-        tier,
-        rewrites,
-        scenarios,
-        holdout,
-    )
+    *shape, seconds = expected
+    assert [
+        plan.tier,
+        plan.rewrites,
+        plan.scenarios,
+        plan.holdout,
+        plan.generations,
+        plan.rewrites2,
+    ] == shape
     assert plan.est_seconds == pytest.approx(seconds, abs=1e-5)
     assert (plan.time_s, plan.workers) == given[:2]
     assert plan.est_seconds == pytest.approx(sum(stage.seconds for stage in plan.stages))
@@ -122,7 +134,7 @@ def test_the_fast_stages_and_their_calls():
     assert plan.stages[1].seconds == pytest.approx(3.4 + 200 / 70)  # one wave
     assert plan.stages[2].seconds == pytest.approx(3.4 + 25 * 3 * 2 / 70)  # one wave
     assert plan.stages[3].seconds == 0.0
-    assert fast_plan(59, 6, SHORT, False).stages[1].calls == (3 + 2) * 4
+    assert fast_plan(59, 6, SHORT, False).stages[1].calls == (3 + 2) * 2
 
 
 def test_with_the_users_examples_no_synthesis_is_planned():
@@ -132,8 +144,10 @@ def test_with_the_users_examples_no_synthesis_is_planned():
 
 def test_the_contract_check_of_many_rewrites_can_be_the_slowest_judge_call():
     """Stage C's slowest call: 3 checks on each of M outputs, or 3 questions on each of K."""
-    k5m3 = fast_plan(60, 8, SHORT, False).stages[2]  # K=5, M=3: the contract check of 5
-    assert k5m3 == Stage("C: judge and contract checks", 8, pytest.approx(3.4 + 25 * 3 * 5 / 70))
+    k6m3 = fast_plan(120, 6, SHORT, False).stages[2]  # K=6, M=3: the contract check of 6
+    assert k6m3 == Stage(
+        "C: judge and contract checks", 9, pytest.approx(2 * (3.4 + 25 * 3 * 6 / 70))
+    )
 
 
 def test_the_checked_tier_synthesises_the_holdout_too_and_ends_with_stage_e():
@@ -168,7 +182,7 @@ def test_a_long_prompt_makes_the_rewrites_the_slowest_calls_of_stage_a():
 def test_more_time_never_gives_a_smaller_plan(workers, tokens, examples):
     for start, end in ((25, 60), (60, 600)):
         shapes = [
-            (plan.rewrites, plan.scenarios)
+            (plan.generations, plan.rewrites, plan.scenarios, plan.rewrites2)
             for plan in (fast_plan(t, workers, tokens, examples) for t in range(start, end))
         ]
         assert shapes == sorted(shapes)
@@ -180,6 +194,44 @@ def test_a_plan_fits_85_percent_of_the_time_unless_it_is_the_smallest(time_s, wo
     plan = fast_plan(time_s, workers, SHORT, False)
     smallest = (plan.rewrites, plan.scenarios) == (1, 2)
     assert plan.est_seconds <= 0.85 * time_s or smallest
+
+
+def test_from_45_s_a_second_generation_follows_the_first():
+    plan = fast_plan(45, 6, SHORT, False)  # K=1, M=2, then K2=2
+    assert [(stage.name, stage.calls) for stage in plan.stages] == [
+        ("A: intake, synthesis and rewrite", 3),
+        ("B: task runs", 6),
+        ("C: judge and contract checks", 4),
+        ("R: reflection on the first generation", 2),
+        ("B2: task runs of the second generation", 2 * 2),
+        ("C2: judge and contract checks of the second generation", 2 + 1),
+        ("D: free gates and pick", 0),
+    ]
+    reflection, task_runs, judging = (stage.seconds for stage in plan.stages[3:6])
+    assert (reflection, task_runs, judging) == pytest.approx(
+        (3.4 + 60 / 70, 3.4 + 200 / 70, 3.4 + 25 * 3 * 2 / 70)
+    )
+    assert plan.est_calls == 3 + 6 + 4 + 2 + 4 + 3
+
+
+def test_a_long_prompts_reflection_takes_as_long_as_its_rewrite():
+    plan = fast_plan(120, 6, LONG, False)
+    [reflection] = [stage for stage in plan.stages if stage.name.startswith("R:")]
+    assert reflection.seconds == pytest.approx(3.4 + 600 / 70)
+
+
+def test_the_second_generations_contract_check_can_be_its_slowest_judge_call():
+    """C2's slowest call: 3 checks on each of M outputs, or 3 questions on each of K2."""
+    assert second_stages(3, 2, 8, SHORT)[2] == Stage(
+        "C2: judge and contract checks of the second generation", 4, pytest.approx(3.4 + 225 / 70)
+    )
+    assert second_stages(2, 3, 8, SHORT)[2].seconds == pytest.approx(3.4 + 225 / 70)
+
+
+@pytest.mark.parametrize("workers", [1, 4, 6, 8, 16])
+def test_below_45_s_there_is_never_a_second_generation(workers):
+    assert {fast_plan(t, workers, SHORT, False).generations for t in range(15, 45)} == {1}
+    assert fast_plan(45, workers, SHORT, False).rewrites2 in (0, 1, 2)
 
 
 def test_the_plan_is_the_same_for_the_same_inputs():

@@ -8,8 +8,10 @@ scoring). Stages of the fast and checked tiers: A one wave of the intake, the sy
 scenarios (none when the user gives examples) and the K rewrites; B the original twice (its two
 runs measure the noise) and every rewrite on the M scenarios, (K + 2) M task runs; C one judge
 call per run, which sees outputs only (ADR-002), and one contract check of every rewrite, K + 3
-calls; D the free gates and the pick; E (checked only) the winner against the original on the
-held-out scenarios, on the target model.
+calls; from 45 s, when the whole plan fits, a second generation: R the reflection model writes K2
+rewrites from the first generation's outputs and failed checks, B2 and C2 run and judge them;
+D the free gates and the pick over every candidate; E (checked only) the winner against the
+original on the held-out scenarios, on the target model.
 
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
 run time (`tail`, `misfit`, `shrink`) to shrink what the time or the calls left cannot cover
@@ -56,6 +58,10 @@ MAX_REWRITES: dict[Tier, int] = {"quick": 1, "fast": 3, "checked": 6}
 MAX_SCENARIOS = 4
 MIN_SCENARIOS = 2
 CHECKED_HOLDOUT = 4
+# From this `--time` a run has a second generation of up to MAX_REWRITES2 rewrites, written by
+# reflecting on the first one's failed checks, when the whole plan fits (SPEC R25; ADR-011).
+TWO_GENERATIONS_FROM_S = 45
+MAX_REWRITES2 = 2
 
 
 class Stage(NamedTuple):
@@ -70,7 +76,8 @@ class Stage(NamedTuple):
 class FastPlan:
     """What a quick, fast or checked run will do; `--dry` prints it (SPEC R4, R25). `rewrites` is
     K, `scenarios` M (the scenarios the rewrites are picked on, 0 in the quick tier), `holdout`
-    the held-out scenarios of the checked tier (else 0)."""
+    the held-out scenarios of the checked tier (else 0), `generations` 2 when a second
+    generation of `rewrites2` rewrites follows the first (else 1 and 0)."""
 
     tier: Tier
     time_s: int
@@ -81,6 +88,8 @@ class FastPlan:
     stages: tuple[Stage, ...]
     est_seconds: float
     est_calls: int
+    generations: int = 1
+    rewrites2: int = 0
 
 
 def tier_for(time_s: int) -> Tier:
@@ -152,6 +161,33 @@ def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, 
     )
 
 
+def second_stages(
+    rewrites2: int, scenarios: int, workers: int, prompt_tokens: int
+) -> tuple[Stage, ...]:
+    """The second generation: `rewrites2` reflections (each a rewrite's length), their task runs
+    on the `scenarios` scenarios, then a judge call each and one contract check of all."""
+    reflection = call_seconds(rewrite_tokens(prompt_tokens))
+    judging = max(judge_seconds(scenarios), contract_seconds(rewrites2))
+    runs = rewrites2 * scenarios
+    return (
+        Stage(
+            "R: reflection on the first generation",
+            rewrites2,
+            wave_seconds(rewrites2, workers, reflection),
+        ),
+        Stage(
+            "B2: task runs of the second generation",
+            runs,
+            wave_seconds(runs, workers, call_seconds(TASK_TOKENS)),
+        ),
+        Stage(
+            "C2: judge and contract checks of the second generation",
+            rewrites2 + 1,
+            wave_seconds(rewrites2 + 1, workers, judging),
+        ),
+    )
+
+
 def holdout_stage(holdout: int, workers: int) -> Stage:
     """Stage E: the winner and the original on `holdout` held-out scenarios on the target model,
     a wave of task runs, then a judge call each."""
@@ -169,7 +205,9 @@ def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool
     """The plan of a quick, fast or checked run of `time_s` seconds on `workers` threads for a
     prompt of `prompt_tokens` tokens (`runner.count_tokens`), with the user's examples or with a
     synthesis call. Fast and checked take the most rewrites, then the most scenarios, whose
-    estimate fits PLAN_SHARE of the time; when even 1 rewrite on MIN_SCENARIOS does not fit, that
+    estimate fits PLAN_SHARE of the time; from TWO_GENERATIONS_FROM_S the most rewrites, then
+    scenarios, then second-generation rewrites of a plan with two generations come first, and
+    one generation only when none fits. When even 1 rewrite on MIN_SCENARIOS does not fit, that
     smallest plan is returned and the runner shrinks it at run time. The deep tier is the search
     (`runner.improve`), not a fast plan: ValueError."""
     tier = tier_for(time_s)
@@ -181,16 +219,22 @@ def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool
         stages = (stage_a(1, 0, workers, prompt_tokens), contract_stage())
         return _plan(tier, time_s, workers, 1, 0, 0, stages)
     holdout = CHECKED_HOLDOUT if tier == "checked" else 0
-    plans = []
+    one: list[FastPlan] = []
+    two: list[FastPlan] = []
+    second = range(MAX_REWRITES2, 0, -1) if time_s >= TWO_GENERATIONS_FROM_S else range(0)
     for rewrites in range(MAX_REWRITES[tier], 0, -1):
         for scenarios in range(MAX_SCENARIOS, MIN_SCENARIOS - 1, -1):
             synthesis = 0 if have_examples else scenarios + holdout
-            stages = (stage_a(rewrites, synthesis, workers, prompt_tokens),)
-            stages += scoring_stages(rewrites, scenarios, workers)
-            if holdout:
-                stages += (holdout_stage(holdout, workers),)
-            plans.append(_plan(tier, time_s, workers, rewrites, scenarios, holdout, stages))
-    return next((p for p in plans if p.est_seconds <= PLAN_SHARE * time_s), plans[-1])
+            *scoring, pick = scoring_stages(rewrites, scenarios, workers)
+            first = (stage_a(rewrites, synthesis, workers, prompt_tokens), *scoring)
+            last = (pick, *((holdout_stage(holdout, workers),) if holdout else ()))
+            shape = (tier, time_s, workers, rewrites, scenarios, holdout)
+            one.append(_plan(*shape, (*first, *last)))
+            for rewrites2 in second:
+                stages = (*first, *second_stages(rewrites2, scenarios, workers, prompt_tokens))
+                two.append(_plan(*shape, (*stages, *last), rewrites2))
+    fitting = (p for p in (*two, *one) if p.est_seconds <= PLAN_SHARE * time_s)
+    return next(fitting, one[-1])
 
 
 def _plan(
@@ -201,6 +245,7 @@ def _plan(
     scenarios: int,
     holdout: int,
     stages: tuple[Stage, ...],
+    rewrites2: int = 0,
 ) -> FastPlan:
     return FastPlan(
         tier=tier,
@@ -212,6 +257,8 @@ def _plan(
         stages=stages,
         est_seconds=sum(stage.seconds for stage in stages),
         est_calls=sum(stage.calls for stage in stages),
+        generations=2 if rewrites2 else 1,
+        rewrites2=rewrites2,
     )
 
 
