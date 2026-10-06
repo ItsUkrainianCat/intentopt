@@ -24,6 +24,10 @@ The user ran the call of R18 in their own terminal (BUILD-LOG, USER STEP 12:00, 
 
 The user's first real `/improve` run showed that the `init` line of a schema call lists `tools: ["StructuredOutput"]`; the first version of the check refused it (exit 4 on intake). `StructuredOutput` is allowed in `tools` on calls that carry a schema and nowhere else.
 
+## Amendment 2026-10-06: start-up trims (measured)
+
+The user's alternating timing test (3 rounds, trivial Haiku reply, effort low, machine under memory pressure) gave medians: base 5.6 s, `DISABLE_TELEMETRY=1` + `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 4.1 s, `--setting-sources ""` 5.3 s, both 3.4 s (3.3 to 3.7 in every round). Every call therefore adds `--setting-sources ""` (no user, project or local settings files are read; `--settings` and managed policy still apply, so the pinned output style holds) and runs the child with those two environment variables set to `1` (the only CLAUDE_CODE_* style variables the scrubbed environment gets; everything else stays scrubbed). Privacy side effect: the child sends no telemetry. The lockdown check is unchanged.
+
 ## Consequences
 
 The first call of a process shows whether the session is locked down on that machine, with no extra call. A user whose `claude` setup adds tools in `--safe-mode` gets exit 4 with the field that failed. The user's e-mail address and the date stay in every model context (accepted: the calls go to the same account). If a later `claude` version renames an `init` field, the check fails closed.
