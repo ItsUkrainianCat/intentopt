@@ -1,5 +1,6 @@
 """What `autoimprover bench` prints (SPEC R26, with R2 and R4): `Summary`, the measure as text or as
-one JSON object, and `DryView`, the plan of `--dry`; both are a `report.Shown`.
+one JSON object, and `DryView`, the plan of `--dry` with the models, efforts and strictness the
+flags chose (the run's flags, `cli_bench`); both are a `report.Shown`.
 
 The summary holds the prompts in the set and the ones measured (a run that ended in a backend
 failure is an error, not measured), the improved rate among the measured, the tool's comparisons
@@ -16,13 +17,13 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from autoimprover.bench import Measured, Row
-from autoimprover.bench_judge import Comparison
+from autoimprover.bench_judge import NAIVE_EFFORT, Comparison
 from autoimprover.report import one_line
-from autoimprover.types import Models, Tier
+from autoimprover.types import Efforts, Models, Strictness, Tier
 
 _COUNTED = ("win", "tie", "loss")
 
@@ -135,13 +136,17 @@ class DryRow:
 
 @dataclass(frozen=True)
 class DryView:
-    """The plan of `autoimprover bench --dry` (SPEC R4, R26): no call, nothing written."""
+    """The plan of `autoimprover bench --dry` (SPEC R4, R26): no call, nothing written. The models,
+    efforts and strictness are every run's; the bench's own comparisons answer on the target
+    model at the task effort and judge with the judge model at the judge effort."""
 
     path: str
     tier: Tier
     time_s: int
     workers: int
     models: Models
+    efforts: Efforts
+    strictness: Strictness
     baseline: bool
     scenarios: int
     rows: tuple[DryRow, ...]
@@ -159,6 +164,9 @@ class DryView:
             "tier": self.tier,
             "time_s": self.time_s,
             "workers": self.workers,
+            "models": asdict(self.models),
+            "efforts": asdict(self.efforts),
+            "strictness": self.strictness,
             "scenarios": self.scenarios,
             "baseline": "naive" if self.baseline else "none",
             "est_calls": run_calls + bench_calls,
@@ -181,12 +189,18 @@ class DryView:
         }
 
     def text(self) -> str:
-        found, models = self.object(), self.models
+        found, models, efforts = self.object(), self.models, self.efforts
+        naive = f", the naive rewrite {NAIVE_EFFORT}" if self.baseline else ""
         lines = [
             f"bench: {found['prompts']} prompts from {self.path}; tier {self.tier} (--time "
             f"{self.time_s} s), {self.workers} calls at a time",
             f"models: task {models.task}, judge {models.judge} (also the pairwise judge), "
-            f"reflection {models.reflect}, target {models.target} (the pairwise answers)",
+            f"reflection {models.reflect} (also the fresh scenarios), target {models.target} "
+            "(the pairwise answers)",
+            f"effort: task {efforts.task or 'default'}, judge {efforts.judge or 'default'}, "
+            f"reflection {efforts.reflect or 'default'} (the pairwise answers take the task "
+            f"effort{naive})",
+            f"strictness: {self.strictness} (every run's rewrites)",
             f"pairwise: {self.scenarios} fresh scenarios per prompt, each judged in both orders; "
             f"baseline: {found['baseline']}",
             f"estimate, if every prompt is improved: at most {found['est_calls']} calls (runs "
