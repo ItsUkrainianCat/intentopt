@@ -1,9 +1,10 @@
 """The time tiers and the fast plan (SPEC R25; ADR-011): `--time` picks the tier, and the plan takes
 the most rewrites, then the most scenarios, whose estimate fits 85 % of the time, from the latency
-model of ADR-011 (2.4 s per call plus output tokens at 70 per second; one slowest call per wave of
-`workers` calls). Stage A is one wave: the intake, the synthesis and the rewrites; stage C is a
-judge call per prompt plus one contract check of every rewrite. The expected numbers below were
-worked out by hand from that model.
+model of ADR-011 (3.4 s per call, the start-up measured with the trims of ADR-009's amendment of
+2026-10-06, plus output tokens at 70 per second; one slowest call per wave of `workers` calls).
+Stage A is one wave: the intake, the synthesis and the rewrites; stage C is a judge call per
+prompt plus one contract check of every rewrite. The expected numbers below were worked out by
+hand from that model.
 """
 
 import pytest
@@ -39,33 +40,38 @@ def test_a_time_below_15_seconds_is_refused_naming_the_flag_and_the_minimum(time
 
 
 # (time, workers, prompt tokens, user examples) -> (tier, rewrites, scenarios, holdout, seconds)
+# Calls at 3.4 s + tokens / 70: intake I = 3.4 + 380/70 = 8.828571; rewrite of SHORT (60 tokens, the
+# floor) 4.257143, of LONG (600) Rl = 11.971429; task T = 3.4 + 200/70 = 6.257143; a judge call
+# over n outputs or a contract check of n rewrites J(n) = 3.4 + 75 n/70: J1 4.471429, J2 5.542857,
+# J3 6.614286, J4 7.685714, J6 9.828571. Stage E (H = 4): ceil(8/w) T + ceil(2/w) J4. A stage
+# costs its slowest call once per wave of w calls; a plan fits when it is at most 0.85 x time.
 TABLE = [
-    ((15, 1, SHORT, False), ("quick", 1, 0, 0, 19.128571)),
-    ((15, 4, SHORT, False), ("quick", 1, 0, 0, 11.3)),
-    ((15, 4, LONG, False), ("quick", 1, 0, 0, 14.442857)),
-    ((24, 6, SHORT, False), ("quick", 1, 0, 0, 11.3)),
-    ((25, 4, SHORT, False), ("fast", 1, 2, 0, 17.628571)),
-    ((25, 6, SHORT, False), ("fast", 2, 2, 0, 17.628571)),
-    ((25, 8, SHORT, False), ("fast", 3, 2, 0, 18.7)),
-    ((30, 1, SHORT, False), ("fast", 1, 2, 0, 58.142857)),
-    ((30, 4, SHORT, False), ("fast", 2, 2, 0, 22.885714)),
-    ((30, 4, LONG, False), ("fast", 1, 2, 0, 20.771429)),
-    ((30, 6, SHORT, False), ("fast", 3, 3, 0, 23.957143)),
-    ((30, 6, LONG, False), ("fast", 2, 2, 0, 20.771429)),
-    ((30, 8, SHORT, False), ("fast", 3, 4, 0, 25.028571)),
-    ((45, 4, SHORT, False), ("fast", 3, 2, 0, 37.4)),
-    ((45, 4, SHORT, True), ("fast", 3, 3, 0, 34.828571)),
-    ((45, 4, LONG, False), ("fast", 2, 4, 0, 33.428571)),
-    ((45, 6, SHORT, False), ("fast", 3, 4, 0, 30.285714)),
-    ((59, 1, SHORT, False), ("fast", 1, 2, 0, 58.142857)),
-    ((59, 4, SHORT, False), ("fast", 3, 4, 0, 50.057143)),
-    ((60, 1, SHORT, False), ("checked", 1, 2, 4, 113.571429)),
-    ((60, 4, SHORT, False), ("checked", 2, 4, 4, 47.485714)),
-    ((60, 6, SHORT, False), ("checked", 4, 3, 4, 47.485714)),
-    ((60, 8, SHORT, False), ("checked", 6, 4, 4, 49.628571)),
-    ((120, 4, SHORT, False), ("checked", 6, 4, 4, 87.314286)),
-    ((120, 6, SHORT, False), ("checked", 6, 4, 4, 76.8)),
-    ((240, 1, SHORT, False), ("checked", 4, 2, 4, 195.085714)),
+    ((15, 1, SHORT, False), ("quick", 1, 0, 0, 22.128571)),  # 2 I + J1
+    ((15, 4, SHORT, False), ("quick", 1, 0, 0, 13.3)),  # I + J1
+    ((15, 4, LONG, False), ("quick", 1, 0, 0, 16.442857)),  # Rl + J1
+    ((24, 6, SHORT, False), ("quick", 1, 0, 0, 13.3)),  # I + J1
+    ((25, 4, SHORT, False), ("fast", 1, 2, 0, 20.628571)),  # I + T + J2 <= 21.25
+    ((25, 6, SHORT, False), ("fast", 2, 2, 0, 20.628571)),  # K=3: I + 2 T + J3 = 27.957143
+    ((25, 8, SHORT, False), ("fast", 2, 2, 0, 20.628571)),  # K=3, M=2: I + T + J3 = 21.7
+    ((30, 1, SHORT, False), ("fast", 1, 2, 0, 68.142857)),  # nothing fits: 3 I + 4 T + 3 J2
+    ((30, 4, SHORT, False), ("fast", 1, 2, 0, 20.628571)),  # K=2, M=2: I + 2 T + J2 = 26.885714
+    ((30, 4, LONG, False), ("fast", 1, 2, 0, 23.771429)),  # Rl + T + J2
+    ((30, 6, SHORT, False), ("fast", 2, 2, 0, 20.628571)),  # K=3, M=2: I + 2 T + J3 = 27.957143
+    ((30, 6, LONG, False), ("fast", 2, 2, 0, 23.771429)),  # Rl + T + J2
+    ((30, 8, SHORT, False), ("fast", 3, 2, 0, 21.7)),  # I + T + J3; M=3: I + 2 T + J3 = 27.957143
+    ((45, 4, SHORT, False), ("fast", 2, 4, 0, 35.285714)),  # I + 3 T + J4; K=3: >= 43.4
+    ((45, 4, SHORT, True), ("fast", 3, 2, 0, 34.571429)),  # I + 2 T + 2 J3; M=3: 40.828571
+    ((45, 4, LONG, False), ("fast", 2, 3, 0, 37.357143)),  # Rl + 3 T + J3; M=4: 38.428571
+    ((45, 6, SHORT, False), ("fast", 3, 4, 0, 35.285714)),  # I + 3 T + J4
+    ((59, 1, SHORT, False), ("fast", 1, 2, 0, 68.142857)),  # nothing fits, as at 30 s
+    ((59, 4, SHORT, False), ("fast", 3, 3, 0, 49.657143)),  # 2 I + 3 T + 2 J3; M=4: 58.057143
+    ((60, 1, SHORT, False), ("checked", 1, 2, 4, 133.571429)),  # 3 I + 4 T + 3 J2 + 8 T + 2 J4
+    ((60, 4, SHORT, False), ("checked", 2, 2, 4, 47.085714)),  # I + 2 T + J2 + E 20.2; M=3: 54.41
+    ((60, 6, SHORT, False), ("checked", 4, 2, 4, 49.228571)),  # I + 2 T + J4 + E 20.2; M=3: 55.49
+    ((60, 8, SHORT, False), ("checked", 6, 2, 4, 45.114286)),  # I + 2 T + J6 + E 13.94; M=3: 51.37
+    ((120, 4, SHORT, False), ("checked", 6, 4, 4, 101.314286)),  # 2 I + 7 T + 2 J6 + E 20.2
+    ((120, 6, SHORT, False), ("checked", 6, 4, 4, 88.8)),  # 2 I + 5 T + 2 J6 + E 20.2
+    ((240, 1, SHORT, False), ("checked", 3, 2, 4, 192.7)),  # 5 I + 8 T + 5 J3 + 8 T + 2 J4
 ]
 
 
@@ -96,56 +102,56 @@ def test_the_quick_tier_runs_the_intake_beside_one_rewrite_then_the_contract_che
         ("contract check", 1),
     ]
     assert plan.est_calls == 3
-    assert plan.stages[1].seconds == pytest.approx(2.4 + 75 / 70)
+    assert plan.stages[1].seconds == pytest.approx(3.4 + 75 / 70)
 
 
 def test_the_fast_stages_and_their_calls():
-    plan = fast_plan(30, 6, SHORT, False)  # K=3, M=3: the default time and workers
+    plan = fast_plan(30, 6, SHORT, False)  # K=2, M=2: the default time and workers
     assert [(stage.name, stage.calls) for stage in plan.stages] == [
-        ("A: intake, synthesis and rewrites", 5),
-        ("B: task runs", 12),
-        ("C: judge and contract checks", 5),
+        ("A: intake, synthesis and rewrites", 4),
+        ("B: task runs", 6),
+        ("C: judge and contract checks", 4),
         ("D: free gates and pick", 0),
     ]
-    assert plan.stages[2].seconds == pytest.approx(2.4 + 25 * 3 * 3 / 70)  # one wave
+    assert plan.stages[2].seconds == pytest.approx(3.4 + 25 * 3 * 2 / 70)  # one wave
     assert plan.stages[3].seconds == 0.0
 
 
 def test_with_the_users_examples_no_synthesis_is_planned():
-    plan = fast_plan(30, 6, SHORT, True)
-    assert plan.stages[0] == Stage("A: intake and rewrites", 4, pytest.approx(2.4 + 380 / 70))
+    plan = fast_plan(30, 6, SHORT, True)  # K=2: the intake and 2 rewrites
+    assert plan.stages[0] == Stage("A: intake and rewrites", 3, pytest.approx(3.4 + 380 / 70))
 
 
 def test_the_contract_check_of_many_rewrites_can_be_the_slowest_judge_call():
     """Stage C's slowest call: 3 checks on each of M outputs, or 3 questions on each of K."""
-    k6m3 = fast_plan(60, 8, SHORT, False).stages[2]  # K=6, M=4: the contract check of 6
-    assert k6m3 == Stage("C: judge and contract checks", 8, pytest.approx(2.4 + 25 * 3 * 6 / 70))
+    k6m2 = fast_plan(60, 8, SHORT, False).stages[2]  # K=6, M=2: the contract check of 6
+    assert k6m2 == Stage("C: judge and contract checks", 8, pytest.approx(3.4 + 25 * 3 * 6 / 70))
 
 
 def test_the_checked_tier_synthesises_the_holdout_too_and_ends_with_stage_e():
-    plan = fast_plan(60, 4, SHORT, False)  # K=2, M=4, H=4: synthesises 8
+    plan = fast_plan(60, 4, SHORT, False)  # K=2, M=2, H=4: synthesises 6
     assert plan.stages[0] == Stage(
-        "A: intake, synthesis and rewrites", 4, pytest.approx(2.4 + 380 / 70)
+        "A: intake, synthesis and rewrites", 4, pytest.approx(3.4 + 380 / 70)
     )
     assert plan.stages[-1].name == "E: held-out check on the target model"
     assert plan.stages[-1].calls == 2 * CHECKED_HOLDOUT + 2
-    assert plan.est_calls == 4 + 12 + 4 + 0 + 10
+    assert plan.est_calls == 4 + 6 + 4 + 0 + 10
 
 
 def test_a_synthesis_of_many_scenarios_can_be_the_slowest_call_of_stage_a():
-    """8 scenarios cost 7.5 s, under the intake's 7.8 s; the 10 of a longer holdout would not."""
-    assert stage_a(1, 8, 4, SHORT).seconds == pytest.approx(2.4 + 380 / 70)
-    assert stage_a(1, 10, 4, SHORT).seconds == pytest.approx(2.4 + 450 / 70)
+    """8 scenarios cost 8.5 s, under the intake's 8.8 s; the 10 of a longer holdout would not."""
+    assert stage_a(1, 8, 4, SHORT).seconds == pytest.approx(3.4 + 380 / 70)
+    assert stage_a(1, 10, 4, SHORT).seconds == pytest.approx(3.4 + 450 / 70)
     assert stage_a(1, 0, 4, SHORT) == Stage(
-        "A: intake and rewrite", 2, pytest.approx(2.4 + 380 / 70)
+        "A: intake and rewrite", 2, pytest.approx(3.4 + 380 / 70)
     )
 
 
 def test_a_long_prompt_makes_the_rewrites_the_slowest_calls_of_stage_a():
-    assert stage_a(3, 4, 8, SHORT).seconds == pytest.approx(2.4 + 380 / 70)  # the intake
-    assert stage_a(3, 4, 8, LONG).seconds == pytest.approx(2.4 + 600 / 70)  # a rewrite
-    assert stage_a(3, 4, 8, 1000).seconds == pytest.approx(2.4 + 600 / 70)  # 1200, capped at 600
-    assert stage_a(3, 4, 4, SHORT).seconds == pytest.approx(2 * (2.4 + 380 / 70))  # 2 waves
+    assert stage_a(3, 4, 8, SHORT).seconds == pytest.approx(3.4 + 380 / 70)  # the intake
+    assert stage_a(3, 4, 8, LONG).seconds == pytest.approx(3.4 + 600 / 70)  # a rewrite
+    assert stage_a(3, 4, 8, 1000).seconds == pytest.approx(3.4 + 600 / 70)  # 1200, capped at 600
+    assert stage_a(3, 4, 4, SHORT).seconds == pytest.approx(2 * (3.4 + 380 / 70))  # 2 waves
 
 
 @pytest.mark.parametrize("workers", [1, 2, 4, 6, 8, 16])
@@ -192,7 +198,7 @@ def test_the_tail_of_a_shape_is_stages_b_to_d_then_e_for_a_holdout():
     assert [s.name[:2] for s in tail(1, 2, 0, 4)] == ["B:", "C:", "D:"]
     assert [s.name[:2] for s in tail(0, 0, 4, 4)] == ["E:"]
     assert [s.name[:2] for s in tail(3, 2, 4, 4)] == ["B:", "C:", "D:", "E:"]
-    assert tail(3, 2, 4, 4)[0] == Stage("B: task runs", 8, pytest.approx(2 * (2.4 + 200 / 70)))
+    assert tail(3, 2, 4, 4)[0] == Stage("B: task runs", 8, pytest.approx(2 * (3.4 + 200 / 70)))
     assert tail(3, 2, 4, 4)[1].calls == 3 + 2  # a judge call per prompt, one contract check
 
 

@@ -31,7 +31,9 @@ CHECKED_FROM_S = 60
 DEEP_FROM_S = 600
 
 # The latency model (ADR-011, the user's timing probe): a call's fixed cost and its output speed.
-OVERHEAD_S = 2.4
+# The fixed cost is the start-up measured on the user's loaded machine with the trims of ADR-009's
+# amendment of 2026-10-06 (median 3.4 s per trivial call).
+OVERHEAD_S = 3.4
 TOKENS_PER_S = 70
 # A plan may fill this share of `--time`; the rest absorbs the model's error.
 PLAN_SHARE = 0.85
