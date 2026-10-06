@@ -13,7 +13,7 @@ from autoimprover.bench import Measured, Row
 from autoimprover.bench_judge import Comparison
 from autoimprover.bench_report import DryRow, DryView, Summary, percentile
 from autoimprover.report import Emitter
-from autoimprover.types import Models
+from autoimprover.types import Efforts, Models
 
 MODELS = Models(
     task="claude-haiku-4-5-20251001",
@@ -181,6 +181,8 @@ def dry(refusal=None, baseline=False) -> DryView:
         time_s=30,
         workers=6,
         models=MODELS,
+        efforts=Efforts("low", "low", "low"),
+        strictness="balanced",
         baseline=baseline,
         scenarios=4,
         rows=(DryRow("p1", 17, 25.5, 17, 35.0), DryRow("p2", 14, 20.6, 17, 35.0)),

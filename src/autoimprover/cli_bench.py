@@ -1,14 +1,24 @@
 """`autoimprover bench [--prompts FILE] [--time T] [--limit N] [--baseline naive|none]
-[--judge-model M] [--seed S] [--json] [--dry]` on the command line (SPEC R26, with R2, R4, R14,
-R23, R25).
+[--task-model M] [--judge-model M] [--reflect-model M] [--target-model M] [--effort L]
+[--task-effort L] [--judge-effort L] [--reflect-effort L] [--workers N] [--strictness S]
+[--seed S] [--json] [--dry]` on the command line (SPEC R26, with R2, R4, R14, R23, R25).
+
+The model, effort, worker and strictness flags are a run's (RUN_FLAGS): the run's own parser reads
+them (`cli_options.parse`) and the run's `cli_options.settings` checks them, so a bench takes them
+with a run's names, values and refusals (a judge equal to the task or target model, SPEC R14; an
+effort level, SPEC R25), and refuses any other flag of a run as unknown. They choose the tier's
+settings every run shares and go into every prompt's run, and the bench's own comparisons follow
+them (`bench`): the target model answers the fresh scenarios at the task role's effort, the judge
+model judges the answers at the judge role's effort, and the reflection model writes the scenarios
+at the reflection role's effort (the naive rewrite at low effort).
 
 Before the first paid call: the flags, the set (`bench.load_prompts`, the repository's own set by
-default), the tier, models and efforts every run shares (`cli_options.settings`, so a judge equal
-to the target is refused, SPEC R14), each prompt's plan and whether a real run of it would refuse
-(SPEC R4, R25), and the state folder (SPEC R23). `--dry` prints the plan (`bench_report.DryView`)
-with no call and nothing written. A real bench measures the prompts (`bench.run_bench`) in a new
-folder `<state>/bench/<id>/`; each prompt runs through `run_prompt`, the command line's own run
-of a prompt, injected by `cli`, as is the raw model layer. The summary is the one result on
+default), the tier, models, efforts, workers and strictness every run shares, each prompt's plan
+and whether a real run of it would refuse (SPEC R4, R25), and the state folder (SPEC R23). `--dry`
+prints the plan (`bench_report.DryView`, with the models and efforts) with no call and nothing
+written. A real bench measures the prompts (`bench.run_bench`) in a new folder
+`<state>/bench/<id>/`; each prompt runs through `run_prompt`, the command line's own run of a
+prompt, injected by `cli`, as is the raw model layer. The summary is the one result on
 stdout. Exit 0 once the flags parse, whatever the tool's results (it measures, it does not gate);
 2 for bad usage or a refusal; 3 when every prompt's run ended in a backend failure; a session that
 is not locked down ends the bench with exit 4 (`cli.main`). Ctrl-C is exit 130 as SPEC R2 has it
@@ -21,7 +31,10 @@ DEBT, a private name used here until its owner adds a public seam: `cli_options.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import shutil
+import textwrap
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -43,12 +56,22 @@ from autoimprover.bench import (
 from autoimprover.bench_judge import PAIRWISE_SCENARIOS, pairwise_calls, pairwise_seconds
 from autoimprover.bench_report import DryRow, DryView, Summary
 from autoimprover.cli_fast import fast_refusal
-from autoimprover.cli_options import Options, Settings, UsageError, _Parser, budget, settings
+from autoimprover.cli_options import (
+    Options,
+    Settings,
+    UsageError,
+    _Parser,
+    budget,
+    flag_name,
+    parse,
+    settings,
+)
 from autoimprover.fastplan import fast_plan
 from autoimprover.report import Emitter
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError, make_dirs, runs_root, write_json
 from autoimprover.types import (
+    EFFORT_LEVELS,
     EXIT_INTERRUPTED,
     EXIT_OK,
     SYNTH_COUNT,
@@ -61,6 +84,19 @@ SEED_MAX = 999
 # Where an interrupted bench keeps its partial summary, in its folder.
 SUMMARY_FILE = "summary.json"
 _BASELINES = ("naive", "none")
+# The flags of a run a bench takes too, read and checked as a run's (SPEC R14, R25).
+RUN_FLAGS = (
+    "task_model",
+    "judge_model",
+    "reflect_model",
+    "target_model",
+    "effort",
+    "task_effort",
+    "judge_effort",
+    "reflect_effort",
+    "workers",
+    "strictness",
+)
 
 
 class RunPrompt(Protocol):
@@ -72,25 +108,36 @@ class RunPrompt(Protocol):
 
 @dataclass(frozen=True)
 class BenchOptions:
-    """The parsed flags of `autoimprover bench`."""
+    """The parsed flags of `autoimprover bench` but the run's (RUN_FLAGS)."""
 
     help: bool = False
     prompts: str | None = None
     time: str | None = None
     limit: int | None = None
     baseline: str = "none"
-    judge_model: str | None = None
     seed: int = 0
     json: bool = False
     dry: bool = False
 
 
 def bench_parser() -> _Parser:
+    """The bench's own flags; the help lists the run's flags it takes (RUN_FLAGS)."""
+    levels = ", ".join((*EFFORT_LEVELS, "default"))
     parser = _Parser(
         prog="autoimprover bench",
-        description="Measure the tool: run every prompt of a set through the ordinary pipeline, "
-        "then compare each returned rewrite with its original by a blind pairwise judge on fresh "
-        "scenarios, in both orders. Spends subscription calls; --dry shows how many.",
+        description=_filled(
+            "Measure the tool: run every prompt of a set through the ordinary pipeline, then "
+            "compare each returned rewrite with its original by a blind pairwise judge on fresh "
+            "scenarios, in both orders. Spends subscription calls; --dry shows how many."
+        ),
+        epilog=_filled(
+            "A run's flags, with a run's values and refusals (autoimprover --help): "
+            f"{', '.join(flag_name(dest) for dest in RUN_FLAGS)}; an effort is one of {levels}. "
+            "Every run takes them. The bench's own comparisons follow them: the target model "
+            "answers the fresh scenarios at the task effort, the judge model judges at the judge "
+            "effort, and the reflection model writes the scenarios at the reflection effort."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         argument_default=argparse.SUPPRESS,
         allow_abbrev=False,
         add_help=False,
@@ -106,11 +153,30 @@ def bench_parser() -> _Parser:
     flag("--time", metavar="DURATION", help="each run's clock and tier, as for a run (default 30s)")
     flag("--limit", type=_limit, help=f"the first N prompts, 1 to {MAX_PROMPTS}")
     flag("--baseline", choices=_BASELINES, help="also compare a naive one-call rewrite (naive)")
-    flag("--judge-model", metavar="MODEL", help="the judge of the runs and of the comparisons")
     flag("--seed", type=_seed, help=f"a number from 0 to {SEED_MAX} for the bench's own calls")
     flag("--json", action="store_true", help="print one JSON object on stdout")
     flag("--dry", action="store_true", help="print the plan; no model call, nothing written")
     return parser
+
+
+def _filled(text: str) -> str:
+    """`text` filled to argparse's width for the terminal, a flag name never broken at a hyphen."""
+    width = max(shutil.get_terminal_size().columns - 2, 40)
+    return textwrap.fill(text, width, break_on_hyphens=False)
+
+
+def parse_bench(args: Sequence[str]) -> tuple[BenchOptions, Options]:
+    """The bench's own flags, and the Options every prompt's run starts from: the run's flags a
+    bench takes (RUN_FLAGS), read by the run's own parser, with `--time`. UsageError as a run
+    raises it for a bad value, and "unrecognized arguments" for a prompt or another run flag."""
+    known, rest = bench_parser().parse_known_args(list(args))
+    opts = BenchOptions(**vars(known))
+    run = parse(rest)
+    extra = [flag_name(dest) for dest in sorted(run.given - set(RUN_FLAGS))]
+    if extra or run.words:
+        raise UsageError(f"unrecognized arguments: {' '.join([*extra, *run.words])}")
+    given = run.given | ({"time"} if opts.time is not None else set())
+    return opts, dataclasses.replace(run, given=frozenset(given), time=opts.time)
 
 
 def bench_command(
@@ -121,7 +187,7 @@ def bench_command(
     now: Callable[[], float] | None,
 ) -> int:
     """Run `autoimprover bench` with `args` (what follows `bench`); the exit code of SPEC R2."""
-    opts = BenchOptions(**vars(bench_parser().parse_args(list(args))))
+    opts, shared = parse_bench(args)
     if opts.help:
         emit.help(bench_parser().format_help())
         return EXIT_OK
@@ -130,7 +196,6 @@ def bench_command(
         prompts = load_prompts(path, opts.limit)
     except ValueError as error:
         raise UsageError(f"--prompts: {error}") from None
-    shared = Options(time=opts.time, judge_model=opts.judge_model)
     chosen = settings(shared)
     data = "\n".join(f"{item.id}\t{item.prompt}" for item in prompts).encode()
     folder = new_bench_folder(runs_root().parent, data)
@@ -148,6 +213,8 @@ def bench_command(
         chosen.time_s,
         chosen.workers,
         chosen.models,
+        chosen.efforts,
+        chosen.strictness,
         baseline,
         PAIRWISE_SCENARIOS,
         tuple(rows),
@@ -161,11 +228,10 @@ def bench_command(
     make_raw = raw_maker()
 
     def run_one(item: BenchPrompt, root: Path) -> Collected:
-        """The prompt as `autoimprover --time T --judge-model M --kind K <prompt>` would run it."""
+        """The prompt as `autoimprover --time T <the run flags given> --kind K <prompt>` would
+        run it."""
         examples = None if item.examples is None else list(item.examples)
-        given = Options(
-            words=(item.prompt,), time=opts.time, judge_model=opts.judge_model, kind=item.kind
-        )
+        given = dataclasses.replace(shared, words=(item.prompt,), kind=item.kind)
         return run_prompt(given, examples, root)
 
     plan = BenchPlan(chosen.models, chosen.efforts, chosen.workers, baseline, opts.seed)
