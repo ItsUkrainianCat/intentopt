@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 from fakes import ScriptedBackend, reflection_reply
 
+from autoimprover.fast_prompts import parse_rewrite
 from autoimprover.search import (
     Abort,
     EvaluatorAdapter,
@@ -370,6 +371,41 @@ def test_an_unusable_reply_or_a_failed_call_skips_the_proposal_and_aborts_nothin
             wrapper("prompt")
     assert [call.sample for call in raw.calls] == [0, 1]
     assert (state.abort, state.stop, state.notes) == (None, None, {})
+
+
+BARE = [
+    "<<<\nBe brief.\n>>>\n- one",
+    "  <<<  \nBe brief.\n\t>>>\n- one",
+    f"<<<\nBe brief.\n{INSTRUCTION_END}\n- one",
+    f"{INSTRUCTION_BEGIN}\nBe brief.\n>>>\n- one",
+    "<<< INSTRUCTION\nBe brief.\nINSTRUCTION >>>\n- one",
+]
+
+
+@pytest.mark.parametrize("reply", BARE)
+def test_the_deep_parser_reads_the_delimiter_lines_the_fast_parser_reads(reply):
+    """ADR-008: the model drops the word of a delimiter under load (2026-10-06); one reading of
+    the delimiter lines serves both tiers."""
+    state = RunState()
+    wrapper, _ = reflector(reply, state)
+    assert wrapper("prompt") == "```\nBe brief.\n```"
+    assert state.notes == {"Be brief.": ("one",)}
+    assert parse_rewrite(reply) == "Be brief."
+
+
+BARE_REJECTED = {
+    "end first": ">>>\nBe brief.\n<<<",
+    "empty": "<<<\n  \n>>>\n- why",
+    "curr_param": "<<<\nKeep <curr_param> here.\n>>>",
+    "inline": "Here: <<< Be brief. >>>",
+}
+
+
+@pytest.mark.parametrize("answer", BARE_REJECTED.values(), ids=BARE_REJECTED.keys())
+def test_bare_delimiters_keep_every_rejection(answer):
+    wrapper, _ = reflector(answer)
+    with pytest.raises(SkipProposal):
+        wrapper("prompt")
 
 
 @pytest.mark.parametrize("cause", ["budget", "clock"])

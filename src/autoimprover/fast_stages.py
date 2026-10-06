@@ -158,7 +158,7 @@ class Stages:
     timed: Timed = field(init=False)
 
     def __post_init__(self) -> None:
-        self.timed = Timed(self.backend)
+        self.timed = Timed(self.backend, count_tokens(self.prompt))
         self.backend = self.timed
 
     def gates(
@@ -413,12 +413,13 @@ class Stages:
     def calibrate(self, after: str) -> None:
         """The latency model fitted to every reply so far (`fast_calibrate.fit`), kept for the
         estimates that follow; nothing changes while too few replies carry a duration."""
-        fitted = fit(self.timed.samples())
-        if fitted is not None:
-            self.latency = fitted
+        fitted, model = fit(self.timed.samples()), self.timed.model()
+        if fitted is not None and model is not None:
+            self.latency = model
             self.note(
                 f"after stage {after}: a call takes {fitted.overhead_s:.1f} s plus its output "
-                f"tokens at {fitted.tokens_per_s:.0f} per s"
+                f"tokens at {fitted.tokens_per_s:.0f} per s, and replies are "
+                f"{fitted.tokens_per_s / model.tokens_per_s:.1f} times the planned tokens"
             )
 
     def fits(self, stages: Sequence[Stage]) -> bool:

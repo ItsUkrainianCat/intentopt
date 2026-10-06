@@ -1,8 +1,10 @@
 """The in-run calibration of the fast tiers (SPEC R25; ADR-011): a fast run fits the latency model
 to the replies it has had, after stage A and again after stage B, robustly (medians, clamped to
-half and one and a half times the constants, so one slow call cannot dominate), and spends the
-time that model leaves within the plan's share of the clock on more pick scenarios: from the
-scenarios at hand first, else from one more synthesis call.
+half and one and a half times the constants, so one slow call cannot dominate), slows it by the
+median ratio of real to planned output tokens (from 1 to 4), and spends the time that model leaves
+within the plan's share of the clock, never past the deadline, on more pick scenarios: from the
+scenarios at hand first, else from one more synthesis call. What no longer fits shrinks, by the
+same model, scenarios first.
 
 The bench of 2026-10-06 (checked tier, `--time 2m`) planned 98 s and used 33 to 75 s.
 """
@@ -10,7 +12,7 @@ The bench of 2026-10-06 (checked tier, `--time 2m`) planned 98 s and used 33 to 
 import json
 
 import pytest
-from fakes import FakeClock, ScriptedBackend
+from fakes import FakeClock, ScriptedBackend, intake_reply
 from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     MECHANICS_OVERHEAD_S,
@@ -24,7 +26,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
 
 from autoimprover import fastplan
 from autoimprover.fast import MORE_SAMPLE
-from autoimprover.fast_calibrate import Growth, Timed, fit, grow
+from autoimprover.fast_calibrate import Growth, Timed, fit, grow, planned_tokens
 from autoimprover.fastplan import (
     FastPlan,
     Latency,
@@ -34,6 +36,7 @@ from autoimprover.fastplan import (
     synthesis_stage,
     tail,
 )
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import Call, CallError, CallFailed, Reply, Scenario
@@ -105,6 +108,8 @@ def test_the_clamp_follows_the_constants_the_planner_reads():
 
 # --- what is measured -----------------------------------------------------------------------------
 
+SHORT = 20  # prompt tokens: a task call is planned at 150 output tokens, a rewrite at 60
+
 
 def call(user: str, role: str = "task") -> Call:
     return Call(role=role, model="m", user=user)
@@ -125,7 +130,7 @@ class Replies:
 
 
 def test_every_reply_with_a_duration_is_a_sample_and_passes_through():
-    timed = Timed(Replies({"a": (100, 3.0), "b": (300, 5.0), "c": (50, 0.0)}))
+    timed = Timed(Replies({"a": (100, 3.0), "b": (300, 5.0), "c": (50, 0.0)}), SHORT)
     replies = [timed.complete(call(user)) for user in ("a", "b", "c")]
     assert [r.text for r in replies] == ["a", "b", "c"]
     assert sorted(timed.samples()) == [(100, 3.0), (300, 5.0)]  # no duration: not measured
@@ -133,7 +138,7 @@ def test_every_reply_with_a_duration_is_a_sample_and_passes_through():
 
 def test_a_call_asked_twice_is_one_sample():
     """A repeat is the cache's reply to the same call, with the same stored duration."""
-    timed = Timed(Replies({"a": (100, 3.0)}))
+    timed = Timed(Replies({"a": (100, 3.0)}), SHORT)
     for _ in range(3):
         timed.complete(call("a"))
     timed.complete(call("a", role="judge"))
@@ -141,7 +146,7 @@ def test_a_call_asked_twice_is_one_sample():
 
 
 def test_a_failed_call_is_no_sample_and_its_error_passes_through():
-    timed = Timed(Replies({"a": CallFailed("down"), "b": CallError("x")}))
+    timed = Timed(Replies({"a": CallFailed("down"), "b": CallError("x")}), SHORT)
     for user, error in (("a", CallFailed), ("b", CallError)):
         with pytest.raises(error):
             timed.complete(call(user))
@@ -149,18 +154,64 @@ def test_a_failed_call_is_no_sample_and_its_error_passes_through():
 
 
 def test_the_fake_backends_replies_carry_no_duration_so_no_test_is_calibrated_by_accident():
-    timed = Timed(ScriptedBackend(lambda _call: "answer"))
+    timed = Timed(ScriptedBackend(lambda _call: "answer"), SHORT)
     timed.complete(call("a"))
     assert timed.samples() == []
-    clocked = Timed(ScriptedBackend(lambda _call: "answer", duration_s=2.5, clock=FakeClock()))
+    clocked = Timed(
+        ScriptedBackend(lambda _call: "answer", duration_s=2.5, clock=FakeClock()), SHORT
+    )
     clocked.complete(call("a"))
     assert clocked.samples() == [(len("answer"), 2.5)]
+
+
+def judge(names: list[str], system: str = "") -> Call:
+    user = json.dumps({"scenarios": [{"scenario": name} for name in names]})
+    return Call(role="judge", model="m", user=user, system=system)
+
+
+def test_each_call_has_the_output_tokens_the_planner_assumes_for_it():
+    synth = Call(role="synth", model="m", user=json.dumps({"prompt": "p", "count": 3}))
+    assert planned_tokens(Call(role="intake", model="m", user="p"), SHORT) == 380
+    assert planned_tokens(synth, SHORT) == 3 * 45
+    assert planned_tokens(Call(role="reflect", model="m", user="p"), SHORT) == 60
+    assert planned_tokens(Call(role="reflect", model="m", user="p"), 500) == 600
+    assert planned_tokens(call("a"), SHORT) == 150 and planned_tokens(call("a"), 148) == 444
+    assert planned_tokens(judge(["s1", "s2"], PAIRWISE_BATCH_SYSTEM), SHORT) == 2 * 40
+    assert planned_tokens(judge(["contract-1", "contract-2", "contract-3"]), SHORT) == 3 * 75
+    assert planned_tokens(judge(["s1", "s2", "s3", "s4"]), SHORT) == 4 * 75  # stage E
+    assert planned_tokens(Call(role="judge", model="m", user="not json"), SHORT) is None
+
+
+def timed_tasks(tokens: list[int], overhead_s: float = 2.0, speed: float = 90) -> Timed:
+    """Task calls of a 20-token prompt (planned at 150 tokens each) whose replies follow the
+    model `overhead_s` + tokens / `speed`."""
+    timings = {f"t{n}": (t, overhead_s + t / speed) for n, t in enumerate(tokens)}
+    timed = Timed(Replies(timings), SHORT)  # type: ignore[arg-type]
+    for user in timings:
+        timed.complete(call(user))
+    return timed
+
+
+def test_replies_longer_than_planned_slow_the_model_by_their_median_ratio():
+    """300 of a planned 150 tokens is twice the plan: the planner's 150 tokens take what 300 do."""
+    assert timed_tasks([200, 300, 400]).model() == pytest.approx(Latency(2.0, 90 / 2))
+
+
+def test_replies_shorter_than_planned_never_speed_the_model_up():
+    assert timed_tasks([50, 100, 120]).model() == pytest.approx(Latency(2.0, 90))
+
+
+def test_the_token_ratio_stops_at_4():
+    assert timed_tasks([1500, 1800, 2100]).model() == pytest.approx(Latency(2.0, 90 / 4))
+
+
+def test_a_model_needs_three_timed_replies():
+    assert timed_tasks([200, 300]).model() is None
 
 
 # --- the re-plan after stage A --------------------------------------------------------------------
 
 FAST = Latency(0.5 * OH, 1.5 * V)  # 1.2 s + tokens / 105
-SHORT = 20  # prompt tokens
 
 
 def rest(rewrites: int, scenarios: int, holdout: int, workers: int, extra: int, second: int = 0):
@@ -299,6 +350,18 @@ def test_after_stage_a_the_time_the_fitted_model_leaves_buys_more_pick_scenarios
     assert result.outcome.prompt == BETTER
 
 
+def test_replies_far_longer_than_planned_leave_no_time_for_more_scenarios(tmp_path):
+    """The twin of the 0.2 s run above with a long intake and a long rewrite: of stage A's three
+    replies two have more than 4 times their planned tokens, so the model's speed is a quarter,
+    105 / 4 per s, and even 3 scenarios no longer fit."""
+    long_rewrite = f"{BETTER} " + " ".join(["extraordinarily"] * 30)
+    world = Waves(rewrites=(long_rewrite,), intake=intake_reply("task", goal="x" * 3000))
+    result = run(tmp_path, world, shape(59, 1, 2), pace=0.2)
+    assert counts(result) == [2] and picked(result) == {"situation 1", "situation 2"}
+    assert "replies are 4.0 times the planned tokens" in result.log
+    assert result.outcome.prompt == long_rewrite
+
+
 def test_the_more_scenarios_get_ids_of_their_own_and_are_kept_in_the_run_folder(tmp_path):
     first = run(tmp_path, Waves(), shape(59, 1, 2), pace=0.2)
     store = RunStore.resume(tmp_path, first.run_id)
@@ -360,3 +423,22 @@ def test_after_stage_b_the_fitted_model_decides_whether_the_second_generation_fi
     second = [c for c in result.calls("reflect") if c.sample >= 100]
     assert (result.outcome.prompt, bool(second)) == ((SECOND, True) if pace else (PROMPT, False))
     assert ("after stage B: a call takes 1.2 s" in result.log) is bool(pace)
+
+
+@pytest.mark.parametrize("pace", [0.0, 0.2])
+def test_a_stage_c_that_does_not_fit_shrinks_its_scenarios_by_the_fitted_model(tmp_path, pace):
+    """1 rewrite on 4 scenarios; the last scoring run overruns and leaves 12 s. By the fitted
+    model stage C on 4 needs 5 x 2.724 = 13.6 s and on 3 5 x 2.343 = 11.7 s: it judges 3. By the
+    constants even 1 scenario needs 5 x 3.471 = 17.4 s, and only the last chance of one pairwise
+    call on 1 scenario remains."""
+    clock = FakeClock()
+
+    def hook(call: Call) -> None:
+        last = call.role == "task" and scenario_of(call) == "situation 4" and BETTER in call.user
+        if last:
+            clock.advance(1000 - 12 - clock.t - pace)
+
+    result = run(tmp_path, Waves(hook=hook), shape(30, 1, 4), pace=pace, clock=clock)
+    pairwise = [c for c in result.calls("judge") if c.system == PAIRWISE_BATCH_SYSTEM]
+    sizes = {len(json.loads(c.user)["scenarios"]) for c in pairwise}
+    assert sizes == ({3} if pace else {1})
