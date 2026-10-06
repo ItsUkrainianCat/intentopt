@@ -9,12 +9,16 @@ to the target is refused, SPEC R14), each prompt's plan and whether a real run o
 with no call and nothing written. A real bench measures the prompts (`bench.run_bench`) in a new
 folder `<state>/bench/<id>/`; each prompt runs through `run_prompt`, the command line's own run
 of a prompt, injected by `cli`, as is the raw model layer. The summary is the one result on
-stdout, also after Ctrl-C. Exit 0 once the flags parse, whatever the tool's results (it measures,
-it does not gate); 2 for bad usage or a refusal; 3 when every prompt's run ended in a backend
-failure; a session that is not locked down ends the bench with exit 4 (`cli.main`).
+stdout. Exit 0 once the flags parse, whatever the tool's results (it measures, it does not gate);
+2 for bad usage or a refusal; 3 when every prompt's run ended in a backend failure; a session that
+is not locked down ends the bench with exit 4 (`cli.main`). Ctrl-C is exit 130 as SPEC R2 has it
+(stdout empty, or the error object with `--json`): the `error:` line, then the partial summary of
+the prompts measured on stderr, and its object saved as `<state>/bench/<id>/summary.json`.
 
 DEBT, private names used here until their owners add public seams: `cli_options._Parser`,
-`report.Emitter._result` (the one result of a bench is neither an outcome nor a plan).
+`report.Emitter._result` (the one result of a bench is neither an outcome nor a plan),
+`runstore._make_dirs` and `runstore._write_json` (the 0700 folder and the atomic 0600 file of the
+partial summary).
 """
 
 from __future__ import annotations
@@ -46,10 +50,19 @@ from autoimprover.cli_options import Options, Settings, UsageError, _Parser, bud
 from autoimprover.fastplan import fast_plan
 from autoimprover.report import Emitter
 from autoimprover.runner import count_tokens
-from autoimprover.runstore import RunStore, RunStoreError, runs_root
-from autoimprover.types import EXIT_OK, SYNTH_COUNT, BackendError, Plan, Scenario
+from autoimprover.runstore import RunStore, RunStoreError, _make_dirs, _write_json, runs_root
+from autoimprover.types import (
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    SYNTH_COUNT,
+    BackendError,
+    Plan,
+    Scenario,
+)
 
 SEED_MAX = 999
+# Where an interrupted bench keeps its partial summary, in its folder.
+SUMMARY_FILE = "summary.json"
 _BASELINES = ("naive", "none")
 
 
@@ -175,9 +188,33 @@ def bench_command(
             f"every prompt's run ended in a backend failure; the last: {done[-1].error}"
         )
     summary = Summary(measured, len(prompts), chosen.tier, chosen.time_s, baseline, str(folder))
+    if measured.interrupted:
+        return _interrupted(emit, summary, folder)
     found: Any = summary.object()
     emit._result(json.dumps(found, allow_nan=False) + "\n" if emit.json_mode else summary.text())
     return EXIT_OK
+
+
+def _interrupted(emit: Emitter, summary: Summary, folder: Path) -> int:
+    """Ctrl-C ended the bench (SPEC R2): exit 130 with its `error:` line (with `--json` the error
+    object is stdout's one object), then the partial summary as text on stderr; the partial
+    summary object is saved as the bench folder's SUMMARY_FILE. A summary that cannot be saved is
+    said in the error line."""
+    path = folder / SUMMARY_FILE
+    try:
+        _make_dirs(folder)
+        _write_json(path, summary.object())
+        saved = f"the partial summary is in {path}"
+    except OSError as error:
+        saved = f"the partial summary could not be saved to {path}: {error.strerror or error}"
+    measured = len(summary.measured.rows)
+    code = emit.error(
+        EXIT_INTERRUPTED,
+        f"interrupted after {measured} of {summary.prompts} prompts; {saved}",
+        str(folder),
+    )
+    emit.notice(summary.text())
+    return code
 
 
 def _run_plan(
