@@ -94,7 +94,8 @@ def _parser() -> _Parser:
         prog="autoimprover",
         description="Improve a prompt, scored by running it on test scenarios: by default a "
         "30-second pipeline of parallel stages, with --deep (or --time 10m and up) a GEPA search.",
-        epilog="autoimprover clean [<id>] removes one run folder, or all of them. Exit codes: 0 "
+        epilog="autoimprover clean [<id>] removes one run folder, or all of them; autoimprover "
+        "bench measures the tool on a set of prompts (autoimprover bench --help). Exit codes: 0 "
         "done (also when the original is kept), 1 internal error, 2 bad input or a refusal "
         "before any paid call, 3 backend failure, 4 claude session not locked down, 130 "
         "interrupted.",
