@@ -439,8 +439,11 @@ uv run --frozen autoimprover bench --baseline naive --json > bench.json
 
 Flags: `--prompts FILE` (JSON Lines: `id`, `prompt`, optional `kind`, optional `examples`; default
 the 20 varied prompts of `bench/prompts.jsonl`), `--time`, `--limit N` (1 to 25; a set of more
-needs it), `--baseline naive|none`, `--judge-model`, `--seed S` (0 to 999, for the bench's own
-calls), `--json`, `--dry`, and `bench` comes first. It spends subscription calls: at `30s` the
+needs it), `--baseline naive|none`, the run's own model, effort, `--workers` and `--strictness` flags
+(`--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--effort` and the
+per-role efforts: a weak `--target-model claude-haiku-4-5-20251001` leaves more room for a
+rewrite to help), `--seed S` (0 to 999, for the bench's own calls), `--json`, `--dry`, and
+`bench` comes first. It spends subscription calls: at `30s` the
 plan is about 17 calls per run plus 17 per comparison (13 more with the naive baseline), so the
 whole set is at most 680 calls in about 21 minutes. The summary (text, or one JSON object with
 `--json`) gives the improved rate, wins, ties and losses with the win rate among improved prompts,
