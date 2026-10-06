@@ -40,7 +40,7 @@ const SHOWN_CHARS = 9000
  *   title: string, status: string, reason: string | null, meaning: string | null,
  *   scores: string[], margin: string | null, lengthRatio: string | null, changes: string[],
  *   improved: string | null, shown: string | null, useLabel: string | null, verified: boolean,
- *   box: string | null, verifiedLine: string | null, mode: string | null,
+ *   box: string | null, verifiedLine: string | null, mode: string | null, noise: string | null,
  *   runDir: string | null, resume: string | null, hint: string | null, plan: string[],
  *   exitCode: number, toast: string }} View
  * @typedef {{ stdout: string, stderr: string, code: number | null, signal: string | null,
@@ -156,6 +156,8 @@ function outcomeView(result, end) {
     status: `result: ${improved ? 'improved' : 'unchanged'} (${code})`,
     reason: oneLine(text(result.reason)),
     meaning: words.meaning === null ? null : oneLine(words.meaning),
+    verifiedLine: words.verifiedLine === null ? null : oneLine(words.verifiedLine),
+    margin: words.margin === null ? null : oneLine(words.margin),
     lengthRatio: improved && typeof ratio === 'number'
       ? `length: ${ratio.toFixed(2)}x the original's tokens`
       : null,
@@ -312,6 +314,7 @@ export function rowsOf(view, full) {
   add(tail, 'dim', view.meaning)
   add(tail, 'line', view.mode)
   for (const line of [...view.plan, ...view.scores]) add(tail, 'line', line)
+  add(tail, 'line', view.noise)
   add(tail, 'line', view.margin)
   add(tail, 'line', view.lengthRatio)
   if (view.changes.length > 0) add(tail, 'heading', 'what changed:')
@@ -380,6 +383,7 @@ function blank(end, runDir) {
     box: null,
     verifiedLine: null,
     mode: null,
+    noise: null,
     runDir: runDir ?? end?.runDir ?? null,
     resume: null,
     hint: null,
