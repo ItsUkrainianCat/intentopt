@@ -53,6 +53,13 @@ MINIBATCH_SIZE = 3
 
 # One call: its timeout, its retries and the failures that end a run (SPEC R17, R24).
 CALL_TIMEOUT_S = 300
+# The system prompt of a task call that has none of its own (SPEC R10a, ADR-012): without it
+# `claude -p` applies Claude Code's agent persona and the model tries to run commands.
+TASK_SYSTEM = (
+    "You are a helpful assistant. Answer the user's message directly, in plain text. You have no "
+    "tools and no access to files, the internet or the user's computer; do not pretend to run "
+    "commands or to look at anything. If something is unclear, say what you assume or ask."
+)
 # `claude --effort` levels a call may ask for; None leaves the model's default (SPEC R25).
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 CALL_RETRIES = 2
