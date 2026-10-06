@@ -34,10 +34,9 @@ from gepa.optimize_anything import (
 from gepa.utils import StopperProtocol
 
 from autoimprover.backend import CachedBackend
+from autoimprover.delimiters import span
 from autoimprover.runstore import cache_key
 from autoimprover.types import (
-    INSTRUCTION_BEGIN,
-    INSTRUCTION_END,
     MINIBATCH_SIZE,
     Backend,
     BackendError,
@@ -341,14 +340,14 @@ class ReflectionWrapper:
 
 
 def _parse_reflection(text: str) -> tuple[str, tuple[str, ...]]:
-    """The instruction between the delimiter lines, without the blank space around it, and up to
-    three notes from the `- ` lines after it; SkipProposal when there is no usable instruction."""
+    """The instruction between the delimiter lines (`delimiters.span`, the fast tiers' reading),
+    without the blank space around it, and up to three notes from the `- ` lines after it;
+    SkipProposal when there is no usable instruction."""
     lines = text.splitlines()
     marks = [line.strip() for line in lines]
-    begin = marks.index(INSTRUCTION_BEGIN) if INSTRUCTION_BEGIN in marks else None
-    end = len(marks) - 1 - marks[::-1].index(INSTRUCTION_END) if INSTRUCTION_END in marks else None
-    if begin is None or end is None or end < begin:
+    if (found := span(lines)) is None:
         raise SkipProposal("the reply has no instruction between the delimiter lines")
+    begin, end = found
     instruction = "\n".join(lines[begin + 1 : end]).strip()
     if not instruction:
         raise SkipProposal("the reply's instruction is empty")

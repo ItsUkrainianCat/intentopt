@@ -35,6 +35,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
 )
 
 from autoimprover.fast_prompts import REFLECT_NOTES, STRATEGY_NOTES
+from autoimprover.runner import count_tokens
 from autoimprover.types import Call, CallError
 
 PLAIN = "Answer the user's request plainly."  # a rewrite that runs no better
@@ -184,6 +185,27 @@ def test_a_reflection_that_repeats_a_candidate_in_meaning_words_is_dropped(tmp_p
     assert log in result.log
     assert second not in [prompt_of(c) for c in result.calls("task")]
     assert result.outcome.prompt == SECOND  # the other reflection still runs
+
+
+# PROMPT has 7 tokens, so the cap is 7 + 40 = 47; NEAR has 39 tokens, at least three quarters of it.
+NEAR = f"{BETTER} " + "Answer it in full, in plain words." * 3
+OVER = f"{SECOND} " + "Say why, in plain words." * 5  # 48 tokens
+WITHIN = f"{SECOND} Say why."
+
+
+def test_a_reflection_over_the_cap_is_dropped_whole_and_one_within_it_runs(tmp_path):
+    """The reflections read a best candidate near the cap, so they are asked for a shorter text;
+    one that is longer than the cap anyway is never cut down to it: it is dropped, never run, and
+    its twin within the cap runs and wins (the same lead as NEAR, and shorter)."""
+    assert (count_tokens(PROMPT), count_tokens(NEAR), count_tokens(OVER)) == (7, 39, 48)
+    result = run(tmp_path, World(rewrites=(NEAR,), reflections=(OVER, WITHIN)), TWO_K1)
+    calls = reflections(result)
+    assert [p["prompt"] for p in candidates_of(calls[0])] == [NEAR]
+    assert all("already has 39 tokens" in c.system and "shorter than it" in c.system for c in calls)
+    assert "reflection 0 dropped: it is longer than the length cap" in result.log
+    ran = [prompt_of(c) for c in result.calls("task")]
+    assert OVER not in ran and ran.count(WITHIN) == 2
+    assert result.outcome.prompt == WITHIN
 
 
 def test_a_failed_reflection_is_dropped_and_the_other_goes_on(tmp_path):
