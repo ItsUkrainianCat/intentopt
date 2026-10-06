@@ -195,6 +195,7 @@ checked run tests it on held-out scenarios.
 | `--merge` | deep only: let GEPA merge candidates (with this tool's valset of at most 4 it does not merge; see ARCHITECTURE section 11) |
 | `--trust-search` | deep only: below 8 scenarios, return a rewrite that beat the original on the search's own valset, marked not verified |
 | `--force-low-budget` | deep only: run although the budget affords fewer than 4 search iterations |
+| `--ungated` | a measuring aid for the fast and checked tiers: returns the best-ranked candidate without a shown win; results are not verified |
 | `--dry` | print the plan; no model call, nothing written |
 | `--json` | print one JSON object on stdout |
 | `--resume ID` | continue the run with this id |
@@ -266,7 +267,7 @@ calls it had answered are replayed from its cache for free.
 The keys of the object on stdout, in order:
 
 - finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`, `elapsed_s`, `meaning`, `verified_text`, `margin_text`
-- dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`, `tier`, `workers`, `efforts`, `rewrites`, `stages`, `est_calls`, `est_seconds`
+- dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`, `tier`, `workers`, `efforts`, `rewrites`, `stages`, `est_calls`, `est_seconds`, `ungated`
 - dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`, `tier`, `workers`, `efforts`
 - error: `status`, `code`, `error`, `run_dir`
 - clean: `status`, `removed`, `skipped`
@@ -442,7 +443,9 @@ the 20 varied prompts of `bench/prompts.jsonl`), `--time`, `--limit N` (1 to 25;
 needs it), `--baseline naive|none`, the run's own model, effort, `--workers` and `--strictness` flags
 (`--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--effort` and the
 per-role efforts: a weak `--target-model claude-haiku-4-5-20251001` leaves more room for a
-rewrite to help), `--seed S` (0 to 999, for the bench's own calls), `--json`, `--dry`, and
+rewrite to help), `--ungated` (a measuring aid for the fast and checked tiers: returns the
+best-ranked candidate without a shown win; results are not verified), `--seed S` (0 to 999, for
+the bench's own calls), `--json`, `--dry`, and
 `bench` comes first. It spends subscription calls: at `30s` the
 plan is about 17 calls per run plus 17 per comparison (13 more with the naive baseline), so the
 whole set is at most 680 calls in about 21 minutes. The summary (text, or one JSON object with

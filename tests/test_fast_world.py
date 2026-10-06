@@ -254,11 +254,13 @@ def run(
     wrap: Callable[[Backend], Backend] | None = None,
     kind: Kind | None = None,
     pace: float = 0.0,
+    ungated: bool = False,
 ) -> Result:
     """One process: open the run folder (new unless `run_id`), build the real stack over a raw
     ScriptedBackend running `world`, with `deadline` on a fake clock, and run improve_fast. With
     `pace`, every answered call takes that many seconds on the fake clock and its reply says so
-    (the replies a run calibrates on, `test_fast_calibrate.py`); without, replies carry none."""
+    (the replies a run calibrates on, `test_fast_calibrate.py`); without, replies carry none.
+    `ungated` is the run's `--ungated` (`test_ungated.py`)."""
     store = RunStore.resume(root, run_id) if run_id else RunStore.open_or_create(root, plan, prompt)
     try:
         fake = clock or FakeClock()
@@ -281,6 +283,7 @@ def run(
             kind=kind,
             log=log,
             workers=workers,
+            ungated=ungated,
         )
         assert outcome.calls_used == budgeted.used and outcome.run_dir == str(store.path)
         return Result(outcome, raw, log.getvalue(), store.run_id)
