@@ -358,11 +358,13 @@ whole set is at most 680 calls in about 21 minutes. The summary (text, or one JS
 the baseline's, median and 90th percentile seconds per run, total calls and a row per prompt: ids,
 codes and numbers, never a prompt. `contract_violations` is `null`: the pipeline never returns a
 rewrite its contract check vetoed, and the pairwise judge sees answers, not prompts, so the bench
-has no count of its own yet. Ctrl-C prints the summary of the prompts already measured. The
-bench exits 0 whatever the result (it measures, it does not gate); 2 for bad usage or a plan that
-would refuse, 3 when every run failed. Each prompt's run folder, with the bench's own calls in its
-cache, is under `$XDG_STATE_HOME/autoimprover/bench/<id>/<prompt id>/`; `clean` does not remove
-these, so delete `bench/<id>/` by hand when done.
+has no count of its own yet. The bench exits 0 whatever the result (it measures, it does not
+gate); 2 for bad usage or a plan that would refuse, 3 when every run failed, 130 on Ctrl-C: then
+stdout stays empty (with `--json` it holds the error object), the partial summary of the prompts
+already measured follows the `error:` line on stderr, and its JSON object is saved as
+`bench/<id>/summary.json` (`"interrupted": true`). Each prompt's run folder, with the bench's own
+calls in its cache, is under `$XDG_STATE_HOME/autoimprover/bench/<id>/<prompt id>/`; `clean` does
+not remove these, so delete `bench/<id>/` by hand when done.
 
 ## Limits and non-goals
 
