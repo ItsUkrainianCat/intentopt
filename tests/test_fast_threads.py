@@ -16,6 +16,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     K3M3,
     MODELS,
     QUICK,
+    TWO_K1,
     WAIT,
     World,
     mechanics_latency_model,
@@ -61,6 +62,17 @@ def test_stage_c_runs_the_judge_calls_and_the_contract_check_in_one_wave(tmp_pat
     assert result.outcome.prompt == BETTER
 
 
+def test_stage_r_writes_the_reflections_side_by_side(tmp_path):
+    barrier = threading.Barrier(2)
+
+    def hook(call: Call) -> None:
+        if call.role == "reflect" and call.sample >= 100:
+            barrier.wait(WAIT)  # BrokenBarrierError unless both reflections are in flight
+
+    world = World(rewrites=("Answer it.",), reflections=(BETTER, CLEAR), hook=hook)
+    assert run(tmp_path, world, TWO_K1, workers=4).outcome.prompt == BETTER
+
+
 EXAMPLES = [Scenario(id=f"e{n}", input=f"example {n}") for n in (1, 2)]
 CASES = {
     "fast": (World(rewrites=THREE), K3M3, None),
@@ -68,6 +80,7 @@ CASES = {
     "examples": (World(rewrites=THREE), K3M2_EXAMPLES, EXAMPLES),
     "quick": (World(), QUICK, None),
     "checked": (World(rewrites=THREE), CHECKED, None),
+    "two generations": (World(rewrites=("Answer it.",), reflections=THREE), TWO_K1, None),
 }
 
 

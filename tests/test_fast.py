@@ -53,7 +53,7 @@ def test_a_rewrite_that_wins_is_returned_unverified_with_its_report(tmp_path):
     assert (outcome.verified, outcome.stop, outcome.changes) == (
         False,
         None,
-        (STRATEGY_NOTES["tighten"],),
+        (STRATEGY_NOTES["clarify"],),  # variant 0 clarifies (SPEC R25)
     )
     assert "tier fast" in outcome.reason and FAST_LABEL in outcome.reason
     assert (outcome.score_before, outcome.score_after, outcome.noise) == (0.0, 1.0, 0.0)

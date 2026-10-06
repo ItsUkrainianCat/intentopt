@@ -28,8 +28,11 @@ contract; fast (25 to 59 s) runs a few rewrites, and the original twice, on a fe
 parallel stages and returns the best rewrite only when it beats the original by more than
 max(0.1, twice the difference of the original's two runs), labelled "fast check: scored on the
 same few scenarios it was picked on, noise measured from two runs of the original on those
-scenarios, not verified on held-out scenarios"; checked (1 to 9 minutes) adds a held-out check on
-the target model; deep (10
+scenarios, not verified on held-out scenarios". Its rewrites may make an implied request explicit
+and organise what you wrote (strategies clarify, structure, tighten, specify), and from 45 s, when
+the time allows, a second generation reflects on the first one's outputs and failed checks (the
+reflective step of GEPA) and is scored the same way; checked (1 to 9 minutes) adds a held-out check
+on the target model; deep (10
 minutes and up, `--deep` is `--time 20m`) is the GEPA search that "How a run works" and "Budget
 and clock" below describe. Only checked and deep results are verified. The timings are estimates
 from one timing probe; live runs are not yet measured.
@@ -62,7 +65,7 @@ dry run: no model call made, nothing written
 tier: fast (--time 30 s), 6 calls at a time
 models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
 effort: task low, judge low, reflection low
-strictness: conservative, length cap 1.25x the original's tokens (at least the original plus 40)
+strictness: balanced, length cap 1.5x the original's tokens (at least the original plus 40)
 rewrites: 1; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
 stages:
   A: intake, synthesis and rewrite: 3 calls, about 8.8 s
@@ -111,7 +114,7 @@ search instead: its budget, fixed costs, split, estimated iterations and clock s
 | `--deep` | the GEPA search: the same as `--time 20m` (not together with `--time`) |
 | `--workers N` | calls a stage runs at a time, 1 to 16; default 6 |
 | `--budget N` | model calls, 1 to 300; default: three times the plan's estimate in the quick, fast and checked tiers, and in deep one call per 12 s of `--time`, from 20 to 100 |
-| `--strictness LEVEL` | `conservative` (default), `balanced` or `bold`: length cap 1.25x, 1.5x or 2.5x the original's tokens (at least the original plus 40) |
+| `--strictness LEVEL` | `conservative`, `balanced` or `bold`: length cap 1.25x, 1.5x or 2.5x the original's tokens (at least the original plus 40); default `balanced` in the quick, fast and checked tiers, `conservative` in deep |
 | `--allow-growth` | no length cap |
 | `--task-model MODEL` | runs the prompts on the scenarios; default `claude-haiku-4-5-20251001` |
 | `--judge-model MODEL` | checks the outputs; default `claude-opus-5-5`, or `claude-sonnet-5-5` when the target is Opus |
