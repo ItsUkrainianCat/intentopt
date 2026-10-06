@@ -1,43 +1,38 @@
 # autoimprover
 
 A command-line prompt optimizer. You give it one prompt; it returns one prompt that should work
-better and keeps what you meant, or your original when it cannot show an improvement.
+better and keeps what you meant, or your original when it cannot show an improvement. "Better" is
+measured by running the prompt, not by grading its wording: a task model runs the original and
+each rewrite on test scenarios (your examples, or ones it writes), and a separate judge model
+checks the outputs without seeing the prompts.
 
-"Better" is measured by running the prompt, not by grading its wording: a task model runs each
-candidate on test scenarios (your examples, or ones it writes), and a separate judge model checks
-the outputs. The search is GEPA (reflective prompt evolution with a Pareto frontier,
-arXiv:2507.19457, `gepa==0.1.4`). A rewrite is returned only after it beat the original by more
-than the measured noise on held-out scenarios the search never saw, on the model you will use it
-with. With fewer than 8 scenarios there is nothing to hold out, and the original is returned unless
-you pass `--trust-search`, which marks the result as not verified.
+How much a result proves depends on the time you give it (`--time`, default 30 s). The default
+**fast** run returns a rewrite only when it beat the original by more than the noise of two runs of
+the original, on the same few scenarios it was picked on: a fast check, not verified on held-out
+scenarios. A **checked** run (1 to 9 minutes) also confirms the winner on held-out scenarios on the
+model you will use it with, and only then calls it verified. A **deep** run (`--deep`) is a GEPA
+search (reflective prompt evolution with a Pareto frontier, arXiv:2507.19457, `gepa==0.1.4`) whose
+result is verified on a holdout the search never saw.
 
 ## Status
 
-Version 0.2.0.dev0, not released. Built and tested end to end with a scripted fake model (no test
-calls a real model or the network): input checks, contract, scenarios, scoring, GEPA search, final
-checks, report, run folders and `--resume`. The real model backend,
-`src/autoimprover/claude_cli.py` (the one place that starts `claude -p`, SPEC R18), is built and
-tested with a fake `claude` script that prints the format of real `claude -p` output
-(`tests/fixtures/claude_cli/`, ADR-009). It is not verified against live runs: the live check is
-the user's `just smoke` or a first `/improve`; until it passes, nothing here claims that a live
-run, the `/improve` command or the acceptance measure of SPEC section 5 works.
+Version 0.2.0.dev0, not released. Every tier is built and tested end to end with a scripted fake
+model (no test calls a real model or the network): input checks, contract, scenarios, scoring, the
+fast stages, the GEPA search, final checks, report, run folders, `--resume`, the `/improve` mod and
+`bench`. The one module that starts `claude -p` is tested with a fake `claude` script that prints
+the format of real output (`tests/fixtures/claude_cli/`, ADR-009).
 
-Time tiers (SPEC R25, ADR-011): `--time` picks how a run works, and the default is the 30-second
-**fast** tier, not the GEPA search. quick (15 to 24 s) checks one rewrite against the intent
-contract; fast (25 to 59 s) runs a few rewrites, and the original twice, on a few scenarios in
-parallel stages and returns the best rewrite only when it beats the original by more than
-max(0.1, twice the difference of the original's two runs), labelled "fast check: scored on the
-same few scenarios it was picked on, noise measured from two runs of the original on those
-scenarios, not verified on held-out scenarios". Its rewrites may make an implied request explicit
-and organise what you wrote (strategies clarify, structure, tighten, specify), and from 45 s, when
-the time allows, a second generation reflects on the first one's outputs and failed checks (the
-reflective step of GEPA) and is scored the same way; checked (1 to 9 minutes) adds a held-out check
-on the target model. In the fast and checked tiers every scoring run, of the original and of every
-rewrite, ends with the same request to answer in at most 120 words, so the runs stay short; it belongs to
-the measurement, never to a returned prompt. Deep (10
-minutes and up, `--deep` is `--time 20m`) is the GEPA search that "How a run works" and "Budget
-and clock" below describe. Only checked and deep results are verified. The timings are estimates
-from one timing probe; live runs are not yet measured.
+Live, so far only a few runs by the user. On 2026-10-05 the mod loaded, `/improve --dry` printed
+its plan, and a real run reached `claude` (its lockdown check then refused a schema call, since
+fixed). On 2026-10-06 three timed fast-tier runs reached the real models: at `--time 30s` one
+returned the original after 32 s because slow start-ups let the clock cut its scoring stage, and
+one ran every stage and returned a rewrite in 20 s; at `--time 45s` one returned the original
+because the contract check vetoed a good rewrite. Each of those runs changed the build (start-up
+trims, the noise from two runs of the original, the rewrite strategies, the implied goal, the
+120-word scoring suffix), and the build as it is now has not had a live run. Not verified live at
+all: the checked and deep tiers, `--resume`, `bench`, an improved prompt landing in the prompt box,
+and the acceptance measure of SPEC section 5. The timings below are estimates from one timing
+probe.
 
 ## Install and run
 
@@ -55,6 +50,27 @@ The first `uv run --frozen` creates `.venv` from `uv.lock`. From another folder,
 `--file`, or from piped stdin (never from a terminal, so the tool does not wait for typing). It
 must be UTF-8, 1 to 20,000 characters, without a NUL character and without GEPA's template tokens
 `<curr_param>` and `<side_info>`; CRLF line endings become LF.
+
+## Choosing `--time`
+
+`--time` is the run's hard wall clock and picks its tier (SPEC R25, ADR-011). Calls and seconds
+below are what `--dry` estimates for a short prompt on the default 6 workers; a longer prompt or
+fewer workers shrink the plan.
+
+| `--time` | Tier | What runs | Calls (estimate) | Verified |
+|---|---|---|---|---|
+| 15 to 24 s | quick | the intent contract and one `clarify` rewrite side by side, then the contract check; no scenario is scored | 3 at 15 s (about 13 s) | no |
+| 25 to 59 s | fast | the stages below on 2 to 4 scenarios with up to 3 rewrites; from 45 s, when it fits, a second round of up to 2 rewrites | 17 at 30 s (about 25 s), 22 at 45 s (35 s), 37 at 59 s (48 s) | no |
+| 1 to 9 min | checked | the fast stages with up to 6 rewrites (3 at 1 min), then the winner and the original on 4 held-out scenarios on the target model | 36 at 1 min (51 s), 52 at 90 s (76 s), 72 at 5 min | yes |
+| 10 min and up | deep | the GEPA search ("The deep tier" below), one call at a time; `--deep` is `--time 20m` | its budget: 100 at 20 min | yes |
+
+How to choose: the default 30 s for a short run whose result you read before using it;
+`--time 45s` for the second round, which rewrites from what the first round's answers got wrong;
+`--time 1m` or more when you want the result checked on scenarios it was not picked on, on your
+model; `--deep` for the search. Below 15 s a run is refused (exit 2). The deep tier's default
+budget is one call per 12 s of `--time` (20 to 100 calls); with 12 synthesised scenarios that
+affords at least 4 search iterations only from `--time 18m`, so a shorter deep run refuses unless
+you give `--budget 86` or more, or `--force-low-budget` (`--dry` says so).
 
 ## Example: the plan of a run
 
@@ -89,21 +105,63 @@ search instead: its budget, fixed costs, split, estimated iterations and clock s
 
 ## How a run works
 
-1. One call extracts an intent contract from the prompt: goal, things to keep, constraints, output
-   format, language, tone, a list of checks, and the kind (`template`: a reusable instruction such
-   as a system prompt; `task`: a one-off request). `--kind` overrides the guess.
-2. Scenarios come from `--examples`, or one call writes 12. From 8 scenarios up they are split
-   into dataset, valset and a holdout of 3 to 6 that the search never sees.
-3. The original is scored twice on the holdout, on the target model, in two independent runs; the
-   difference is the noise, and a result must beat the original by more than
-   `max(0.05, 2 x noise)`. An original that already scores 0.95 or more ends the run there.
-4. GEPA searches on the cheaper task model, one call at a time. A candidate is scored by running it
-   (`template`: as the system prompt, the scenario as the user message; `task`: the scenario as a
-   situation, then the candidate, no system prompt; single turn, no tools) and by checks on the
-   output: programmatic ones and a judge that sees the outputs, never the candidate.
-5. Up to 3 finalists pass free gates first (length cap, placeholders, code blocks, URLs, paths and
-   quoted strings kept unchanged), then a contract check. The first one that beats the original on
-   the holdout, on the target model, is returned; otherwise the original is.
+The fast and checked tiers are stages whose calls run side by side (`--workers`, default 6):
+
+1. **A**, one wave: one call extracts the intent contract (goal, things to keep, constraints,
+   output format, language, tone, checks, and the kind: `template`, a reusable instruction such as
+   a system prompt, or `task`, a one-off request; `--kind` overrides the guess). When the prompt
+   only states a situation or an intention, the goal is the request it clearly implies. Beside it,
+   one call writes the scenarios (or your `--examples` are used), and K calls write rewrites, each
+   with its own strategy: `clarify` (state the request the prompt only implies, in your words),
+   `structure` (organise your content into role, context, task and expected output), `tighten`
+   (remove redundancy), and from K=4 `specify` (make audience, format and constraints explicit
+   where they are implied). A rewrite is dropped at once if it changes no meaning word (only case,
+   punctuation, whitespace or articles), is longer than the length cap, or loses a placeholder,
+   code block, URL, path or quoted string of the original.
+2. **B**: the original runs twice and every rewrite once on each scenario, on the task model
+   (`template`: the prompt is the system prompt and the scenario the user message; `task`: the
+   scenario as a situation, then the prompt, no system prompt; single turn, no tools). Every one
+   of these scoring runs ends with the same request to answer in at most 120 words, which keeps
+   the runs short; it belongs to the measurement and never to a returned prompt.
+3. **C**: one judge call per run checks its outputs against the contract's checks; it never sees
+   the prompt, and a pass counts only with a verbatim quote from the output. One more judge call
+   checks every rewrite against the contract and can only veto.
+4. The noise is the difference between the original's two runs. A rewrite wins only when it kept
+   the contract, beat the original's mean by more than max(0.1, 2 x noise) on the scenarios both
+   scored, and won more scenarios than it lost.
+5. From 45 s, when the time allows, a second round: the reflection model reads the best one or two
+   rewrites that gained (or the original), their answers and the checks they failed with the
+   judge's quotes, and writes up to 2 new rewrites, which pass the same gates, runs and bar.
+6. **D**: the winner with the largest gain is picked (a tie goes to the shorter). In the fast tier
+   it is returned, labelled a fast check; with no winner the original is.
+7. **E** (checked only): the winner and the original run once each on 4 held-out scenarios on the
+   target model, with the same 120-word request; the winner is returned, verified, only when it
+   beats the original there by more than 0.05 (no noise is measured on the held-out scenarios).
+
+Before each stage the time and calls left are compared with its estimate; a stage that does not
+fit shrinks (scenarios first) or is skipped, and a rewrite that has not passed every gate when time
+runs out is never returned: the original is (`unconfirmed_out_of_budget`). The quick tier writes
+the contract and one `clarify` rewrite side by side (no scenarios), runs the contract check, and
+returns the rewrite when it passes and the free gates.
+
+**What a fast check means, and what it does not.** It means the rewrite kept your intent (as the
+contract check judged it), passed the free gates, and on 2 to 4 scenarios, the same ones it was
+picked on, scored clearly higher than two runs of your original. It does not claim that it is
+better on other inputs, on the model you will use it with (the runs are on the task model), or for
+answers longer than 120 words; the noise comes from two runs only. Read it before you use it; a
+checked run tests it on held-out scenarios.
+
+**The deep tier** (10 minutes and up):
+
+1. The intent contract as above; scenarios from `--examples`, or one call writes 12. From 8
+   scenarios up they are split into dataset, valset and a holdout of 3 to 6 that the search never
+   sees; below 8 the original is kept unless `--trust-search`.
+2. The original is scored twice on the holdout, on the target model; a result must beat it by more
+   than `max(0.05, 2 x noise)`. An original that already scores 0.95 or more ends the run there.
+3. GEPA searches on the cheaper task model, one call at a time, scoring each candidate by running
+   it and judging the outputs as above (without the 120-word request).
+4. Up to 3 finalists pass the free gates, then the contract check. The first one that beats the
+   original on the holdout, on the target model, is returned; otherwise the original is.
 
 ## Flags
 
@@ -140,6 +198,13 @@ default; `--merge`, `--trust-search` and `--force-low-budget` with a tier other 
 exit 2. A quick, fast or checked plan whose estimate is longer than `--time` is refused (exit 2;
 `--dry` says so).
 
+Models and effort: the task model runs the scoring runs, the judge checks outputs and the contract,
+the reflection model writes the contract, the scenarios and the rewrites, and the target model (the
+one you will use the prompt with) runs the held-out comparison of the checked and deep tiers. The
+quick, fast and checked tiers ask every role for `--effort low`, which the timing probe found
+halves Sonnet's and Opus's time; deep leaves each model its own default. Effort is part of a
+call's cache key.
+
 ## Examples file
 
 JSON Lines, UTF-8 (a leading BOM is accepted), one object per non-blank line:
@@ -156,16 +221,21 @@ JSON Lines, UTF-8 (a leading BOM is accepted), one object per non-blank line:
   reference answer in substance". `criteria` (optional, non-blank strings): one judged check each.
 
 Other keys are ignored; there are no exact-match or regular-expression checks. A bad line is exit 2
-naming the line. The file is read once and copied into the run folder.
+naming the line. The file is read once and copied into the run folder. The fast tiers pick on the
+first examples; the checked tier holds out the ones after them and keeps the original without a
+call when none are left.
 
 ## Output
 
 Without `--json` the returned prompt alone goes to stdout, so it can be piped, and the report to
-stderr: result and reason, whether it is verified, holdout scores on the target model, the noise
-and the margin, search scores on the task model, length ratio, calls used, why the search ended
-(a clock stop is also a notice), what changed and why, a word diff, the intent contract with its
-checks, and the run folder. With `--json` stdout carries exactly one JSON object and notices stay
-on stderr. GEPA's own progress goes to `gepa.log` in the run folder, never to stdout.
+stderr: result and reason, what the result means and whether it is verified, the tier and the
+seconds it took, the scores labelled by where they were taken (on the scenarios a rewrite was
+picked on, on held-out scenarios, or in the search), the noise and the margin, length ratio, calls
+used, whether a stage or the search was cut short (a clock stop is also a notice), what changed
+and why, a word diff, the intent contract with its checks, and the run folder. The stages' progress
+goes to stderr line by line while the run goes. With `--json` stdout carries exactly one JSON
+object and notices stay on stderr. GEPA's own progress goes to `gepa.log` in the run folder, never
+to stdout.
 
 ## Exit codes
 
@@ -181,7 +251,8 @@ on stderr. GEPA's own progress goes to `gepa.log` in the run folder, never to st
 Every non-zero exit writes `error: <what, and the flag or folder to change>` to stderr and nothing
 to stdout (with `--json`, only the error object). Exits 3 and 130 also print `run folder: <path>`
 and `resume with: autoimprover --resume <id>` (with an `XDG_STATE_HOME=` prefix when the state
-folder is not the default).
+folder is not the default). A cancelled run keeps its folder: `--resume` continues it, and the
+calls it had answered are replayed from its cache for free.
 
 ## JSON output
 
@@ -211,17 +282,22 @@ stage is `name`, `calls` and `seconds`.
 
 ## Budget and clock
 
-Every model call counts toward one budget (intake, synthesis, task, judge, reflection), and so does
-each retry (a failed call is retried twice); a call answered from the run's disk cache is free.
-Fixed costs are reserved before the first call: the contract call, the synthesis call when there
-are no examples, two seed runs on the holdout and GEPA's scoring of the original on the valset;
-after the search up to 3 finalist runs on the target model and up to 3 contract checks. The search
-gets the rest. A run refuses to start (exit 2) when the fixed costs exceed the budget, or when the
-budget affords fewer than 4 iterations in the worst case and `--force-low-budget` is not given.
-The wall clock is 45 minutes of monotonic time (a suspended laptop does not count), carried across
-`--resume`; the search may use 75 % of it. If calls or time run out before a finalist is confirmed,
-the original is returned (`unconfirmed_out_of_budget`). A budget of 100 is very low for GEPA (the
-paper's runs used 400 to 7,000 rollouts); the first few rewrites carry most of the gain.
+Every model call counts toward one budget (contract, synthesis, task, judge, reflection), and so
+does each retry (a failed call is retried twice); a call answered from the run's disk cache is
+free. `--time` is monotonic time (a suspended laptop does not count), carried across `--resume`;
+each call's timeout is 300 s or the time left, whichever is shorter, and no call starts after the
+deadline. In the quick, fast and checked tiers the whole `--time` is the clock and the default
+budget is three times the plan's estimate, room for retries; when either runs out, what has not
+passed every gate is dropped and the original is returned (`unconfirmed_out_of_budget`).
+
+In the deep tier fixed costs are reserved before the first call: the contract call, the synthesis
+call when there are no examples, two seed runs on the holdout and GEPA's scoring of the original
+on the valset; after the search up to 3 finalist runs on the target model and up to 3 contract
+checks. The search gets the rest and 75 % of the clock. A deep run refuses to start (exit 2) when
+the fixed costs exceed the budget, or when the budget affords fewer than 4 iterations in the worst
+case and `--force-low-budget` is not given. If calls or time run out before a finalist is
+confirmed, the original is returned. A budget of 100 is very low for GEPA (the paper's runs used
+400 to 7,000 rollouts); the first few rewrites carry most of the gain.
 
 ## Run folders, `--resume` and `clean`
 
@@ -255,8 +331,8 @@ there is nothing to remove. Both accept only a run id, never a path. Nothing exp
   R18, ADR-009), with user text on stdin, a scrubbed environment and a 300 s timeout per call. A
   call ends the run with exit 4 when its session reports tools, MCP servers, skills, slash
   commands, agents beyond the four built-in ones, or an output style other than the default; the
-  installed plugins it lists are not active under `--safe-mode` and do not count. Built and tested
-  with a fake `claude`; not yet verified against live runs (see "Status").
+  installed plugins it lists are not active under `--safe-mode` and do not count. The check runs
+  on every call; it refused a live call once and has passed live since the fix (see "Status").
 
 ## Use it inside Claude Code
 
@@ -275,7 +351,7 @@ For one session from a checkout instead: `claude --plugin-dir <path to the check
 
 | Command | What it does |
 |---|---|
-| `/improve <prompt>` | improve the prompt (it may span lines); CLI flags such as `--budget 60` or `--strictness balanced` go before it, and a prompt that starts with `--` goes after a lone `--` |
+| `/improve <prompt>` | improve the prompt (it may span lines); CLI flags such as `--time 45s` or `--strictness conservative` go before it, and a prompt that starts with `--` goes after a lone `--` |
 | `/improve --file PATH` | the prompt from a file; a relative path is read from the session's folder |
 | `/improve --dry <prompt>` | the plan only: no model call, nothing written |
 | `/improve --resume [ID]` | continue the last run, or the run with that id |
@@ -283,6 +359,7 @@ For one session from a checkout instead: `claude --plugin-dir <path to the check
 | `/improve cancel` | stop the run in progress; it stays resumable |
 
 `/optimize` takes the same. One run at a time per session; `cancel` works while Claude is busy.
+Without `--time` a run is the 30-second fast tier.
 
 What the mod does, and nothing more:
 
@@ -300,13 +377,14 @@ What the mod does, and nothing more:
 - The child's last line on stderr is the status line. When the run ends with an improved
   prompt, that prompt appears in the prompt box by itself, as a draft: edit it if you want and
   press Enter to send it. The mod sends nothing. If the box already holds a draft you typed, the
-  draft is kept and the pane says so. A result that is not verified on a holdout
-  (`--trust-search`) goes in too, and the toast and the pane say "NOT verified". A kept original,
-  a failure, a cancel or a plan (`--dry`) puts nothing in the box.
+  draft is kept and the pane says so. A result that is not verified on held-out scenarios (a quick
+  or fast check, or `--trust-search`) goes in too, and the toast and the pane say "NOT verified"
+  ("fast check" for the quick and fast tiers). A kept original, a failure, a cancel or a plan
+  (`--dry`) puts nothing in the box.
 - The run's JSON object becomes a pane: the result and reason, what happened to the prompt box,
   the scores, the margin over the noise, the length ratio, what changed and the improved prompt.
   "Use it" puts the improved prompt into the box again, replacing what is there ("Use it (not
-  verified)" for a `--trust-search` result), "Copy" copies it, "Close" closes the pane. Where
+  verified)" for a result that is not verified), "Copy" copies it, "Close" closes the pane. Where
   nothing can draw a pane (`claude -p "/improve ..."`), the command waits for the run, prints the
   report as its text (including whether the prompt went into the box) and exits with the tool's
   exit code (1 for a failure of the mod itself, 2 when `uv` is missing).
@@ -325,11 +403,12 @@ model, MCP or network call.
 and what it starts runs outside Claude Code's sandbox with your normal login, which is how the
 tool's `claude -p` calls find it; those calls run with `--safe-mode`, so this mod is off in them.
 
-Not verified until your live run: the mod is type-checked against the declarations of Claude Code
-2.1.287 and its tests (`tests/mod/*.test.ts`, run by `claude plugin test`) use a stubbed engine.
-Whether it loads in a live session, finds `uv`, gets a model id `--target-model` accepts from
-the session, kills the child on `cancel`, puts the prompt into the box, and how the pane looks,
-are checked only by running it.
+Verified live on 2026-10-05: the mod loads, `/improve --dry` prints the plan, a real `/improve`
+starts the tool, and a failed run shows its error pane with the resume line. Not verified until
+your next live run: the mod is type-checked against the declarations of Claude Code 2.1.287 and its
+tests (`tests/mod/*.test.ts`, run by `claude plugin test`) use a stubbed engine. Whether it gets a
+model id `--target-model` accepts from every session, kills the child on `cancel`, puts an
+improved prompt into the box, and how the result pane looks, are checked only by running it.
 
 ## Measuring the tool (bench)
 
@@ -364,14 +443,19 @@ stdout stays empty (with `--json` it holds the error object), the partial summar
 already measured follows the `error:` line on stderr, and its JSON object is saved as
 `bench/<id>/summary.json` (`"interrupted": true`). Each prompt's run folder, with the bench's own
 calls in its cache, is under `$XDG_STATE_HOME/autoimprover/bench/<id>/<prompt id>/`; `clean` does
-not remove these, so delete `bench/<id>/` by hand when done.
+not remove these, so delete `bench/<id>/` by hand when done. The bench has not had a live run yet.
 
 ## Limits and non-goals
 
 - Single turn, no tools: for a `task` prompt the output scored is the model's answer or plan.
-- The holdout has 3 to 6 scenarios, so the noise estimate is coarse; high scores can also mean
-  weak checks, so the report lists them. Model aliases are pinned to the ids above.
-- One run per run folder; runs with different ids may run at the same time.
+- The evidence is thin by design in the short tiers: a fast check scores 2 to 4 scenarios, the
+  same ones it picks on, with a noise estimate from two runs; the checked tier confirms on 4
+  held-out scenarios without a held-out noise estimate; the deep holdout has 3 to 6 scenarios, so
+  its noise estimate is coarse. High scores can also mean weak checks, so the report lists them.
+- Scoring runs in the fast and checked tiers ask for answers of at most 120 words, so a prompt
+  whose value shows only in long answers is measured on short ones.
+- Model aliases are pinned to the ids above. One run per run folder; runs with different ids may
+  run at the same time.
 - Not in v1 (SPEC section 3): training model weights, multi-prompt pipelines or DSPy programs, the
   local model as task model, a hosted service, any network call except `claude -p`.
 
@@ -379,4 +463,5 @@ not remove these, so delete `bench/<id>/` by hand when done.
 
 Requirements: `docs/SPEC.md`; design: `docs/ARCHITECTURE.md`, `docs/adr/`. `just check` (format,
 lint, types, tests) is the definition of done; tests use the fakes in `tests/fakes.py` and never a
-real model or the network. The 0.1.0 script is the git tag `v0.1.0-legacy`.
+real model or the network. `just bench` runs the bench; `just smoke` is a live check on one
+prompt (both spend subscription calls). The 0.1.0 script is the git tag `v0.1.0-legacy`.
