@@ -32,6 +32,8 @@ from typing import cast, get_args
 
 from autoimprover import runner
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
+from autoimprover.bench import Collected
+from autoimprover.cli_bench import bench_command
 from autoimprover.cli_fast import Progress, checked_keeps, fast_refusal, saved_fast_plan
 from autoimprover.cli_input import examples_of, prompt_of
 from autoimprover.cli_input import read_prompt as read_prompt  # cli.read_prompt (SPEC R1)
@@ -141,15 +143,21 @@ TierPlan = runner.FixedCosts | FastPlan
 class _Session:
     """One invocation: its writer, the injected raw layer and clock, the run folder it holds once
     there is one (named in error output, released at exit), and the run's call limit and raw
-    layer once they exist (stopped by `cancel`)."""
+    layer once they exist (stopped by `cancel`). A session given a `root` is one prompt of a
+    bench (SPEC R26): its run folder goes under `root`, and its Outcome is collected, not shown."""
 
     def __init__(
-        self, emit: Emitter, backend: Backend | None, now: Callable[[], float] | None
+        self,
+        emit: Emitter,
+        backend: Backend | None,
+        now: Callable[[], float] | None,
+        root: Path | None = None,
     ) -> None:
-        self.emit, self.backend, self.now = emit, backend, now
+        self.emit, self.backend, self.now, self.root = emit, backend, now, root
         self.store: RunStore | None = None
         self.budgeted: BudgetedBackend | None = None
         self.raw: Backend | None = None
+        self.collected: Collected | None = None
 
     def run_dir(self) -> str:
         return "" if self.store is None else str(self.store.path)
@@ -179,20 +187,43 @@ class _Session:
             terminate()
 
     def run(self, args: list[str]) -> int:
+        if args[:1] == ["bench"]:  # its own flags (SPEC R26)
+            return bench_command(args[1:], self.emit, self.bench_prompt, self.raw_maker, self.now)
         opts = parse(args)
         if opts.help:
             self.emit.help(_parser().format_help())
             return EXIT_OK
         if opts.words[:1] == ("clean",):
             return _clean(opts, self.emit)
+        if opts.words[:1] == ("bench",):
+            raise UsageError("bench comes first, its flags after it: autoimprover bench --help")
         return self.resume(opts) if opts.resume is not None else self.start(opts)
 
-    def start(self, opts: Options) -> int:
+    def bench_prompt(self, opts: Options, examples: list[Scenario] | None, root: Path) -> Collected:
+        """One prompt of a bench (SPEC R26): `opts` and `examples` through the checks and the run
+        of `start`, in a new run folder under `root`; a backend failure is collected too, and
+        Ctrl-C stops the run's calls as `main` does."""
+        session = _Session(self.emit, self.backend, self.now, root)
+        try:
+            session.start(opts, examples)
+        except BackendError as error:
+            store = session.store
+            seconds, calls = (None, 0) if store is None else (store.elapsed_s, store.calls_used)
+            return Collected(None, seconds, calls, None, failure=f"backend failure: {error}")
+        except KeyboardInterrupt:
+            session.cancel()
+            raise
+        finally:
+            session.close()
+        return cast(Collected, session.collected)
+
+    def start(self, opts: Options, inline: list[Scenario] | None = None) -> int:
         """Everything checked before the first paid call, in the order of ARCHITECTURE section
-        1; then a new run folder and the run of the tier `--time` picks (SPEC R25)."""
+        1; then a new run folder and the run of the tier `--time` picks (SPEC R25). A bench
+        gives each prompt's examples itself."""
         prompt = prompt_of(opts)
         chosen = settings(opts)
-        examples = examples_of(opts.examples)
+        examples = examples_of(opts.examples) if inline is None else inline
         if chosen.tier == "deep":
             return self.start_deep(opts, prompt, chosen, examples)
         given = examples is not None
@@ -246,7 +277,7 @@ class _Session:
         make_raw = self.raw_maker()
         given = examples is not None
         saved = {"kind": opts.kind, "trust_search": opts.trust_search, "examples": given}
-        store = self.store = RunStore.open_or_create(runs_root(), plan, prompt, saved)
+        store = self.store = RunStore.open_or_create(self.root or runs_root(), plan, prompt, saved)
         if examples is not None:
             store.save_scenarios(examples)
         self.emit.plan(view, dry=False)
@@ -352,8 +383,13 @@ class _Session:
         plan: Plan,
         elapsed_s: float,
     ) -> None:
-        """The one place an Outcome gets its tier (SPEC R25) before it is shown (SPEC R2)."""
+        """The one place an Outcome gets its tier (SPEC R25) before it is shown (SPEC R2), or
+        collected for a bench (SPEC R26)."""
         mode = dataclasses.replace(outcome, mode=plan.tier)
+        if self.root is not None:
+            run_id = None if self.store is None else self.store.run_id
+            self.collected = Collected(mode, elapsed_s, mode.calls_used, run_id)
+            return
         self.emit.outcome(mode, original, contract, plan, elapsed_s)
 
     def raw_maker(self) -> RawMaker:
