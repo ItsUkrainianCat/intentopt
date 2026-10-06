@@ -15,6 +15,9 @@ rewrite's contract. With `--ungated` (fast and checked tiers, a measuring aid), 
 no winner returns the best-ranked rewrite that passed every gate (`fast_pairwise.best_ungated`),
 under its own reason code and label, never verified; the checked tier then never runs stage E,
 and returns a winner under that code too, so the measure sees the ranking's choice, not E's.
+When every example of the user carries a reference (`reference_score.reference_of`), stages C to
+E decide by agreement with the references instead (`fast_reference`; stage E then runs the
+original twice and compares as the pick does), and every reason says so (`reference_text`, WP21).
 
 After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
 leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
@@ -35,6 +38,7 @@ import dataclasses
 from collections.abc import Sequence
 from typing import Any, TextIO, cast
 
+from autoimprover import reference_text as said
 from autoimprover.backend import BudgetedBackend, Clock
 from autoimprover.contract import _ask, check, extract_contract
 from autoimprover.fast_calibrate import grow
@@ -45,9 +49,11 @@ from autoimprover.fast_prompts import (
     rewrite_call,
     synth_call,
 )
-from autoimprover.fast_stages import Dropped, Stages, dropped
+from autoimprover.fast_reference import ReferenceStages, shares
+from autoimprover.fast_stages import Dropped, dropped
 from autoimprover.fastplan import PLAN_SHARE, FastPlan, contract_stage, tail
 from autoimprover.parallel import parallel_map
+from autoimprover.reference_score import Margin, beats, reference_of
 from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
@@ -109,8 +115,9 @@ def improve_fast(
     the best-ranked rewrite that passed every gate is returned, unverified, and the checked tier
     skips stage E, also for a winner. The checked tier with nothing left to hold out keeps the
     original before any call."""
-    run = _Fast(prompt, plan, fplan, backend, budgeted, clock, store, log, workers, ungated)
     given = store.scenarios() or (None if scenarios is None else list(scenarios))
+    ref = None if given is None else reference_of(given)
+    run = _Fast(prompt, plan, fplan, backend, budgeted, clock, store, log, workers, ungated, ref)
     if fplan.tier == "checked" and given is not None and len(given) <= fplan.scenarios:
         return run.outcome(
             "no_holdout",
@@ -126,9 +133,9 @@ def improve_fast(
         raise BackendError(str(error)) from error
 
 
-class _Fast(Stages):
-    """One fast run: stages B to D and the run's state are `Stages`; here stage A, stage E, the
-    quick tier and the endings."""
+class _Fast(ReferenceStages):
+    """One fast run: stages B to D and the run's state are `Stages` (`ReferenceStages` when every
+    example carries a reference); here stage A, stage E, the quick tier and the endings."""
 
     def flow(self, given: list[Scenario] | None, kind: Kind | None, synthesising: bool) -> Outcome:
         contract, scenarios, rewrites = self.stage_a(kind, given)
@@ -142,14 +149,15 @@ class _Fast(Stages):
         m, scenarios = self.more(len(rewrites), scenarios, synthesising)
         h = self.fplan.holdout
         win = self.contest(contract, rewrites, scenarios[:m], h)
+        referenced = self.ref is not None
         if win is None:
-            return self.kept(_NO_WIN)
+            return self.kept(said.NO_WIN if referenced else _NO_WIN)
         checked = self.fplan.tier == "checked"
         if not win.gated or (self.ungated and checked):  # --ungated: no stage E, never verified
             return self.outcome(
                 "ungated_best_candidate",
                 win.rewrite,
-                why=_UNGATED_LABEL,
+                why=said.UNGATED_LABEL if referenced else _UNGATED_LABEL,
                 search_score_before=win.before,
                 search_score_after=win.after,
                 noise=win.bar,
@@ -160,7 +168,7 @@ class _Fast(Stages):
         return self.outcome(
             "improved",
             win.rewrite,
-            why=_FAST_LABEL,
+            why=said.FAST_LABEL if referenced else _FAST_LABEL,
             score_before=win.before,
             score_after=win.after,
             margin=win.gain - win.bar,
@@ -218,6 +226,7 @@ class _Fast(Stages):
             model=self.latency,
             seconds_left=min(PLAN_SHARE * fp.time_s, budgeted.deadline) - self.clock.elapsed(),
             calls_left=budgeted.limit - budgeted.used,
+            ref=self.ref,
         )
         if grown is None:
             return fp.scenarios, scenarios
@@ -247,11 +256,15 @@ class _Fast(Stages):
 
     def confirm(self, contract: Contract, win: Win, holdout: Sequence[Scenario]) -> Outcome:
         """Stage E: the winner is returned, verified, only when it beats the original on the
-        held-out scenarios on the target model by more than MIN_THRESHOLD (SPEC R3, R14a)."""
+        held-out scenarios on the target model by more than MIN_THRESHOLD (SPEC R3, R14a); with
+        references, by the pick's rule against the original's two runs there (`held`)."""
         self.measured["search_score_before"] = win.before
-        if not self.fits(tail(0, 0, len(holdout), self.workers, count_tokens(self.prompt))):
+        h, p = len(holdout), count_tokens(self.prompt)
+        if not self.fits(tail(0, 0, h, self.workers, p, ref=self.ref)):
             return self.kept("")
-        self.note(f"stage E: the winner and the original on {len(holdout)} held-out scenarios")
+        self.note(f"stage E: the winner and the original on {h} held-out scenarios")
+        if self.ref is not None:
+            return self.held(win, self.held_out(contract, win.rewrite.text, holdout), h)
         models, inner = self.plan.models, max(1, self.workers // 2)
 
         def on_target(text: str) -> float:
@@ -272,6 +285,24 @@ class _Fast(Stages):
             score_after=after,
             search_score_after=win.after,
             margin=margin,
+        )
+
+    def held(self, win: Win, margin: Margin, h: int) -> Outcome:
+        """Stage E's ending with references: the winner is returned, verified, only when it
+        beats the original's two held-out runs on the target model (`reference_score.beats`)."""
+        found = shares(win.rewrite, margin)
+        self.measured |= {"score_before": found.before, "noise": found.bar}
+        held = f"{h} held-out examples, on the target model"
+        if not beats(margin):
+            return self.kept(said.HELD_LOSS.format(held=held))
+        return self.outcome(
+            "improved",
+            win.rewrite,
+            why=said.HELD_WIN.format(held=held),
+            verified=True,
+            score_after=found.after,
+            search_score_after=win.after,
+            margin=found.gain - found.bar,
         )
 
     def quick(self, contract: Contract, rewrites: list[Rewrite]) -> Outcome:

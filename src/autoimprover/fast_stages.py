@@ -33,7 +33,8 @@ one pairwise call
 reflection, task or pairwise call drops what it was for (a pairwise order that failed makes its
 scenarios ties); an original run left with no answer, a noise pair with no scenario both runs
 answered or that the judge could not compare, or a failed contract check, ends the run as
-BackendError (SPEC R24).
+BackendError (SPEC R24). When every example carries a reference, `fast_reference.ReferenceStages`
+decides stages C, C2 and D by agreement with it and feeds the reflection its failed checks (WP21).
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ from autoimprover.fast_prompts import (
 from autoimprover.fastplan import (
     FastPlan,
     Latency,
+    Reference,
     Stage,
     last_chance,
     misfit,
@@ -98,7 +100,7 @@ from autoimprover.types import (
 _WORD = re.compile(r"[^\W_]+")
 _ARTICLES = frozenset({"an", "the"})
 # The first-generation rewrites that kept the contract, best first, a reflection reads.
-_PARENTS = 2
+PARENTS = 2
 
 
 class Dropped(NamedTuple):
@@ -116,7 +118,9 @@ class Stages:
     Every call goes through `timed`, and `latency` is the model fitted to its replies once there
     is one (`calibrate`), which every later estimate uses (SPEC R25). `ungated` is `--ungated`:
     with no win, stage D picks the best-ranked rewrite that kept the contract
-    (`fast_pairwise.best_ungated`)."""
+    (`fast_pairwise.best_ungated`). `ref` is the user's examples when every one carries a
+    reference: the estimates price the reference judge, and `fast_reference.ReferenceStages`
+    overrides the pairwise hooks here (`stage_c`, `won`, `best`, `parents`; WP21)."""
 
     prompt: str
     plan: Plan
@@ -128,6 +132,7 @@ class Stages:
     log: TextIO
     workers: int
     ungated: bool = False
+    ref: Reference | None = None
     stop: StopCause | None = None
     ended: bool = False
     measured: dict[str, Any] = field(default_factory=dict)
@@ -173,9 +178,9 @@ class Stages:
     ) -> Win | None:
         """Stages B, C, the second generation and D: the best rewrite by the pick rule, else with
         `ungated` the best-ranked one that kept the contract, or None."""
-        w, p = self.workers, count_tokens(self.prompt)
+        w, p, ref = self.workers, count_tokens(self.prompt), self.ref
         shape = self.shrunk(
-            len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p, self.latency)
+            len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p, self.latency, ref)
         )
         if shape is None:
             return None
@@ -187,7 +192,7 @@ class Stages:
 
         def judging(k: int, m: int) -> tuple[Stage, ...]:  # stage C, then E
             lat = self.latency
-            return (scoring_stages(k, m, w, p, lat)[1], *tail(0, 0, holdout, w, p, lat))
+            return (scoring_stages(k, m, w, p, lat, ref)[1], *tail(0, 0, holdout, w, p, lat, ref))
 
         outputs = self.stage_b(contract, runs, pick, judging(1, 1))
         self.calibrate("B")
@@ -201,8 +206,8 @@ class Stages:
             raise BackendError("every task run of one of the original's two runs failed")
         alive = [n for n in range(2, len(runs)) if ran[n]]
         shape = self.shrunk(len(alive), len(pick), judging)
-        if shape is None and alive and self.fits(last_chance(holdout, w, p, self.latency)):
-            shape = (1, 1)  # stage B ended late: the time left covers one pairwise call
+        if shape is None and alive and self.fits(last_chance(holdout, w, p, self.latency, ref)):
+            shape = (1, 1)  # stage B ended late: the time left covers one judge call
         if shape is None:
             return None
         alive, pick = alive[: shape[0]], pick[: shape[1]]
@@ -218,33 +223,48 @@ class Stages:
         judged = list(first)
         if self.fplan.generations > 1 and not self.ended:
             judged += self.second(contract, pick, outputs[0], noise, first, holdout)
-        wins = [win for j in judged if (win := won(j, noise, len(pick))) is not None]
+        wins = [win for j in judged if (win := self.won(j, noise, len(pick))) is not None]
         if not wins:
-            return best_ungated(judged, noise, len(pick)) if self.ungated else None
+            return self.best(judged, noise, len(pick)) if self.ungated else None
         return min(wins, key=lambda w: (-round(w.gain, 9), count_tokens(w.rewrite.text)))
+
+    def won(self, judged: Judged, noise: float, m: int) -> Win | None:
+        """Stage D's rule for one judged rewrite on `m` scenarios (`fast_pairwise.won`)."""
+        return won(judged, int(noise), m)
+
+    def best(self, judged: Sequence[Judged], noise: float, m: int) -> Win | None:
+        """The `--ungated` pick (`fast_pairwise.best_ungated`)."""
+        return best_ungated(judged, int(noise), m)
+
+    def parents(self, first: list[Judged], pick: list[Scenario]) -> list[dict[str, Any]]:
+        """What a reflection reads: the best one or two first-generation rewrites that kept the
+        contract, by their lead in scenarios, with the scenarios they lost or tied and the
+        judge's reasons; the original with none when no rewrite kept it."""
+        kept = sorted(
+            (j for j in first if j.keep),
+            key=lambda j: (j.found.losses - j.found.wins, count_tokens(j.rewrite.text)),
+        )
+        parents = [evidence(j.rewrite.text, pick, j.found.feedback) for j in kept[:PARENTS]]
+        return parents or [{"prompt": self.prompt, "scenarios": []}]
 
     def second(
         self,
         contract: Contract,
         pick: list[Scenario],
         original: dict[str, str | CallFailed],
-        noise: int,
+        noise: float,
         first: list[Judged],
         holdout: int,
     ) -> list[Judged]:
         """The second generation's rewrites as judged (stages R, B2, C2), or none when it does not
         fit the time and calls left or is cut: then the first generation's result stands."""
         w, plan, k2, p = self.workers, self.plan, self.fplan.rewrites2, count_tokens(self.prompt)
-        lat = self.latency
-        later = (*second_stages(k2, len(pick), w, p, lat), *tail(0, 0, holdout, w, p, lat))
+        lat, ref = self.latency, self.ref
+        held = tail(0, 0, holdout, w, p, lat, ref)
+        later = (*second_stages(k2, len(pick), w, p, lat, ref), *held)
         if not self.fits(later):
             return []
-        kept = sorted(
-            (j for j in first if j.keep),
-            key=lambda j: (j.found.losses - j.found.wins, count_tokens(j.rewrite.text)),
-        )
-        parents = [evidence(j.rewrite.text, pick, j.found.feedback) for j in kept[:_PARENTS]]
-        parents = parents or [{"prompt": self.prompt, "scenarios": []}]
+        parents = self.parents(first, pick)
         self.note(f"stage R: {k2} reflection(s) on {len(parents)} candidate(s)")
         calls = [
             reflect_call(
@@ -255,6 +275,7 @@ class Stages:
                 plan.models.reflect,
                 plan.strictness,
                 plan.allow_growth,
+                reference=ref is not None,
             )
             for v in range(k2)
         ]
@@ -310,7 +331,7 @@ class Stages:
         original: dict[str, str | CallFailed],
         pick: list[Scenario],
         noise_run: dict[str, str | CallFailed] | None,
-    ) -> tuple[list[Judged], int] | None:
+    ) -> tuple[list[Judged], float] | None:
         """Stage C, or C2 without `noise_run`, one wave: the contract check of the rewrites (the
         longest call, first), the noise pair (the original's run 0 against `noise_run`) and each
         rewrite's `answers` against the original's run 0, each pair in two orders (SPEC R25;

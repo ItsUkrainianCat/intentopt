@@ -15,6 +15,14 @@ writes K2 rewrites from the judge's reasons on the first, B2 and C2 run and judg
 D the free gates and the pick over every candidate; E (checked only) the winner against the
 original on the held-out scenarios, on the target model.
 
+When every example of the user carries a reference (`Reference`), stage C is one absolute judge
+call per run over its M scenarios (the original's two and each rewrite's, ADR-002) and the
+contract check, K + 3 calls, each longer than a pairwise call as it quotes per check
+(`reference_seconds`); C2 is K2 + 1 calls; E runs the original twice and the winner, 3 H task runs
+and 3 judge calls (WP21). Such a plan picks on up to REFERENCE_MAX_SCENARIOS of the examples (and,
+in the checked tier, holds out REFERENCE_HOLDOUT of them) before any shape of the ordinary split,
+as long as the examples last.
+
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
 run time (`tail`, `misfit`, `shrink`) to shrink what the time or the calls left cannot cover
 (SPEC R17), each with the latency model fitted to the run's own replies once it has one
@@ -28,7 +36,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from autoimprover.types import StopCause, Tier
+from autoimprover.types import HOLDOUT_MAX, JUDGE_BATCH_MAX, StopCause, Tier
 
 # Where each tier starts, in seconds of `--time` (SPEC R25); below MIN_TIME_S a run is refused.
 MIN_TIME_S = 15
@@ -63,6 +71,8 @@ TASK_MAX_TOKENS = 600
 JUDGE_TOKENS_PER_CHECK = 25  # a pass/fail and a quote of at most 8 words
 JUDGED_CHECKS_PER_SCENARIO = 3
 PAIRWISE_TOKENS_PER_SCENARIO = 40  # a winner and one short reason (ADR-012)
+# A reference judge call (WP21): per scenario its name and list, then a pass and a quote per check.
+REFERENCE_TOKENS_PER_SCENARIO = 20
 CONTRACT_CHECKS = 3  # the contract check's three fixed questions (contract.check)
 
 # The shapes a tier may take: rewrites from the most down to 1, scenarios from the most down to
@@ -84,6 +94,10 @@ _SPLITS: dict[Tier, tuple[tuple[tuple[int, int], ...], ...]] = {
         tuple((m, CHECKED_MIN_HOLDOUT) for m in range(MAX_SCENARIOS - 1, MIN_SCENARIOS - 1, -1)),
     ),
 }
+# With references (WP21) a plan picks on up to one judge batch of the examples and holds out from
+# HOLDOUT_MAX down to CHECKED_HOLDOUT of them, before the ordinary split, as the examples last.
+REFERENCE_MAX_SCENARIOS = JUDGE_BATCH_MAX
+REFERENCE_HOLDOUT = range(HOLDOUT_MAX, CHECKED_HOLDOUT - 1, -1)
 # From this `--time` a run has a second generation of up to MAX_REWRITES2 rewrites, written by
 # reflecting on the first one's failed checks, when the whole plan fits (SPEC R25; ADR-011).
 TWO_GENERATIONS_FROM_S = 45
@@ -98,12 +112,22 @@ class Stage(NamedTuple):
     seconds: float
 
 
+class Reference(NamedTuple):
+    """The user's examples when every one carries a reference (`expected` or `criteria`): how
+    many there are, and the most judged checks one of them has (SPEC R11). A plan with one
+    decides by agreement with the references, not by pairwise preference (SPEC R25, WP21)."""
+
+    examples: int
+    checks: int
+
+
 @dataclass(frozen=True)
 class FastPlan:
     """What a quick, fast or checked run will do; `--dry` prints it (SPEC R4, R25). `rewrites` is
     K, `scenarios` M (the scenarios the rewrites are picked on, 0 in the quick tier), `holdout`
     the held-out scenarios of the checked tier (else 0), `generations` 2 when a second
-    generation of `rewrites2` rewrites follows the first (else 1 and 0)."""
+    generation of `rewrites2` rewrites follows the first (else 1 and 0), `reference` the user's
+    examples when the plan decides by their references (else None, the pairwise decision)."""
 
     tier: Tier
     time_s: int
@@ -116,6 +140,7 @@ class FastPlan:
     est_calls: int
     generations: int = 1
     rewrites2: int = 0
+    reference: Reference | None = None
 
 
 def tier_for(time_s: int) -> Tier:
@@ -188,6 +213,27 @@ def contract_seconds(candidates: int, model: Latency | None = None) -> float:
     return call_seconds(JUDGE_TOKENS_PER_CHECK * CONTRACT_CHECKS * candidates, model)
 
 
+def reference_tokens(checks: int) -> float:
+    """The output tokens of one scenario of `checks` checks in a reference judge call."""
+    return REFERENCE_TOKENS_PER_SCENARIO + JUDGE_TOKENS_PER_CHECK * checks
+
+
+def reference_seconds(scenarios: int, checks: int, model: Latency | None = None) -> float:
+    """One reference judge call over the outputs of `scenarios` scenarios of `checks` checks."""
+    return call_seconds(reference_tokens(checks) * scenarios, model)
+
+
+def _judges(
+    pairs: int, runs: int, scenarios: int, ref: Reference | None, model: Latency | None
+) -> tuple[int, float, str]:
+    """The judge calls of a stage C on `scenarios` scenarios, the seconds of one and their kind:
+    the two orders of each of `pairs` pairs, or with references one call per each of `runs`
+    runs."""
+    if ref is None:
+        return 2 * pairs, pair_seconds(scenarios, model), "pairwise"
+    return runs, reference_seconds(scenarios, ref.checks, model), "reference"
+
+
 def stage_a(
     rewrites: int, synthesis: int, workers: int, prompt_tokens: int, model: Latency | None = None
 ) -> Stage:
@@ -211,36 +257,45 @@ def synthesis_stage(count: int, model: Latency | None = None) -> Stage:
 
 
 def scoring_stages(
-    rewrites: int, scenarios: int, workers: int, prompt_tokens: int, model: Latency | None = None
+    rewrites: int,
+    scenarios: int,
+    workers: int,
+    prompt_tokens: int,
+    model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> tuple[Stage, ...]:
     """Stages B, C and D for the original, run twice, and `rewrites` rewrites on `scenarios`
     scenarios; stage C is two pairwise calls (both orders) per rewrite and for the original's two
-    runs, and one contract check of every rewrite (ADR-012)."""
+    runs (ADR-012), or with `ref` one reference judge call per run, and one contract check of
+    every rewrite."""
     runs = rewrites + 2
-    judging = max(pair_seconds(scenarios, model), contract_seconds(rewrites, model))
-    calls = 2 * (rewrites + 1) + 1
+    judges, seconds, kind = _judges(rewrites + 1, runs, scenarios, ref, model)
+    judging = max(seconds, contract_seconds(rewrites, model))
+    calls = judges + 1
     task = call_seconds(task_tokens(prompt_tokens), model)
     return (
         Stage("B: task runs", runs * scenarios, wave_seconds(runs * scenarios, workers, task)),
-        Stage(
-            "C: pairwise judge and contract checks",
-            calls,
-            wave_seconds(calls, workers, judging),
-        ),
+        Stage(f"C: {kind} judge and contract checks", calls, wave_seconds(calls, workers, judging)),
         Stage("D: free gates and pick", 0, 0.0),
     )
 
 
 def second_stages(
-    rewrites2: int, scenarios: int, workers: int, prompt_tokens: int, model: Latency | None = None
+    rewrites2: int,
+    scenarios: int,
+    workers: int,
+    prompt_tokens: int,
+    model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> tuple[Stage, ...]:
     """The second generation: `rewrites2` reflections (each a rewrite's length), their task runs
-    on the `scenarios` scenarios, then two pairwise calls each against the original's answers and
-    one contract check of all."""
+    on the `scenarios` scenarios, then two pairwise calls each against the original's answers (or
+    with `ref` one reference judge call each) and one contract check of all."""
     reflection = call_seconds(rewrite_tokens(prompt_tokens), model)
-    judging = max(pair_seconds(scenarios, model), contract_seconds(rewrites2, model))
+    judges, seconds, kind = _judges(rewrites2, rewrites2, scenarios, ref, model)
+    judging = max(seconds, contract_seconds(rewrites2, model))
     runs = rewrites2 * scenarios
-    calls = 2 * rewrites2 + 1
+    calls = judges + 1
     return (
         Stage(
             "R: reflection on the first generation",
@@ -253,7 +308,7 @@ def second_stages(
             wave_seconds(runs, workers, call_seconds(task_tokens(prompt_tokens), model)),
         ),
         Stage(
-            "C2: pairwise judge and contract checks of the second generation",
+            f"C2: {kind} judge and contract checks of the second generation",
             calls,
             wave_seconds(calls, workers, judging),
         ),
@@ -261,14 +316,23 @@ def second_stages(
 
 
 def holdout_stage(
-    holdout: int, workers: int, prompt_tokens: int, model: Latency | None = None
+    holdout: int,
+    workers: int,
+    prompt_tokens: int,
+    model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> Stage:
-    """Stage E: the winner and the original on `holdout` held-out scenarios on the target model,
-    a wave of task runs, then a judge call each."""
+    """Stage E: the winner and the original (with `ref`, the original twice) on `holdout`
+    held-out scenarios on the target model, a wave of task runs, then a judge call each."""
+    runs = 2 if ref is None else 3
     task = call_seconds(task_tokens(prompt_tokens), model)
-    seconds = wave_seconds(2 * holdout, workers, task)
-    seconds += wave_seconds(2, workers, judge_seconds(holdout, model))
-    return Stage("E: held-out check on the target model", 2 * holdout + 2, seconds)
+    judge = (
+        judge_seconds(holdout, model)
+        if ref is None
+        else reference_seconds(holdout, ref.checks, model)
+    )
+    seconds = wave_seconds(runs * holdout, workers, task) + wave_seconds(runs, workers, judge)
+    return Stage("E: held-out check on the target model", runs * holdout + runs, seconds)
 
 
 def contract_stage() -> Stage:
@@ -276,16 +340,24 @@ def contract_stage() -> Stage:
     return Stage("contract check", 1, contract_seconds(1))
 
 
-def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool) -> FastPlan:
+def fast_plan(
+    time_s: int,
+    workers: int,
+    prompt_tokens: int,
+    have_examples: bool,
+    reference: Reference | None = None,
+) -> FastPlan:
     """The plan of a quick, fast or checked run of `time_s` seconds on `workers` threads for a
     prompt of `prompt_tokens` tokens (`runner.count_tokens`), with the user's examples or with a
-    synthesis call. Fast and checked take the most rewrites, then the most scenarios (the
-    checked tier: the first group of its split that has a plan that fits, then the most held
-    out), whose estimate fits PLAN_SHARE of the time; from TWO_GENERATIONS_FROM_S the most
-    rewrites, then scenarios, then second-generation rewrites of a plan with two generations
-    come first, and one generation only when none fits. When even 1 rewrite on MIN_SCENARIOS
-    does not fit, that smallest plan is returned and the runner shrinks it at run time. The deep
-    tier is the search (`runner.improve`), not a fast plan: ValueError."""
+    synthesis call, and with `reference` when every example carries one. Fast and checked take
+    the most rewrites, then the most scenarios (the checked tier: the first group of its split
+    that has a plan that fits, then the most held out; with `reference` first the group of the
+    larger picks the examples allow), whose estimate fits PLAN_SHARE of the time; from
+    TWO_GENERATIONS_FROM_S the most rewrites, then scenarios, then second-generation rewrites of
+    a plan with two generations come first, and one generation only when none fits. When even 1
+    rewrite on MIN_SCENARIOS does not fit, that smallest plan is returned and the runner shrinks
+    it at run time. The deep tier is the search (`runner.improve`), not a fast plan:
+    ValueError."""
     tier = tier_for(time_s)
     if tier == "deep":
         raise ValueError(f"{time_s} s is the deep tier: the search of runner.improve")
@@ -296,23 +368,38 @@ def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool
         return _plan(tier, time_s, workers, 1, 0, 0, stages)
     ordered: list[FastPlan] = []
     second = range(MAX_REWRITES2, 0, -1) if time_s >= TWO_GENERATIONS_FROM_S else range(0)
-    for group in _SPLITS[tier]:
+    w, p, ref = workers, prompt_tokens, reference
+    for group in _splits(tier, ref):
         one: list[FastPlan] = []
         two: list[FastPlan] = []
         for rewrites in range(MAX_REWRITES[tier], 0, -1):
             for scenarios, holdout in group:
                 synthesis = 0 if have_examples else scenarios + holdout
-                *scoring, pick = scoring_stages(rewrites, scenarios, workers, prompt_tokens)
-                first = (stage_a(rewrites, synthesis, workers, prompt_tokens), *scoring)
-                last = (pick, *tail(0, 0, holdout, workers, prompt_tokens))
-                shape = (tier, time_s, workers, rewrites, scenarios, holdout)
-                one.append(_plan(*shape, (*first, *last)))
+                *scoring, pick = scoring_stages(rewrites, scenarios, w, p, ref=ref)
+                first = (stage_a(rewrites, synthesis, w, p), *scoring)
+                last = (pick, *tail(0, 0, holdout, w, p, ref=ref))
+                shape = (tier, time_s, w, rewrites, scenarios, holdout)
+                one.append(_plan(*shape, (*first, *last), reference=ref))
                 for rewrites2 in second:
-                    stages = (*first, *second_stages(rewrites2, scenarios, workers, prompt_tokens))
-                    two.append(_plan(*shape, (*stages, *last), rewrites2))
+                    stages = (*first, *second_stages(rewrites2, scenarios, w, p, ref=ref))
+                    two.append(_plan(*shape, (*stages, *last), rewrites2, ref))
         ordered += (*two, *one)
     fitting = (p for p in ordered if p.est_seconds <= PLAN_SHARE * time_s)
     return next(fitting, ordered[-1])
+
+
+def _splits(tier: Tier, ref: Reference | None) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """The groups of (scenarios, holdout) of `tier`, best first: with `ref`, first the larger
+    picks of REFERENCE_MAX_SCENARIOS (and in the checked tier REFERENCE_HOLDOUT held out) that its
+    examples cover, then the ordinary split."""
+    if ref is None or tier not in _SPLITS:
+        return _SPLITS[tier]
+    if tier == "checked":
+        wide = [(REFERENCE_MAX_SCENARIOS, holdout) for holdout in REFERENCE_HOLDOUT]
+    else:
+        wide = [(m, 0) for m in range(REFERENCE_MAX_SCENARIOS, MAX_SCENARIOS, -1)]
+    covered = tuple((m, h) for m, h in wide if m + h <= ref.examples)
+    return ((covered,) if covered else ()) + _SPLITS[tier]
 
 
 def _plan(
@@ -324,6 +411,7 @@ def _plan(
     holdout: int,
     stages: tuple[Stage, ...],
     rewrites2: int = 0,
+    reference: Reference | None = None,
 ) -> FastPlan:
     return FastPlan(
         tier=tier,
@@ -337,6 +425,7 @@ def _plan(
         est_calls=sum(stage.calls for stage in stages),
         generations=2 if rewrites2 else 1,
         rewrites2=rewrites2,
+        reference=reference,
     )
 
 
@@ -350,23 +439,30 @@ def tail(
     workers: int,
     prompt_tokens: int,
     model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> tuple[Stage, ...]:
     """The stages after stage A for a shape of a prompt of `prompt_tokens` tokens: B to D (none
-    for 0 rewrites), then E for a holdout."""
+    for 0 rewrites), then E for a holdout; with `ref` judged by the references."""
     w, p = workers, prompt_tokens
-    stages = scoring_stages(rewrites, scenarios, w, p, model) if rewrites else ()
-    held = (holdout_stage(holdout, w, p, model),) if holdout else ()
+    stages = scoring_stages(rewrites, scenarios, w, p, model, ref) if rewrites else ()
+    held = (holdout_stage(holdout, w, p, model, ref),) if holdout else ()
     return (*stages, *held)
 
 
 def last_chance(
-    holdout: int, workers: int, prompt_tokens: int, model: Latency | None = None
+    holdout: int,
+    workers: int,
+    prompt_tokens: int,
+    model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> tuple[Stage, ...]:
     """What a stage B that ended late still needs to decide (SPEC R25): stage C's calls for one
-    rewrite on one scenario, in the time of one pairwise call, then E for a holdout."""
-    judging = scoring_stages(1, 1, workers, prompt_tokens, model)[1]
-    held = tail(0, 0, holdout, workers, prompt_tokens, model)
-    return (judging._replace(seconds=pair_seconds(1, model)), *held)
+    rewrite on one scenario, in the time of one pairwise call (with `ref` one reference call),
+    then E for a holdout."""
+    judging = scoring_stages(1, 1, workers, prompt_tokens, model, ref)[1]
+    held = tail(0, 0, holdout, workers, prompt_tokens, model, ref)
+    one = pair_seconds(1, model) if ref is None else reference_seconds(1, ref.checks, model)
+    return (judging._replace(seconds=one), *held)
 
 
 def misfit(stages: Sequence[Stage], seconds_left: float, calls_left: int) -> StopCause | None:

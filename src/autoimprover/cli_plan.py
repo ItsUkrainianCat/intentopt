@@ -3,7 +3,9 @@ R25): `PlanView` for the deep tier (the models, the efforts, the budget and its 
 scenarios and their split, the estimated GEPA iterations, the clock and the share kept for the
 final steps) and `FastView` for the quick, fast and checked tiers (the tier, the time, the workers,
 the models and efforts, K rewrites, M scenarios to pick on and H held out, the stages with their
-calls and estimated seconds, the estimate of calls and seconds, and whether it is `--ungated`).
+calls and estimated seconds, the estimate of calls and seconds, and whether it is `--ungated`;
+a plan that decides by the user's references says reference-scored in its evidence line, and
+its stage C is named so, WP21).
 Both say why a real run would refuse, or keep the original without a call. Their `--json` objects
 share one key set, DRY_KEYS, in one order; a key that does not apply to a tier is null. Neither
 makes a call or writes."""
@@ -13,6 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from autoimprover import reference_text
 from autoimprover.fastplan import FastPlan
 from autoimprover.report import one_line
 from autoimprover.runner import FixedCosts
@@ -258,7 +261,7 @@ class FastView:
                 f"estimate: {fast.est_calls} calls in about {fast.est_seconds:.0f} s of "
                 f"{duration(fast.time_s)}; budget: {plan.budget} calls (ceiling "
                 f"{BUDGET_CEILING})",
-                f"evidence: {EVIDENCE[fast.tier]}",
+                f"evidence: {self.evidence()}",
                 *([f"evidence: {UNGATED_EVIDENCE}"] if self.ungated else []),
                 *verdict_lines(self.refusal, self.keeps_original),
             ]
@@ -286,3 +289,11 @@ class FastView:
             est_seconds=fast.est_seconds,
             ungated=self.ungated,
         )
+
+    def evidence(self) -> str:
+        """What a result of this plan is worth: by its tier, reference-scored when the plan
+        decides by the user's references (WP21)."""
+        tier = self.fast.tier
+        if self.fast.reference is not None and tier in reference_text.EVIDENCE:
+            return reference_text.EVIDENCE[tier]
+        return EVIDENCE[tier]

@@ -15,6 +15,9 @@ in `side_info["scores"]`; the failed checks, a short excerpt of the output and t
 the ASI for reflection (SPEC R16). A call that leaves more than 30 % of its judged checks unknown
 scores 0, and a call that fails all its attempts makes its scenarios incomplete (SPEC R24).
 
+`score` judges outputs a caller already has by the same calls and rules, with no task call: the
+fast tiers' reference scoring and the bench's hidden examples (SPEC R25, R26; WP21).
+
 With `workers` above 1 the task calls run side by side, then the judge calls (SPEC R25); their
 results are gathered by scenario, so a batch scores the same whatever order its calls end in, and
 the first error that propagates is the first by scenario order.
@@ -30,7 +33,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from autoimprover.parallel import parallel_map
@@ -63,9 +66,10 @@ _JUDGE_SYSTEM = (
     "by their ids, and no scenario or check that was not asked."
 )
 # The judge sees each check id prefixed by its origin, contract or scenario, so a contract check
-# named like a scenario's own (`expected`, `crit-1`) can never clash with it (ADR-008).
+# named like a scenario's own (`expected`, `crit-1`) can never clash with it (ADR-008); a judge
+# call of scenario checks only is a reference judge call (`fast_calibrate`, WP21).
 _CONTRACT_PREFIX = "c:"
-_SCENARIO_PREFIX = "s:"
+SCENARIO_PREFIX = "s:"
 _EXPECTED_ID = "expected"
 _EXPECTED_TEXT = "the output agrees with the reference answer in substance: "
 _EXCERPT_CHARS = 300
@@ -124,18 +128,28 @@ class Evaluator:
         minibatch with repeats) runs once and fills each of its places with its own copy. Two
         different scenarios with one id raise ValueError before any call: the judge's reply could
         not tell them apart."""
-        distinct = list(dict.fromkeys(scenarios))
-        if len({scenario.id for scenario in distinct}) != len(distinct):
-            raise ValueError(
-                "two different scenarios share an id; the judge could not tell them apart"
-            )
+        return self.score(scenarios, self._run(candidate, _distinct(scenarios)))
+
+    def score(
+        self, scenarios: Sequence[Scenario], outputs: Mapping[str, str | CallFailed]
+    ) -> list[Entry]:
+        """The entries of `__call__` for outputs already at hand (`outputs`: scenario id -> the
+        output, or the CallFailed of its task call), judged by the same calls; no task call. A
+        failed output is an incomplete entry, never judged."""
+        distinct = _distinct(scenarios)
         judged = {scenario.id: self._judged(scenario) for scenario in distinct}
         failures: dict[str, CallFailed] = {}  # scenario id -> why it is incomplete
-        outputs = self._run(candidate, distinct, failures)
-        answers = self._judge(distinct, outputs, judged, failures)
+        texts: dict[str, str] = {}
+        for scenario in distinct:
+            given = outputs[scenario.id]
+            if isinstance(given, CallFailed):
+                failures[scenario.id] = given
+            else:
+                texts[scenario.id] = given
+        answers = self._judge(distinct, texts, judged, failures)
         verdicts = {
             scenario.id: [
-                (check, _verdict(answers.get(scenario.id, {}).get(sent), outputs[scenario.id]))
+                (check, _verdict(answers.get(scenario.id, {}).get(sent), texts[scenario.id]))
                 for sent, check in judged[scenario.id]
             ]
             for scenario in distinct
@@ -153,7 +167,7 @@ class Evaluator:
                     {"incomplete": True, "error": error, "scenario": scenario.id},
                 )
                 continue
-            output = outputs[scenario.id]
+            output = texts[scenario.id]
             outcomes: list[tuple[Check, bool | None]] = [
                 (check, _RULES[check.rule](output, check.arg or ""))  # Check requires an arg
                 for check in self._contract.checks
@@ -163,20 +177,12 @@ class Evaluator:
             entries[scenario.id] = _entry(scenario, output, outcomes, too_many_unknown)
         return [copy.deepcopy(entries[scenario.id]) for scenario in scenarios]
 
-    def _run(
-        self, candidate: str, scenarios: list[Scenario], failures: dict[str, CallFailed]
-    ) -> dict[str, str]:
-        """Scenario id -> output, from one task call per scenario; a call that failed all its
-        attempts goes to `failures` instead."""
+    def _run(self, candidate: str, scenarios: list[Scenario]) -> dict[str, str | CallFailed]:
+        """Scenario id -> output, from one task call per scenario, or the CallFailed of a call
+        that failed all its attempts."""
         calls = [self._task_call(candidate, scenario) for scenario in scenarios]
         results = parallel_map(self._output, calls, self._workers)
-        outputs: dict[str, str] = {}
-        for scenario, result in zip(scenarios, results, strict=True):
-            if isinstance(result, CallFailed):
-                failures[scenario.id] = result
-            else:
-                outputs[scenario.id] = result
-        return outputs
+        return {scenario.id: result for scenario, result in zip(scenarios, results, strict=True)}
 
     def _output(self, call: Call) -> str | CallFailed:
         try:
@@ -249,7 +255,7 @@ class Evaluator:
             )
         contract = [check for check in self._contract.checks if check.rule is None]
         return [(_CONTRACT_PREFIX + check.id, check) for check in contract] + [
-            (_SCENARIO_PREFIX + check.id, check) for check in own
+            (SCENARIO_PREFIX + check.id, check) for check in own
         ]
 
     def _judge_call(
@@ -295,6 +301,14 @@ class Evaluator:
             user=f"{scenario.input}\n\n{candidate}",
             sample=self._sample,
         )
+
+
+def _distinct(scenarios: Sequence[Scenario]) -> list[Scenario]:
+    """`scenarios` without repeats, in order; ValueError when two different ones share an id."""
+    distinct = list(dict.fromkeys(scenarios))
+    if len({scenario.id for scenario in distinct}) != len(distinct):
+        raise ValueError("two different scenarios share an id; the judge could not tell them apart")
+    return distinct
 
 
 def _entry(

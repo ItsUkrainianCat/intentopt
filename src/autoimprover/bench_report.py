@@ -26,11 +26,15 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from autoimprover.bench import Measured, Row
+from autoimprover.bench_hidden import Hidden
 from autoimprover.bench_judge import NAIVE_EFFORT, Comparison
 from autoimprover.report import one_line
 from autoimprover.types import Efforts, Models, Strictness, Tier
 
 _COUNTED = ("win", "tie", "loss")
+# What the summary and the plan say of the items with `eval_from` (WP21).
+_HIDDEN_HOW = ", or for an item with eval_from its hidden examples"
+_HIDDEN_PLAN = " ({n} item(s) with eval_from: their hidden examples instead)"
 # What the header and the plan of an `--ungated` bench say of its returned prompts.
 _UNGATED_HEAD = (
     ", ungated (--ungated): a returned prompt is the best-ranked candidate, not gate-verified"
@@ -72,6 +76,7 @@ class Summary:
         naive = None
         if self.baseline:
             naive = {"kind": "naive", **_tally([row.naive for row in done])}
+        hidden = [row.hidden for row in done if row.hidden is not None]
         return {
             "status": "bench",
             "interrupted": self.measured.interrupted,
@@ -92,6 +97,7 @@ class Summary:
             "ungated": self.ungated,
             "ungated_tally": tally if self.ungated else None,
             "baseline": naive,
+            "hidden": _hidden(hidden) if hidden else None,
             "contract_violations": None,
             "seconds_median": statistics.median(seconds) if seconds else None,
             "seconds_p90": percentile(seconds, 90) if seconds else None,
@@ -113,10 +119,12 @@ class Summary:
                 f"interrupted: Ctrl-C ended the bench after {len(self.measured.rows)} of "
                 f"{prompts} prompts; the prompt it cut is not counted"
             )
+        hidden = found["hidden"]
+        how = "blind pairwise judge, both orders" + (_HIDDEN_HOW if hidden else "")
         lines += [
             f"runs: {found['improved']} improved, {measured - found['improved']} unchanged, "
             f"{found['errors']} error(s); improved rate {_percent(found['improved_rate'])}",
-            "the tool's prompt against the original (blind pairwise judge, both orders; an "
+            f"the tool's prompt against the original ({how}; an "
             f"unchanged prompt is a tie): {_counts(found)}; win rate "
             f"{_percent(found['win_rate'])} of the compared, "
             f"{_percent(found['win_rate_of_improved'])} of the "
@@ -126,6 +134,8 @@ class Summary:
             lines.append(
                 f"  {found['compare_errors']} comparison(s) judged no scenario: not counted"
             )
+        if hidden is not None:
+            lines += _hidden_lines(hidden, self.measured.rows)
         if self.ungated:
             tally = found["ungated_tally"]
             lines.append(
@@ -183,6 +193,7 @@ class DryView:
     rows: tuple[DryRow, ...]
     refusal: str | None = None
     ungated: bool = False
+    hidden: int = 0
 
     def object(self) -> dict[str, Any]:
         run_calls = sum(row.run_calls for row in self.rows)
@@ -235,7 +246,8 @@ class DryView:
             f"reflection {efforts.reflect or 'default'} (the pairwise answers take the task "
             f"effort{naive})",
             f"strictness: {self.strictness} (every run's rewrites)",
-            f"pairwise: {self.scenarios} fresh scenarios per prompt, each judged in both orders; "
+            f"pairwise: {self.scenarios} fresh scenarios per prompt, each judged in both orders"
+            f"{_HIDDEN_PLAN.format(n=self.hidden) if self.hidden else ''}; "
             f"baseline: {found['baseline']}",
             f"estimate, if every prompt is improved: at most {found['est_calls']} calls (runs "
             f"{found['run_calls']}, bench {found['bench_calls']}) in about "
@@ -278,8 +290,49 @@ def _rate(part: int, whole: int) -> float | None:
     return part / whole if whole else None
 
 
-def _row(row: Row) -> dict[str, Any]:
+def _hidden(found: Sequence[Hidden]) -> dict[str, Any]:
+    """The pass counts and rates of the original and of the returned prompts over every hidden
+    example of the items with `eval_from` (WP21)."""
+    totals = {
+        side: (sum(getattr(h, side).passed for h in found), sum(getattr(h, side).of for h in found))
+        for side in ("original", "returned")
+    }
     return {
+        "items": len(found),
+        **{
+            key: value
+            for side, (passed, of) in totals.items()
+            for key, value in (
+                (f"{side}_passed", passed),
+                (f"{side}_of", of),
+                (f"{side}_pass_rate", _rate(passed, of)),
+            )
+        },
+    }
+
+
+def _hidden_lines(total: dict[str, Any], rows: Sequence[Row]) -> list[str]:
+    """The summary's lines of the hidden examples: the totals, then a line per item."""
+    items = total["items"]
+    lines = [
+        f"hidden examples of {items} item{'s' * (items != 1)} with eval_from: the original "
+        f"passed {total['original_passed']} of {total['original_of']} "
+        f"({_percent(total['original_pass_rate'])}), the returned prompts "
+        f"{total['returned_passed']} of {total['returned_of']} "
+        f"({_percent(total['returned_pass_rate'])})"
+    ]
+    for row in rows:
+        if row.hidden is not None:
+            original, returned = row.hidden.original, row.hidden.returned
+            lines.append(
+                f"  {row.id}: original {original.passed} of {original.of}, returned "
+                f"{returned.passed} of {returned.of}"
+            )
+    return lines
+
+
+def _row(row: Row) -> dict[str, Any]:
+    found = {
         "id": row.id,
         "status": row.status,
         "reason_code": row.reason_code,
@@ -294,6 +347,12 @@ def _row(row: Row) -> dict[str, Any]:
         "naive_votes": _votes(row.naive),
         "error": _error(row),
     }
+    if row.hidden is not None:  # an item with eval_from (WP21); the others keep their row
+        found["hidden"] = {
+            side: None if count is None else {"passed": count.passed, "of": count.of}
+            for side, count in row.hidden._asdict().items()
+        }
+    return found
 
 
 def _votes(comparison: Comparison | None) -> dict[str, int] | None:
