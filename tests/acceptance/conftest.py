@@ -86,9 +86,23 @@ class TimedBackend:
         )
 
 
+# The tests in this folder were written for the GEPA search with a 45-minute clock and a budget
+# of 100, the default before the time tiers; SPEC R25 makes that `--time 45m` (the deep tier).
+# A new run gets it unless it names its own time; `--resume`, `clean` and `--help` do not.
+DEEP_45 = ("--time", "45m")
+
+
+def _deep(argv: Sequence[str]) -> list[str]:
+    words = set(argv)
+    if words & {"--time", "--deep", "--resume", "--help", "-h", "clean"}:
+        return list(argv)
+    return [*DEEP_45, *argv]
+
+
 @pytest.fixture
 def run_cli(capsys: pytest.CaptureFixture[str]) -> Callable[..., Result]:
-    """Run `cli.main` with an injected raw backend and fake clock; capture exit, stdout, stderr."""
+    """Run `cli.main` with an injected raw backend and fake clock; capture exit, stdout, stderr.
+    A new run is a deep run of 45 minutes unless `argv` gives `--time` or `--deep` (SPEC R25)."""
 
     def run(
         argv: Sequence[str],
@@ -98,7 +112,7 @@ def run_cli(capsys: pytest.CaptureFixture[str]) -> Callable[..., Result]:
         backend = backend if backend is not None else ScriptedBackend(_no_call_expected)
         clock = clock if clock is not None else FakeClock()
         capsys.readouterr()
-        code = cli.main(list(argv), backend=backend, now=clock.now)
+        code = cli.main(_deep(argv), backend=backend, now=clock.now)
         out, err = capsys.readouterr()
         return Result(code=code, out=out, err=err, calls=list(backend.calls))
 

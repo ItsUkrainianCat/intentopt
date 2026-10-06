@@ -28,7 +28,7 @@ from autoimprover.types import StopCause, Tier
 MIN_TIME_S = 15
 FAST_FROM_S = 25
 CHECKED_FROM_S = 60
-DEEP_FROM_S = 300
+DEEP_FROM_S = 600
 
 # The latency model (ADR-011, the user's timing probe): a call's fixed cost and its output speed.
 OVERHEAD_S = 2.4
@@ -82,7 +82,7 @@ class FastPlan:
 
 def tier_for(time_s: int) -> Tier:
     """The tier `--time` selects: quick from 15 s, fast from 25 s, checked from 60 s, deep from
-    300 s; below 15 s ValueError (SPEC R25)."""
+    600 s; below 15 s ValueError (SPEC R25)."""
     if time_s < MIN_TIME_S:
         raise ValueError(f"--time must be at least {MIN_TIME_S} s, not {time_s} s")
     if time_s < FAST_FROM_S:

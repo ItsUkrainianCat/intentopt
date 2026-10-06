@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from autoimprover import report, runner
+from autoimprover import cli_plan, report, runner
 from autoimprover.types import (
     DEFAULT_MODELS,
     REASON_CODES,
@@ -221,6 +221,7 @@ JSON_KEYS = {
     "length_ratio",
     "calls_used",
     "run_dir",
+    "mode",
 }
 
 
@@ -290,14 +291,14 @@ def test_a_long_prompt_of_common_words_diffs_only_the_word_that_changed():
 # --- the plan (SPEC R4, R17) ---------------------------------------------------------------------
 
 
-def view(budget: int = 100, n: int = 12, synthesised: bool = True, **fields) -> report.PlanView:
+def view(budget: int = 100, n: int = 12, synthesised: bool = True, **fields) -> cli_plan.PlanView:
     plan = Plan(models=DEFAULT_MODELS, budget=budget)
     costs = runner.fixed_costs(plan, n, synthesising=synthesised)
-    return report.PlanView(plan=plan, scenarios=n, synthesised=synthesised, costs=costs, **fields)
+    return cli_plan.PlanView(plan=plan, scenarios=n, synthesised=synthesised, costs=costs, **fields)
 
 
 def test_the_plan_names_models_budget_fixed_costs_scenarios_iterations_and_the_final_share():
-    text = report.plan_text(view())
+    text = cli_plan.plan_text(view())
     assert "task claude-haiku-4-5-20251001, judge claude-opus-5-5" in text
     assert "reflection claude-opus-5-5, target claude-sonnet-5-5" in text
     assert "100 calls (ceiling 300)" in text
@@ -310,15 +311,15 @@ def test_the_plan_names_models_budget_fixed_costs_scenarios_iterations_and_the_f
 
 
 def test_the_plan_says_why_a_real_run_would_refuse_or_keep_the_original():
-    assert "a real run would refuse: too few" in report.plan_text(view(refusal="too few"))
+    assert "a real run would refuse: too few" in cli_plan.plan_text(view(refusal="too few"))
     seven = view(n=7, synthesised=False, keeps_original="7 scenarios")
-    text = report.plan_text(seven)
+    text = cli_plan.plan_text(seven)
     assert "scenarios: 7, from --examples; no holdout" in text
     assert "a real run would keep the original without a model call: 7 scenarios" in text
 
 
 def test_the_plan_object_carries_the_same_numbers():
-    obj = report.plan_object(view(refusal="too few"))
+    obj = cli_plan.plan_object(view(refusal="too few"))
     assert obj["status"] == "dry" and obj["plan"] == dataclasses.asdict(PLAN)
     assert (obj["scenarios"], obj["holdout"], obj["valset"], obj["dataset"]) == (12, 4, 3, 5)
     assert (obj["calls_before_search"], obj["calls_after_search"]) == (16, 18)
@@ -402,13 +403,13 @@ def test_the_dry_plan_goes_to_stdout_and_a_real_runs_plan_to_stderr(json_mode: b
     emit, out, err = emitter(json_mode)
     emit.plan(view(), dry=True)
     if json_mode:
-        assert json.loads(out.getvalue()) == report.plan_object(view())
+        assert json.loads(out.getvalue()) == cli_plan.plan_object(view())
     else:
         assert out.getvalue().startswith("dry run: no model call made, nothing written\n")
     assert err.getvalue() == ""
     emit, out, err = emitter(json_mode)
     emit.plan(view(), dry=False)
-    assert out.getvalue() == "" and err.getvalue() == report.plan_text(view())
+    assert out.getvalue() == "" and err.getvalue() == cli_plan.plan_text(view())
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
