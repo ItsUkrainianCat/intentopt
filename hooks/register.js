@@ -15,7 +15,7 @@ import {
   childEnv, cleanArgs, cliArgv, needsDryFirst, resolvePath, resumeArgs, runArgs, targetModelOf,
   tmpTemplate, venvFolder,
 } from './argv.js'
-import { paneTree } from './pane.js'
+import { paneRows, paneTree } from './pane.js'
 import {
   cancelledText, cleanedText, endOf, errorView, lastLines, messageOf, oneLine, parseObject,
   renderText, runIdOf, runningView, viewOf,
@@ -169,7 +169,7 @@ async function startRun($, command, request) {
       return { text: renderText(view), exitCode: view.exitCode }
     }
     shown = runningView({ status: null, runDir: null, command })
-    await openPane($, false)
+    await openPane($, null)
     job.detached = true
     void runDetached($, job, argv, setup.env)
     const started = 'autoimprover is running; its report opens in a pane.'
@@ -379,7 +379,7 @@ async function runDetached($, job, argv, env) {
   shown = view = await fillBox($, view)
   $.ui.invalidate('ui.render')
   $.ui.toast(view.toast)
-  if (!(await openPane($, true))) $.ui.log(renderText(view))
+  if (!(await openPane($, view))) $.ui.log(renderText(view))
 }
 
 /**
@@ -418,14 +418,14 @@ async function finishJob($, job) {
 }
 
 /**
- * Opens the pane, with the keyboard and Escape to close it once there is a result; false when
- * it is not drawn now, so the caller falls back to text.
- * @param {E} $ @param {boolean} result
+ * Opens the pane; with a result, tall enough for it, with the keyboard and Escape to close it.
+ * False when it is not drawn now, so the caller falls back to text.
+ * @param {E} $ @param {View | null} result
  * @returns {Promise<boolean>}
  */
 async function openPane($, result) {
   try {
-    const asks = result ? { focus: FOCUS, closeOnEscape: FOCUS } : {}
+    const asks = result ? { focus: FOCUS, closeOnEscape: FOCUS, rows: paneRows(result) } : {}
     return (await $.ui.open({ id: 'improve', title: 'improve', ...asks })).isPlaced
   } catch (error) {
     $.ui.log(`autoimprover: the report pane did not open: ${messageOf(error)}`)
