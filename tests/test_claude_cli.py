@@ -19,6 +19,7 @@ from autoimprover.backend import Clock
 from autoimprover.claude_cli import ClaudeCliBackend
 from autoimprover.types import (
     JUDGE_SCHEMA,
+    TASK_SYSTEM,
     BackendError,
     Call,
     CallError,
@@ -147,8 +148,8 @@ def backend(
     return ClaudeCliBackend(clock, cwd=cwd, deadline=lambda: deadline, **kwargs)
 
 
-def ask(tmp_path: Path, user: str = "Say OK.", **fields) -> Reply:
-    return backend(tmp_path).complete(Call(role="task", model=MODEL, user=user, **fields))
+def ask(tmp_path: Path, user: str = "Say OK.", role: str = "task", **fields) -> Reply:
+    return backend(tmp_path).complete(Call(role=role, model=MODEL, user=user, **fields))
 
 
 def edited(base: dict, **changes) -> dict:
@@ -161,25 +162,37 @@ def edited(base: dict, **changes) -> dict:
 # --- the command (SPEC R18, R19) -----------------------------------------------------------------
 
 SCHEMA = json.dumps(JUDGE_SCHEMA)
+# A task call without a system prompt of its own runs under the neutral one (SPEC R10a, ADR-012):
+# without it `claude -p` gives the model Claude Code's agent persona.
+NEUTRAL = f"--system-prompt={TASK_SYSTEM}"
 
 
 @real
 @pytest.mark.parametrize(
-    ("fields", "tail"),
+    ("role", "fields", "tail"),
     [
-        ({}, []),
-        ({"system": "-x --tools Bash\nline 2"}, ["--system-prompt=-x --tools Bash\nline 2"]),
-        ({"json_schema": SCHEMA}, ["--json-schema", SCHEMA]),
+        ("task", {}, [NEUTRAL]),
         (
+            "task",
+            {"system": "-x --tools Bash\nline 2"},
+            ["--system-prompt=-x --tools Bash\nline 2"],
+        ),
+        ("task", {"json_schema": SCHEMA}, [NEUTRAL, "--json-schema", SCHEMA]),
+        ("judge", {"json_schema": SCHEMA}, ["--json-schema", SCHEMA]),
+        (
+            "judge",
             {"system": "You judge.", "json_schema": SCHEMA},
             ["--system-prompt=You judge.", "--json-schema", SCHEMA],
         ),
+        ("intake", {}, []),
+        ("synth", {}, []),
+        ("reflect", {}, []),
     ],
 )
 def test_the_command_is_exactly_the_r18_flags_plus_the_calls_own_parts(
-    fake, tmp_path, fields, tail
+    fake, tmp_path, role, fields, tail
 ):
-    ask(tmp_path, **fields)
+    ask(tmp_path, role=role, **fields)
     argv = fake.argv()
     assert argv[0] == str(fake.folder / "claude")
     assert argv[1:] == COMMAND + tail
@@ -193,7 +206,7 @@ def test_user_text_travels_on_stdin_only_however_hostile(fake, tmp_path):
     assert fake.read("stdin") == user.encode()
     argv = fake.argv()
     assert not any("$(touch" in arg or "--tools Bash" in arg for arg in argv)
-    assert argv[1:] == COMMAND
+    assert argv[1:] == [*COMMAND, NEUTRAL]
 
 
 @real
