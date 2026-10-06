@@ -1,9 +1,9 @@
-"""The report of the time tiers (SPEC R2, R25): every outcome names its tier and the seconds the
-run took on its clock; a quick or fast result says in its verified line, its meaning, its notices
-and its JSON that it is not verified on held-out scenarios, and labels its scores as taken on the
-scenarios it was picked on, never as holdout scores (no row reads as success without being one,
-ARCHITECTURE section 8); a checked result says what verified it. Nothing of the GEPA search is
-said of a run that did not search."""
+"""The report of the time tiers (SPEC R2, R25): every outcome names its tier and the seconds the run
+took on its clock; a quick or fast result says in its verified line, its meaning, its notices and
+its JSON that it is not verified on held-out scenarios, and labels its pairwise preference as taken
+on the scenarios it was picked on, never as a holdout score (ADR-012) (no row reads as success
+without being one, ARCHITECTURE section 8); a checked result says what verified it. Nothing of the
+GEPA search is said of a run that did not search."""
 
 import dataclasses
 import io
@@ -103,11 +103,11 @@ def test_the_report_names_the_tier_and_the_seconds_on_the_runs_clock():
     )
 
 
-def test_fast_scores_are_labelled_as_taken_on_the_scenarios_the_rewrite_was_picked_on():
+def test_a_fast_preference_is_labelled_as_taken_on_the_scenarios_the_rewrite_was_picked_on():
     text = report.render(FAST, ORIGINAL, None, PLAN, elapsed_s=27.0)
-    [score] = lines_of(text, "score on the scenarios it was picked on")
-    assert score.endswith("0.25 before, 1.00 after") and DEFAULT_MODELS.task in score
-    assert "not held out" in score
+    [score] = lines_of(text, "preference on the scenarios it was picked on")
+    assert score.endswith("the original won 0.25, the rewrite 1.00")
+    assert DEFAULT_MODELS.judge in score and "not held out" in score
     [margin] = lines_of(text, "margin: ")
     assert "0.65" in margin and "0.1" in margin
 
@@ -118,8 +118,8 @@ def test_a_checked_result_is_verified_on_the_holdout_and_its_pick_scores_are_lab
         f"verified: yes, on the holdout, on the target model {DEFAULT_MODELS.target}"
     ]
     assert lines_of(text, "holdout score (target model")[0].endswith("0.50 before, 1.00 after")
-    [picked] = lines_of(text, "score on the scenarios it was picked on")
-    assert picked.endswith("0.25 before, 1.00 after")
+    [picked] = lines_of(text, "preference on the scenarios it was picked on")
+    assert picked.endswith("the original won 0.25, the rewrite 1.00")
     [margin] = lines_of(text, "margin: ")
     assert "0.45" in margin and f"{runner.MIN_THRESHOLD}" in margin and "no noise" in margin
     assert "held-out scenarios" in margin

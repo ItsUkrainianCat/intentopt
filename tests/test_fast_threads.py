@@ -56,9 +56,12 @@ def test_stage_b_runs_every_prompt_on_every_scenario_in_one_wave(tmp_path):
     assert result.outcome.prompt == BETTER
 
 
-def test_stage_c_runs_the_judge_calls_and_the_contract_check_in_one_wave(tmp_path):
-    """5 runs (the original twice): 5 judge calls and 1 contract check, K + 3 calls at once."""
-    result = run(tmp_path, barrier_world({"judge"}, 6), K3M3, workers=6)
+def test_stage_c_runs_the_pairwise_calls_and_the_contract_check_in_one_wave(tmp_path):
+    """3 rewrites: two orders each, the two of the noise pair and 1 contract check, 2 K + 3 calls
+    at once. Each run's answers name its sample, so the noise pair's orders are two calls."""
+    world = barrier_world({"judge"}, 9)
+    world.task = lambda call: f"{tagged(call)} {call.sample}"
+    result = run(tmp_path, world, K3M3, workers=9)
     assert result.outcome.prompt == BETTER
 
 

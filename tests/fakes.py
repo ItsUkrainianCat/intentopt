@@ -8,6 +8,7 @@ failures, so no test needs a real model.
 import json
 from collections.abc import Callable, Mapping, Sequence
 
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, Call, CallError, Reply
 
 Script = Callable[[Call], "str | Exception"]
@@ -145,6 +146,21 @@ def reflection_reply(
     return f"{INSTRUCTION_BEGIN}\n{instruction}\n{INSTRUCTION_END}\n{bullets}"
 
 
+def pairwise_reply(
+    call: Call, better: Callable[[str], bool] = lambda answer: answer.startswith("GOOD")
+) -> str:
+    """A batched pairwise reply (`pairwise_text.PAIRWISE_BATCH_SCHEMA`): per scenario the answer
+    `better` holds for wins over one it does not, else a tie."""
+    results = []
+    for item in json.loads(call.user)["scenarios"]:
+        a, b = better(item["answer_A"]), better(item["answer_B"])
+        winner = "A" if a and not b else "B" if b and not a else "tie"
+        results.append(
+            {"scenario": item["scenario"], "winner": winner, "reason": f"{winner} answers better"}
+        )
+    return json.dumps({"results": results})
+
+
 def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> ScriptedBackend:
     """A complete scripted model for end-to-end tests.
 
@@ -163,6 +179,8 @@ def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> Scri
             return synth_reply(n)
         if call.role == "task":
             return "GOOD answer" if MARKER in call.system + call.user else "BAD answer"
+        if call.role == "judge" and call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         if call.role == "judge":
             return judge_reply(
                 call,

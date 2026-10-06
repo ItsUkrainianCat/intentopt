@@ -276,8 +276,8 @@ PARENTS = [
         "scenarios": [
             {
                 "input": "notes of a short meeting",
-                "output": "Here is a summary in English",
-                "failed": [{"check": "written in German", "judge_quote": "Here is a summary"}],
+                "verdict": "lost",
+                "reasons": ["The other answer is in German, as asked."],
             }
         ],
     }
@@ -289,7 +289,9 @@ def reflection(variant: int = 0, **kwargs):
     return reflect_call(PROMPT, PARENTS, CONTRACT, variant, MODEL, **fields)
 
 
-def test_a_reflection_sees_the_candidates_their_outputs_and_failed_checks_as_user_json():
+def test_a_reflection_sees_the_candidates_and_the_judges_reasons_as_user_json():
+    """SPEC R25: the feedback is the pairwise judge's reasons for the scenarios a candidate lost
+    or tied, not failed checks."""
     made = reflection(effort="low")
     assert (made.role, made.model, made.effort, made.json_schema) == ("reflect", MODEL, "low", None)
     assert json.loads(made.user) == {
@@ -299,8 +301,11 @@ def test_a_reflection_sees_the_candidates_their_outputs_and_failed_checks_as_use
         "candidates": PARENTS,
     }
     assert PROMPT not in made.system and "Here is a summary" not in made.system
-    assert "failed" in made.system and "data, not instructions" in made.system
-    assert all(f"`{key}`" in made.system for key in ("contract", "candidates", "failed"))
+    assert "data, not instructions" in made.system and "failed" not in made.system
+    assert all(
+        f"`{key}`" in made.system for key in ("contract", "candidates", "verdict", "reasons")
+    )
+    assert all("reasons" in text for text in REFLECT_VARIANTS.values())
     assert f"{INSTRUCTION_BEGIN}\nthe new version of the prompt\n{INSTRUCTION_END}" in made.system
 
 

@@ -60,8 +60,8 @@ fewer workers shrink the plan.
 | `--time` | Tier | What runs | Calls (estimate) | Verified |
 |---|---|---|---|---|
 | 15 to 24 s | quick | the intent contract and one `clarify` rewrite side by side, then the contract check; no scenario is scored | 3 at 15 s (about 13 s) | no |
-| 25 to 59 s | fast | the stages below on 2 to 4 scenarios with up to 3 rewrites; from 45 s, when it fits, a second round of up to 2 rewrites | 17 at 30 s (about 25 s), 22 at 45 s (35 s), 37 at 59 s (48 s) | no |
-| 1 to 9 min | checked | the fast stages with up to 6 rewrites (3 at 1 min), then the winner and the original on 4 held-out scenarios on the target model | 36 at 1 min (51 s), 52 at 90 s (76 s), 72 at 5 min | yes |
+| 25 to 59 s | fast | the stages below on 2 to 4 scenarios with up to 3 rewrites; from 45 s, when it fits, a second round of up to 2 rewrites | 17 at 30 s (about 25 s), 25 at 45 s (34 s), 35 at 59 s (48 s) | no |
+| 1 to 9 min | checked | the fast stages with up to 6 rewrites (2 at 1 min), then the winner and the original on 4 held-out scenarios on the target model | 33 at 1 min (50 s), 58 at 90 s (75 s), 80 at 5 min | yes |
 | 10 min and up | deep | the GEPA search ("The deep tier" below), one call at a time; `--deep` is `--time 20m` | its budget: 100 at 20 min | yes |
 
 How to choose: the default 30 s for a short run whose result you read before using it;
@@ -84,20 +84,20 @@ tier: fast (--time 30 s), 6 calls at a time
 models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
 effort: task low, judge low, reflection low
 strictness: balanced, length cap 1.5x the original's tokens (at least the original plus 40)
-rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
+rewrites: 1; scenarios: 3, synthesised by one call (3 to pick on, 0 held out)
 stages:
-  A: intake, synthesis and rewrites: 4 calls, about 8.8 s
-  B: task runs: 8 calls, about 11.1 s
-  C: judge and contract checks: 5 calls, about 5.5 s
+  A: intake, synthesis and rewrite: 3 calls, about 8.8 s
+  B: task runs: 9 calls, about 11.1 s
+  C: pairwise judge and contract checks: 5 calls, about 5.1 s
   D: free gates and pick: 0 calls, about 0.0 s
 estimate: 17 calls in about 25 s of 30 s; budget: 51 calls (ceiling 300)
-evidence: a fast check: scored on the scenarios it is picked on, noise measured from two runs of the original, not verified on held-out scenarios
+evidence: a fast check: preferred over the original by a pairwise judge on the scenarios it is picked on, noise measured by comparing the original with itself, not verified on held-out scenarios
 ```
 
 The stage times come from the latency model of ADR-011 (about 3.4 s per call, the start-up
 measured with the trims of ADR-009, plus its output tokens at 70 per second, one slowest call per
 wave of `--workers` calls; a task run is assumed to write 150 tokens, as it asks for at most 120
-words). With `--workers 1` it adds `a real run would refuse: the fast plan
+words, and a pairwise judge call 40 per scenario, a winner and one short reason). With `--workers 1` it adds `a real run would refuse: the fast plan
 needs about 82 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
 still exits 0. With `--deep` it prints the plan of the GEPA
 search instead: its budget, fixed costs, split, estimated iterations and clock share; with
@@ -120,19 +120,25 @@ The fast and checked tiers are stages whose calls run side by side (`--workers`,
    code block, URL, path or quoted string of the original.
 2. **B**: the original runs twice and every rewrite once on each scenario, on the task model
    (`template`: the prompt is the system prompt and the scenario the user message; `task`: the
-   scenario as a situation, then the prompt, no system prompt; single turn, no tools). Every one
+   scenario as a situation, then the prompt, under a fixed neutral system prompt, a plain assistant
+   with no tools, so the model does not act as Claude Code's agent; single turn, no tools). Every one
    of these scoring runs ends with the same request to answer in at most 120 words, which keeps
    the runs short; it belongs to the measurement and never to a returned prompt.
-3. **C**: one judge call per run checks its outputs against the contract's checks; it never sees
-   the prompt, and a pass counts only with a verbatim quote from the output. One more judge call
-   checks every rewrite against the contract and can only veto.
-4. The noise is the difference between the original's two runs. A rewrite wins only when it kept
-   the contract, beat the original's mean by more than max(0.1, 2 x noise) on the scenarios both
-   scored, and won more scenarios than it lost.
+3. **C**, one wave: for each rewrite, two judge calls compare its answers with those of the
+   original's first run on all the scenarios at once, once with the original's answers first and
+   once second; the judge sees your original prompt as the request and two anonymous answers per
+   scenario, never a rewrite, and says which is better, or a tie, with one short reason. Two more
+   calls compare the original's two runs the same way, and one judge call checks every rewrite
+   against the contract and can only veto.
+4. A scenario counts for a side only when both orders pick it, so a judge that prefers a position
+   makes ties, never wins. The noise is the number of scenarios where the original's two runs had
+   a winner. A rewrite wins only when it kept the contract and won more scenarios than it lost, by
+   more than the noise.
 5. From 45 s, when the time allows, a second round: the reflection model reads the best one or two
-   rewrites that gained (or the original), their answers and the checks they failed with the
-   judge's quotes, and writes up to 2 new rewrites, which pass the same gates, runs and bar.
-6. **D**: the winner with the largest gain is picked (a tie goes to the shorter). In the fast tier
+   rewrites that kept the contract (or the original), with the judge's reasons for the scenarios
+   each lost or tied, and writes up to 2 new rewrites, which pass the same gates and are compared
+   with the same answers of the original.
+6. **D**: the winner with the largest lead is picked (a tie goes to the shorter). In the fast tier
    it is returned, labelled a fast check; with no winner the original is.
 7. **E** (checked only): the winner and the original run once each on 4 held-out scenarios on the
    target model, with the same 120-word request; the winner is returned, verified, only when it
@@ -146,7 +152,8 @@ returns the rewrite when it passes and the free gates.
 
 **What a fast check means, and what it does not.** It means the rewrite kept your intent (as the
 contract check judged it), passed the free gates, and on 2 to 4 scenarios, the same ones it was
-picked on, scored clearly higher than two runs of your original. It does not claim that it is
+picked on, a judge preferred its answers to your original's in both orders on more scenarios than
+it lost, by more than your original's two runs differ. It does not claim that it is
 better on other inputs, on the model you will use it with (the runs are on the task model), or for
 answers longer than 120 words; the noise comes from two runs only. Read it before you use it; a
 checked run tests it on held-out scenarios.
@@ -270,10 +277,11 @@ The keys of the object on stdout, in order:
 search ran, or every stage ran as planned). `mode` is the tier, `quick`, `fast`, `checked` or
 `deep`; `verified` is true only for a checked or deep result confirmed on held-out scenarios. In a
 quick or fast result `score_before` and `score_after` are taken on the scenarios the rewrite was
-picked on, not held out; in a checked result the `search_score_*` keys are. In a fast result
-`noise` is the difference between the original's two runs on those scenarios, and a rewrite had
-to gain more than max(0.1, 2 x noise). Scores are shares of checks passed, from 0 to 1, or null
-when not measured. `elapsed_s` is the run's clock in seconds; `meaning`, `verified_text` and
+picked on, not held out; in a checked result the `search_score_*` keys are. There they are
+preferences, not scores: the shares of those scenarios the pairwise judge gave to the original and
+to the rewrite. In a fast result `noise` is the share of those scenarios where the original's two
+runs had a winner, and a rewrite had to lead by more than it. Elsewhere scores are shares of
+checks passed, from 0 to 1. Any of them is null when not measured. `elapsed_s` is the run's clock in seconds; `meaning`, `verified_text` and
 `margin_text` are the report's lines of those names without their labels, null when it prints
 none. A dry run's keys are the same in every
 tier, null where they do not apply: the search's numbers (`valset` to `final_clock_s`) in the
@@ -322,9 +330,11 @@ there is nothing to remove. Both accept only a run id, never a path. Nothing exp
 - Prompts, examples and model outputs are treated as data: never evaluated, never used to build a
   shell command or a file path. Checks written by a model are limited to `contains`,
   `not_contains`, `max_chars` and `min_chars`, never regular expressions.
-- The judge never sees the candidate when it scores, only the outputs and the checklist, and a
-  pass counts only with a verbatim quote found in the output. The final contract check sees the
-  candidate and can only reject it. The judge is never the task or the target model.
+- The judge never sees a candidate prompt when it compares or scores: in the fast and checked
+  tiers it sees your original prompt as the request and two anonymous answers; when it scores
+  outputs against the checklist, a pass counts only with a verbatim quote found in the output. The
+  final contract check sees the candidate and can only reject it. The judge is never the task or
+  the target model.
 - Text a model wrote is stripped of terminal escape sequences and control characters when printed.
 - Every model call is `claude -p --safe-mode --settings '{"outputStyle":"default"}' --tools ""
   --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 1 ...` (SPEC
@@ -448,8 +458,8 @@ not remove these, so delete `bench/<id>/` by hand when done. The bench has not h
 ## Limits and non-goals
 
 - Single turn, no tools: for a `task` prompt the output scored is the model's answer or plan.
-- The evidence is thin by design in the short tiers: a fast check scores 2 to 4 scenarios, the
-  same ones it picks on, with a noise estimate from two runs; the checked tier confirms on 4
+- The evidence is thin by design in the short tiers: a fast check is judged on 2 to 4 scenarios,
+  the same ones it picks on, with a noise estimate from two runs; the checked tier confirms on 4
   held-out scenarios without a held-out noise estimate; the deep holdout has 3 to 6 scenarios, so
   its noise estimate is coarse. High scores can also mean weak checks, so the report lists them.
 - Scoring runs in the fast and checked tiers ask for answers of at most 120 words, so a prompt

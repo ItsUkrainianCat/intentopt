@@ -1,7 +1,9 @@
-"""Failed calls in the fast pipeline (SPEC R24, R25): a failed task or judge call about a rewrite
-drops that rewrite and the others go on; a failed call that leaves the original without a score,
-the contract check, or a held-out run on the target model ends the run as BackendError, as a
-failed call outside the search does. Each "not returned" test has a twin that is.
+"""Failed calls in the fast pipeline (SPEC R24, R25; ADR-012): a failed task run drops its
+scenario and a failed pairwise call about a rewrite makes that order's scenarios ties, so that
+rewrite cannot win and the others go on; a failed call that leaves the original without answers,
+the noise pair, the contract check, or a held-out run on the target model ends the run as
+BackendError, as a failed call outside the search does. Each "not returned" test has a twin that
+is.
 """
 
 import json
@@ -31,7 +33,7 @@ CLEAR = f"{BETTER} Be clear."
 
 
 def graded(result, text: str) -> list[Call]:
-    """The scoring judge calls that grade the outputs of prompt `text` (`tagged` outputs)."""
+    """The pairwise calls that compare the answers of prompt `text` (`tagged` outputs)."""
     return [c for c in scoring_judges(result) if f"answer {len(text)}" in c.user]
 
 
@@ -48,7 +50,7 @@ def test_a_rewrite_whose_judge_call_fails_is_dropped_and_another_wins(tmp_path, 
 
     result = run(tmp_path, World(rewrites=(BETTER, CLEAR), task=tagged, hook=hook), K2M2)
     assert result.outcome.prompt == (CLEAR if fails else BETTER)
-    assert len(graded(result, BETTER)) == (3 if fails else 1)  # three attempts, then dropped
+    assert len(graded(result, BETTER)) == (2 * 3 if fails else 2)  # two orders, three attempts
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -60,14 +62,21 @@ def test_a_rewrite_whose_task_runs_all_fail_is_never_judged(tmp_path, fails):
 
     result = run(tmp_path, World(rewrites=(BETTER, CLEAR), task=task), K2M2)
     assert result.outcome.prompt == (CLEAR if fails else BETTER)
-    assert len(graded(result, BETTER)) == int(not fails)
+    assert len(graded(result, BETTER)) == 2 * int(not fails)
     assert checked_rewrites(result) == ([CLEAR] if fails else [BETTER, CLEAR])
 
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_an_original_whose_judge_call_fails_ends_the_run(tmp_path, fails):
+    """The original's call is the noise pair's: the original's answers (BAD) on both sides."""
+
     def hook(call: Call) -> None:
-        if fails and call.role == "judge" and '"BAD answer"' in call.user:
+        if (
+            fails
+            and call.role == "judge"
+            and '"BAD answer"' in call.user
+            and "GOOD" not in call.user
+        ):
             raise CallError("down")
 
     if not fails:
