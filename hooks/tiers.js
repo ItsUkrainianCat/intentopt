@@ -2,12 +2,15 @@
 // src/autoimprover/report.py says them: a quick or fast result is a fast check, scored on the
 // scenarios it was picked on and never verified on held-out scenarios; a checked result is
 // verified on held-out scenarios on the target model; deep (or a JSON without `mode`) is the GEPA
-// search of SPEC R12 to R17, with its holdout, noise and --trust-search words. A `meaning` or
-// `elapsed_s` key in the JSON wins over the lines kept here. Pure: no engine, no I/O.
+// search of SPEC R12 to R17, with its holdout, noise and --trust-search words. The CLI's own
+// words win when the JSON has them (`elapsed_s`, `meaning`, `verified_text`, `margin_text`); the
+// lines kept here stand in until then. Pure: no engine, no I/O.
 
 const UNHELD = ['quick', 'fast']
 const PIPELINE = ['quick', 'fast', 'checked']
 const PICKED = 'score on the scenarios it was picked on (not held out)'
+// The least gain a fast-pipeline rewrite needs, whatever the noise (SPEC R25).
+const LEAST_GAIN = 0.1
 
 // What each reason code means after the search (report.py REASON_LINES, shortened).
 const MEANINGS = new Map([
@@ -44,7 +47,7 @@ const TRUST_SEARCH = 'NOT verified on a holdout: with --trust-search it only bea
  * The tier-dependent fields of a finished run's view.
  * @param {Record<string, unknown>} result the CLI's JSON object
  * @returns {{ title: string, verifiedLine: string | null, mode: string | null,
- *   meaning: string | null, scores: string[], margin: string | null }}
+ *   meaning: string | null, scores: string[], noise: string | null, margin: string | null }}
  */
 export function tierWords(result) {
   const mode = typeof result.mode === 'string' && result.mode !== '' ? result.mode : null
@@ -61,18 +64,28 @@ export function tierWords(result) {
       : 'unchanged: the original prompt is kept',
     verifiedLine: !improved
       ? null
-      : verified
-      ? 'verified: yes, on held-out scenarios, on the target model'
-      : unheld
-      ? `NOT verified: ${fastCheck}`
-      : pipeline
-      ? 'NOT verified'
-      : `verified: no. ${TRUST_SEARCH}`,
+      : given(result.verified_text) ?? (verified
+        ? 'verified: yes, on held-out scenarios, on the target model'
+        : unheld
+        ? `NOT verified: ${fastCheck}`
+        : pipeline
+        ? 'NOT verified'
+        : `verified: no. ${TRUST_SEARCH}`),
     mode: mode === null ? null : `mode: ${mode}${seconds === null ? '' : ` (${seconds} s)`}`,
     meaning: meaningOf(result, pipeline),
     scores: scoreLines(result, unheld, pipeline),
-    margin: pipeline ? fastMargin(result) : searchMargin(result),
+    noise: pipeline ? fastNoise(result, unheld) : null,
+    margin: given(result.margin_text) ?? (pipeline ? fastMargin(result) : searchMargin(result)),
   }
+}
+
+/**
+ * A text the JSON gives, or null.
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function given(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value : null
 }
 
 /**
@@ -81,7 +94,8 @@ export function tierWords(result) {
  * @returns {string | null}
  */
 function meaningOf(result, pipeline) {
-  if (typeof result.meaning === 'string' && result.meaning.trim() !== '') return result.meaning
+  const meaning = given(result.meaning)
+  if (meaning !== null) return meaning
   const code = typeof result.reason_code === 'string' ? result.reason_code : ''
   if (result.status === 'improved') {
     if (pipeline) return result.verified === true ? FAST_VERIFIED : FAST_UNVERIFIED
@@ -128,11 +142,26 @@ function fastMargin(result) {
     return null
   }
   const held = result.verified === true ? 'held-out scenarios' : 'scenarios it was picked on'
-  const measured = typeof noise === 'number' ? `noise ${noise.toFixed(2)}` : 'no noise measured'
   const least = (after - before - margin).toFixed(2)
-  return `margin: ${
-    margin.toFixed(2)
-  } above the least gain of ${least} on the ${held} (${measured})`
+  const said = `margin: ${margin.toFixed(2)} above the least gain of ${least} on the ${held}`
+  return typeof noise === 'number' ? said : `${said} (no noise measured)`
+}
+
+/**
+ * A fast-pipeline noise: two runs of the original on the scenarios it was picked on (quick and
+ * fast) or held out (checked), and the gain it makes a rewrite need, max(0.1, 2 x noise).
+ * @param {Record<string, unknown>} result
+ * @param {boolean} unheld
+ * @returns {string | null}
+ */
+function fastNoise(result, unheld) {
+  const noise = result.noise
+  if (typeof noise !== 'number') return null
+  const where = unheld
+    ? 'between two runs of the original on the scenarios it was picked on'
+    : "between the original's two holdout runs"
+  const bar = Math.max(LEAST_GAIN, 2 * noise).toFixed(2)
+  return `noise: ${noise.toFixed(2)} ${where}; required gain ${bar}`
 }
 
 /**
