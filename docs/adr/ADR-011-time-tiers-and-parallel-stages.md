@@ -20,6 +20,10 @@ The first live `/improve` showed the research design (GEPA search, 100 sequentia
 
 Models and effort are user settings, not constants: the existing `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, and new `--effort` (all roles) with `--task-effort`, `--judge-effort`, `--reflect-effort` per role; values `low|medium|high|xhigh|max|default`. Tier defaults apply only where no flag is given (fast tiers: effort low everywhere, models task Haiku / reflect Sonnet / judge Opus; deep: effort `default`, today's models). Effort is applied in one place, a thin `EffortBackend` wrapper above the cache that sets `Call.effort` from the role when the call has none (so the cache key includes it and no module that builds calls changes); `Models` defaults become tier-dependent (`default_models(tier)`). The mod forwards every one of these flags.
 
+## Amendment 2026-10-06: rewrites must be able to change meaning-bearing structure
+
+The first live runs returned rewrites that only fixed grammar ("a", "?"), and one user screenshot confirmed it. Causes: candidates are written blind (before any output is seen), `conservative` strictness plus "prefer deleting" leaves only trimming, and no strategy makes an implicit request explicit. Decisions: fast tiers default to `balanced`; strategies `clarify`, `structure`, `tighten` (+ `specify` from K=4); near-identity rewrites are dropped; the original is run twice to measure noise (WP10b); from 45 s a second generation reflects on the first one's failed checks and outputs (K2 rewrites, GEPA's reflective mutation), which needs about 18 s more (reflect 9 s, run 6 s, judge 6 s, estimated with the 3.4 s overhead) and is therefore not part of the 30 s default.
+
 ## Measured facts (the user's timing probe, 2026-10-05, claude 2.1.287, about 350 output tokens, wall clock per call)
 
 | model | effort low | default effort | output tokens (low / default) |
