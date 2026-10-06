@@ -331,6 +331,39 @@ Whether it loads in a live session, finds `uv`, gets a model id `--target-model`
 the session, kills the child on `cancel`, puts the prompt into the box, and how the pane looks,
 are checked only by running it.
 
+## Measuring the tool (bench)
+
+`autoimprover bench` (SPEC R26) shows whether the tool's rewrites are better, which a single run
+cannot. It runs every prompt of a set through the ordinary pipeline (the tier of `--time`, default
+`30s`), one prompt after the other, then compares each returned rewrite with its original: both run
+with the plain call on the target model (no 120-word suffix) on 4 fresh scenarios, and the judge
+model sees the original request and two anonymous answers per scenario, in both orders. A scenario
+counts only when both orders pick the same side, so a judge that prefers a position gives ties,
+never wins; a rewrite wins when it wins more scenarios than it loses. A prompt returned unchanged
+is a tie and costs no comparison. `--baseline naive` also compares a one-call "Improve this
+prompt." rewrite (reflection model, low effort) with the original, on the same scenarios.
+
+```
+uv run --frozen autoimprover bench --dry                 # the plan: calls and time, no call made
+uv run --frozen autoimprover bench --baseline naive --json > bench.json
+```
+
+Flags: `--prompts FILE` (JSON Lines: `id`, `prompt`, optional `kind`, optional `examples`; default
+the 20 varied prompts of `bench/prompts.jsonl`), `--time`, `--limit N` (1 to 25; a set of more
+needs it), `--baseline naive|none`, `--judge-model`, `--seed S` (0 to 999, for the bench's own
+calls), `--json`, `--dry`, and `bench` comes first. It spends subscription calls: at `30s` the
+plan is about 17 calls per run plus 17 per comparison (13 more with the naive baseline), so the
+whole set is at most 680 calls in about 21 minutes. The summary (text, or one JSON object with
+`--json`) gives the improved rate, wins, ties and losses with the win rate among improved prompts,
+the baseline's, median and 90th percentile seconds per run, total calls and a row per prompt: ids,
+codes and numbers, never a prompt. `contract_violations` is `null`: the pipeline never returns a
+rewrite its contract check vetoed, and the pairwise judge sees answers, not prompts, so the bench
+has no count of its own yet. Ctrl-C prints the summary of the prompts already measured. The
+bench exits 0 whatever the result (it measures, it does not gate); 2 for bad usage or a plan that
+would refuse, 3 when every run failed. Each prompt's run folder, with the bench's own calls in its
+cache, is under `$XDG_STATE_HOME/autoimprover/bench/<id>/<prompt id>/`; `clean` does not remove
+these, so delete `bench/<id>/` by hand when done.
+
 ## Limits and non-goals
 
 - Single turn, no tools: for a `task` prompt the output scored is the model's answer or plan.
