@@ -55,13 +55,14 @@ def mechanics_plan(time_s: int, workers: int, prompt_tokens: int, examples: bool
         return fast_plan(time_s, workers, prompt_tokens, examples)
 
 
-# Plans by shape: K rewrites, M scenarios, H held out (at MECHANICS_OVERHEAD_S).
+# Plans by shape: K rewrites, M scenarios, H held out (at MECHANICS_OVERHEAD_S; stage B runs the
+# original twice: (K + 2) M task runs, stage C K + 3 calls).
 QUICK = mechanics_plan(15, 4, SHORT, False)  # K=1
-K1M2 = mechanics_plan(25, 4, SHORT, False)  # synthesises 2
-K2M2 = mechanics_plan(30, 4, SHORT, False)  # synthesises 2
-K3M3 = mechanics_plan(30, 6, SHORT, False)  # synthesises 3
-K3M2_EXAMPLES = mechanics_plan(25, 8, SHORT, True)
-K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)
+K1M2 = mechanics_plan(25, 4, SHORT, False)  # the smallest: synthesises 2
+K2M2 = mechanics_plan(25, 8, SHORT, False)  # synthesises 2
+K3M3 = mechanics_plan(30, 8, SHORT, False)  # synthesises 3
+K3M2_EXAMPLES = mechanics_plan(30, 6, SHORT, True)
+K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)  # the smallest
 CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
 
 
@@ -130,6 +131,11 @@ class Result:
 def prompt_of(call: Call) -> str:
     """The prompt a task call ran: what follows the situation (kind task) or the system prompt."""
     return call.system or call.user.split("\n\n", 1)[1]
+
+
+def runs_of(result: Result) -> list[tuple[str, int]]:
+    """Each task call as (the prompt it ran, its sample), in order."""
+    return [(prompt_of(c), c.sample) for c in result.calls("task")]
 
 
 def scenario_of(call: Call) -> str:

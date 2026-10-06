@@ -53,8 +53,8 @@ DRY_KEYS = (
 EVIDENCE = {
     "quick": "a quick check: the contract check and the free gates only, no scenario scored, not "
     "verified on held-out scenarios",
-    "fast": "a fast check: scored on the scenarios it is picked on, not verified on held-out "
-    "scenarios, no noise measured",
+    "fast": "a fast check: scored on the scenarios it is picked on, noise measured from two runs "
+    "of the original, not verified on held-out scenarios",
     "checked": "verified on held-out scenarios on the target model, no noise measured",
 }
 

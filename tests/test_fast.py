@@ -28,6 +28,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     no_disk_flush,
     prompt_of,
     run,
+    runs_of,
     scenario_of,
     scoring_judges,
     tagged,
@@ -40,8 +41,8 @@ from autoimprover.runstore import RunStore
 from autoimprover.types import BackendError, Call, CallError, Scenario
 
 FAST_LABEL = (
-    "fast check: scored on the same few scenarios it was picked on, not verified on held-out "
-    "scenarios, no noise measured"
+    "fast check: scored on the same few scenarios it was picked on, noise measured from two runs "
+    "of the original on those scenarios, not verified on held-out scenarios"
 )
 
 
@@ -55,24 +56,24 @@ def test_a_rewrite_that_wins_is_returned_unverified_with_its_report(tmp_path):
         (STRATEGY_NOTES["tighten"],),
     )
     assert "tier fast" in outcome.reason and FAST_LABEL in outcome.reason
-    assert (outcome.score_before, outcome.score_after, outcome.noise) == (0.0, 1.0, None)
-    assert outcome.margin == pytest.approx(0.9)
+    assert (outcome.score_before, outcome.score_after, outcome.noise) == (0.0, 1.0, 0.0)
+    assert outcome.margin == pytest.approx(0.9)  # 1.0 above the baseline, the bar 0.1
     assert outcome.length_ratio == count_tokens(BETTER) / count_tokens(PROMPT)
     assert outcome.calls_used == len(result.raw.calls)
 
 
 def test_the_stages_make_the_calls_of_the_plan(tmp_path):
     """K=3 rewrites that all propose the same text are scored once: stage A is the intake, the
-    synthesis of M=3 and three rewrite calls; then the original and the rewrite on 3 scenarios;
-    then the contract check and one judge call each."""
+    synthesis of M=3 and three rewrite calls; then the original twice and the rewrite on 3
+    scenarios; then the contract check and one judge call per run."""
     result = run(tmp_path, World(), K3M3)
     roles = [call.role for call in result.raw.calls]
-    assert roles == ["intake", "synth"] + ["reflect"] * 3 + ["task"] * 6 + ["judge"] * 3
+    assert roles == ["intake", "synth"] + ["reflect"] * 3 + ["task"] * 9 + ["judge"] * 4
     assert "contract" not in result.calls("synth")[0].user  # it runs beside the intake
     assert json.loads(result.calls("synth")[0].user)["count"] == 3
+    assert runs_of(result) == [(PROMPT, 0)] * 3 + [(PROMPT, 1)] * 3 + [(BETTER, 0)] * 3
     tasks = result.calls("task")
-    assert [prompt_of(c) for c in tasks] == [PROMPT] * 3 + [BETTER] * 3
-    assert [scenario_of(c) for c in tasks] == [f"situation {i}" for i in (1, 2, 3)] * 2
+    assert [scenario_of(c) for c in tasks] == [f"situation {i}" for i in (1, 2, 3)] * 3
 
 
 def test_a_rewrite_that_scores_no_better_leaves_the_original(tmp_path):
@@ -139,7 +140,7 @@ SECOND = f"{PROMPT} {MARKER} Be brief."
 def test_the_judge_grades_outputs_only_and_one_contract_check_holds_every_rewrite(tmp_path):
     result = run(tmp_path, World(rewrites=(BETTER, SECOND), task=tagged), K3M3)
     scoring = scoring_judges(result)
-    assert [judged_scenarios(c) for c in scoring] == [["s1", "s2", "s3"]] * 3
+    assert [judged_scenarios(c) for c in scoring] == [["s1", "s2", "s3"]] * 4  # 2 originals
     for call in scoring:  # the evaluator's own calls: never a prompt (ADR-002)
         assert call.system == _JUDGE_SYSTEM
         assert not any(text in call.user for text in (PROMPT, BETTER, SECOND))
@@ -228,11 +229,11 @@ def test_a_failed_intake_or_synthesis_ends_the_run(tmp_path, world, role):
 
 def test_an_original_whose_runs_all_fail_ends_the_run(tmp_path):
     def task(call: Call) -> str:
-        if prompt_of(call) == PROMPT:
+        if prompt_of(call) == PROMPT and call.sample == 0:
             raise CallError("down")
         return "GOOD answer"
 
-    with pytest.raises(BackendError, match="every task run of the original failed"):
+    with pytest.raises(BackendError, match="every task run of one of the original's two runs"):
         run(tmp_path, World(task=task), K1M2)
 
 
@@ -312,7 +313,7 @@ def test_the_kind_given_replaces_the_guess(tmp_path):
     """The intake guesses `task`; `--kind template` makes the prompt the system prompt."""
     tasks = run(tmp_path, World(), K1M2, kind="template").calls("task")
     assert [(c.system, c.user) for c in tasks] == [
-        (text, f"situation {i}") for text in (PROMPT, BETTER) for i in (1, 2)
+        (text, f"situation {i}") for text in (PROMPT, PROMPT, BETTER) for i in (1, 2)
     ]
 
 
@@ -348,8 +349,8 @@ def test_stage_b_asks_the_very_task_calls_of_the_evaluator(tmp_path):
         store.close()
     assert contract is not None
     model = ScriptedBackend(World())
-    for text in (PROMPT, BETTER):
-        Evaluator(model, contract, MODELS.task, MODELS.judge)(text, scenarios[:2])
+    for text, sample in ((PROMPT, 0), (PROMPT, 1), (BETTER, 0)):
+        Evaluator(model, contract, MODELS.task, MODELS.judge, sample)(text, scenarios[:2])
     assert result.calls("task") == [c for c in model.calls if c.role == "task"]
 
 

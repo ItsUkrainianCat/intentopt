@@ -5,10 +5,11 @@ at TOKENS_PER_S, and a stage of parallel calls costs one slowest call per wave o
 
 Stages of the quick tier: the intake and one rewrite side by side, then the contract check (no
 scoring). Stages of the fast and checked tiers: A one wave of the intake, the synthesis of the
-scenarios (none when the user gives examples) and the K rewrites; B the original and every
-rewrite run on the M scenarios; C one judge call per prompt, which sees outputs only (ADR-002),
-and one contract check of every rewrite, K + 2 calls; D the free gates and the pick; E (checked
-only) the winner against the original on the held-out scenarios, on the target model.
+scenarios (none when the user gives examples) and the K rewrites; B the original twice (its two
+runs measure the noise) and every rewrite on the M scenarios, (K + 2) M task runs; C one judge
+call per run, which sees outputs only (ADR-002), and one contract check of every rewrite, K + 3
+calls; D the free gates and the pick; E (checked only) the winner against the original on the
+held-out scenarios, on the target model.
 
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
 run time (`tail`, `misfit`, `shrink`) to shrink what the time or the calls left cannot cover
@@ -136,19 +137,17 @@ def stage_a(rewrites: int, synthesis: int, workers: int, prompt_tokens: int) -> 
 
 
 def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, ...]:
-    """Stages B, C and D for the original and `rewrites` rewrites on `scenarios` scenarios; stage
-    C is a judge call per prompt and one contract check of every rewrite."""
-    prompts = rewrites + 1
+    """Stages B, C and D for the original, run twice, and `rewrites` rewrites on `scenarios`
+    scenarios; stage C is a judge call per run and one contract check of every rewrite."""
+    runs = rewrites + 2
     judging = max(judge_seconds(scenarios), contract_seconds(rewrites))
     return (
         Stage(
             "B: task runs",
-            prompts * scenarios,
-            wave_seconds(prompts * scenarios, workers, call_seconds(TASK_TOKENS)),
+            runs * scenarios,
+            wave_seconds(runs * scenarios, workers, call_seconds(TASK_TOKENS)),
         ),
-        Stage(
-            "C: judge and contract checks", prompts + 1, wave_seconds(prompts + 1, workers, judging)
-        ),
+        Stage("C: judge and contract checks", runs + 1, wave_seconds(runs + 1, workers, judging)),
         Stage("D: free gates and pick", 0, 0.0),
     )
 
