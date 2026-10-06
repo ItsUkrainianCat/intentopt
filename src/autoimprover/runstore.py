@@ -469,3 +469,8 @@ def _write_json(path: Path, doc: Mapping[str, Any]) -> None:
         os.fsync(folder)
     finally:
         os.close(folder)
+
+
+# Public names for the files of a bench folder (`autoimprover bench`, SPEC R26), unchanged.
+make_dirs = _make_dirs
+write_json = _write_json
