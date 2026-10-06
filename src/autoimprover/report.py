@@ -15,7 +15,9 @@ holdout score), its noise the share where the original's two runs had a winner, 
 noise (`fast_stages`, ADR-012); nothing of the GEPA search is said of a run that did not search.
 An `--ungated` result (fast or checked) has its own reason code and label, is never verified, and
 shows the same two shares as a preference on the scenarios it was picked on, with its lead, which
-it did not need.
+it did not need. A reference-scored result (every example carried a reference, WP21; its reason
+holds `reference_text.MARK`) says so in place of the preference: its two numbers are mean reference
+scores, its noise the difference of the original's two runs, its margin the gain over that noise.
 
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
@@ -30,6 +32,14 @@ from dataclasses import asdict
 from difflib import SequenceMatcher
 from typing import Any, Protocol, TextIO
 
+from autoimprover import reference_text
+from autoimprover.report_text import (
+    FAST_REASON_LINES,
+    FAST_UNVERIFIED,
+    FAST_UNVERIFIED_NOISE,
+    FAST_VERIFIED,
+    REASON_LINES,
+)
 from autoimprover.runner import MIN_THRESHOLD
 from autoimprover.types import Contract, Outcome, Plan
 
@@ -37,26 +47,7 @@ from autoimprover.types import Contract, Outcome, Plan
 # verified on held-out scenarios, checked is.
 FAST_TIERS = ("quick", "fast", "checked")
 _UNHELD = ("quick", "fast")
-
-# What each reason code means for the user, and what to do about it (SPEC R2, R3, R11, R13).
-REASON_LINES = {
-    "improved": "a rewrite scored higher than the original on scenarios the search never saw, "
-    "by more than the measured noise",
-    "no_reliable_improvement": "no rewrite beat the original by more than the measured noise, so "
-    "the original is kept; this is the normal result for a prompt that already works",
-    "already_strong": "the original already passes nearly every check on the held-out scenarios, "
-    "so no search ran; high scores can also mean weak checks, so read the checks below",
-    "no_holdout": "with fewer than 8 scenarios there is nothing held out to verify a result on, "
-    "so the original is kept; give 8 or more examples with --examples, or pass --trust-search "
-    "to accept an unverified result",
-    "no_candidate_beat_seed": "no rewrite beat the original on the scenarios the search used "
-    "(--trust-search, no holdout), so the original is kept",
-    "unconfirmed_out_of_budget": "the calls or the clock ran out before a rewrite was confirmed "
-    "on the holdout, so the original is kept; a larger --budget leaves more for the final steps",
-    "ungated_best_candidate": "with --ungated the best-ranked rewrite that kept the intent "
-    "contract and passed the free gates is returned whether or not it beat the original; no win "
-    "over the original was shown, so it is not verified and may be worse (a measuring aid)",
-}
+# What each reason code means is REASON_LINES and FAST_REASON_LINES (`report_text`, re-exported).
 _UNGATED = "ungated_best_candidate"
 
 # An improved result that no holdout checked (--trust-search, SPEC R11) says only what was done.
@@ -70,29 +61,6 @@ _STOPS = {
     None: "no search ran",
 }
 # The same for the fast pipeline, which has stages, not a search (SPEC R25).
-FAST_REASON_LINES = {
-    "no_reliable_improvement": "no rewrite kept the contract and was preferred over the original "
-    "clearly enough on the scenarios, so the original is kept; this is the normal result for a "
-    "prompt that already works",
-    "no_holdout": "the checked tier holds out the examples after the ones it picks on, and none "
-    "were left, so the original is kept; give more examples, or a shorter --time",
-    "unconfirmed_out_of_budget": "the clock or the calls ran out before a rewrite passed every "
-    "gate, so the original is kept; a longer --time leaves more room",
-}
-_FAST_VERIFIED = (
-    "a rewrite beat the original on held-out scenarios, on the target model; no noise was "
-    "measured, so a small margin is a weak signal"
-)
-_FAST_UNVERIFIED = (
-    "a rewrite kept the intent contract and passed the free gates in a short run; it is not "
-    "verified on held-out scenarios and no noise was measured, so read it before you use it"
-)
-_FAST_UNVERIFIED_NOISE = (
-    "a rewrite kept the intent contract, passed the free gates and was preferred over the "
-    "original by a judge on more of the few scenarios it was picked on than it lost, by more than "
-    "the noise of two runs of the original; it is not verified on held-out scenarios, so read it "
-    "before you use it"
-)
 _FAST_STOPS = {
     None: "every stage ran as planned",
     "clock": "the clock cut a stage short or shrank it",
@@ -208,10 +176,15 @@ def _meaning(outcome: Outcome) -> str:
     if outcome.reason_code == _UNGATED:
         return REASON_LINES[_UNGATED]
     if outcome.mode in FAST_TIERS:
+        ref = _referenced(outcome)
         if outcome.status == "improved" and outcome.verified:
-            return _FAST_VERIFIED
+            return reference_text.MEANING_VERIFIED if ref else FAST_VERIFIED
+        if outcome.status == "improved" and ref:
+            return reference_text.MEANING_UNVERIFIED
         if outcome.status == "improved":
-            return _FAST_UNVERIFIED if outcome.noise is None else _FAST_UNVERIFIED_NOISE
+            return FAST_UNVERIFIED if outcome.noise is None else FAST_UNVERIFIED_NOISE
+        if ref and outcome.reason_code == "no_reliable_improvement":
+            return reference_text.MEANING_NO_WIN
         return FAST_REASON_LINES.get(outcome.reason_code, REASON_LINES[outcome.reason_code])
     if outcome.status == "improved" and not outcome.verified:
         return _UNVERIFIED_MEANING
@@ -230,11 +203,12 @@ def _verified(outcome: Outcome, plan: Plan | None) -> str:
 
 def _scores(outcome: Outcome, plan: Plan) -> list[str]:
     lines = []
-    fast = outcome.mode in FAST_TIERS
-    picked = f"preference on {_PICKED} (judge {plan.models.judge}, not held out)"
+    fast, ref = outcome.mode in FAST_TIERS, _referenced(outcome)
+    kind, shown = ("reference score", _before_after) if ref else ("preference", _preference)
+    picked = f"{kind} on {_PICKED} (judge {plan.models.judge}, not held out)"
     if outcome.score_before is not None:
         if outcome.mode in _UNHELD:
-            lines.append(f"{picked}: {_preference(outcome.score_before, outcome.score_after)}")
+            lines.append(f"{picked}: {shown(outcome.score_before, outcome.score_after)}")
         else:
             where = f"holdout score (target model {plan.models.target})"
             lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
@@ -244,6 +218,11 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
             f"noise: {outcome.noise:.2f} of {_PICKED} had a winner between the original's two runs"
         )
         bar = f"; a rewrite had to lead by more than {outcome.noise:.2f}"
+        if ref:
+            runs = "two held-out runs" if _held_out(outcome) else "two runs"
+            said = f"noise: {outcome.noise:.2f} between the mean reference scores of the original's"
+            said += f" {runs}"
+            bar = f"; a rewrite had to gain more than {outcome.noise:.2f}"
         lines.append(said if margin is not None else said + bar)
     elif outcome.noise is not None:
         bar = max(MIN_THRESHOLD, 2 * outcome.noise)
@@ -251,7 +230,7 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
         lines.append(f"{said}; {margin or f'a result had to gain more than {bar:.2f}'}")
     if outcome.search_score_before is not None:
         if fast:
-            preferred = _preference(outcome.search_score_before, outcome.search_score_after)
+            preferred = shown(outcome.search_score_before, outcome.search_score_after)
             lines.append(f"{picked}: {preferred}")
         else:
             where = f"search score (valset, search model {plan.models.task})"
@@ -276,12 +255,17 @@ def _margin_text(outcome: Outcome) -> str | None:
     )
     if margin is None:
         return None
+    ref = " in the mean reference score" if _referenced(outcome) else ""
+    lead = "gain" if ref else "lead"
     if outcome.reason_code == _UNGATED:
         before, after = outcome.search_score_before, outcome.search_score_after
         if before is None or after is None:
             return None
         against = "" if noise is None else f" vs noise {noise:.2f}"
-        return f"lead {after - before:.2f}{against} on {_PICKED}; ungated, so no lead was required"
+        return (
+            f"{lead} {after - before:.2f}{against}{ref} on {_PICKED}; ungated, so no {lead} was "
+            "required"
+        )
     if outcome.mode not in FAST_TIERS:
         if noise is None:
             return None
@@ -289,12 +273,23 @@ def _margin_text(outcome: Outcome) -> str | None:
     if before is None or after is None:
         return None
     if noise is not None:
-        return f"lead {after - before:.2f} vs noise {noise:.2f} on {_PICKED}"
+        where = "the held-out examples" if _held_out(outcome) else _PICKED
+        return f"{lead} {after - before:.2f} vs noise {noise:.2f}{ref} on {where}"
     held = "held-out scenarios" if outcome.verified else "scenarios it was picked on"
     return (
         f"{margin:.2f} above the least gain of {after - before - margin:.2f} on the {held} (no "
         "noise measured)"
     )
+
+
+def _referenced(outcome: Outcome) -> bool:
+    """Whether a fast or checked result was decided by the user's references (WP21)."""
+    return outcome.mode in FAST_TIERS and reference_text.MARK in outcome.reason
+
+
+def _held_out(outcome: Outcome) -> bool:
+    """Whether a reference-scored result's noise is that of stage E (checked, not ungated)."""
+    return outcome.mode == "checked" and outcome.reason_code != _UNGATED
 
 
 def _preference(before: float, after: float | None) -> str:

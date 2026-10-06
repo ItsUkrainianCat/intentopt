@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from autoimprover.bench_judge import pairwise_batch_call, scenario_vote
+from autoimprover.reference_score import Margin
 from autoimprover.runner import count_tokens
 from autoimprover.types import Call, CallFailed, Scenario
 
@@ -52,11 +53,13 @@ class Rewrite(NamedTuple):
 
 class Judged(NamedTuple):
     """A rewrite after stage C: its preference against the original and whether it kept the
-    contract."""
+    contract; with references, `found` counts the scenarios it improved, kept and worsened and
+    `score` is its margin (`reference_score`, None when its judge call gave nothing; WP21)."""
 
     rewrite: Rewrite
     found: Preference
     keep: bool
+    score: Margin | None = None
 
 
 class Win(NamedTuple):
