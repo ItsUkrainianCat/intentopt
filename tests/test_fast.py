@@ -23,6 +23,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     Verbatim,
     World,
     is_contract_check,
+    is_pairwise,
     judged_scenarios,
     mechanics_latency_model,
     no_disk_flush,
@@ -34,15 +35,16 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     tagged,
 )
 
-from autoimprover.evaluator import _JUDGE_SYSTEM
+from autoimprover.bench_judge import PAIRWISE_BATCH_SYSTEM
 from autoimprover.fast_prompts import FAST_TASK_SUFFIX, STRATEGY_NOTES, FastEvaluator
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import BackendError, Call, CallError, Scenario
 
 FAST_LABEL = (
-    "fast check: scored on the same few scenarios it was picked on, noise measured from two runs "
-    "of the original on those scenarios, not verified on held-out scenarios"
+    "fast check: preferred over the original by a pairwise judge on the same few scenarios it was "
+    "picked on, noise measured by comparing the original with itself, not verified on held-out "
+    "scenarios"
 )
 
 
@@ -57,7 +59,7 @@ def test_a_rewrite_that_wins_is_returned_unverified_with_its_report(tmp_path):
     )
     assert "tier fast" in outcome.reason and FAST_LABEL in outcome.reason
     assert (outcome.score_before, outcome.score_after, outcome.noise) == (0.0, 1.0, 0.0)
-    assert outcome.margin == pytest.approx(0.9)  # 1.0 above the baseline, the bar 0.1
+    assert outcome.margin == pytest.approx(1.0)  # won all 3 scenarios, lost none, no noise
     assert outcome.length_ratio == count_tokens(BETTER) / count_tokens(PROMPT)
     assert outcome.calls_used == len(result.raw.calls)
 
@@ -84,7 +86,7 @@ def test_a_rewrite_that_scores_no_better_leaves_the_original(tmp_path):
         False,
         None,
     )
-    assert outcome.score_before == 0.0 and "tier fast" in outcome.reason
+    assert (outcome.score_before, outcome.noise) == (None, 0.0) and "tier fast" in outcome.reason
 
 
 # --- the free gates (SPEC R7, R9) -----------------------------------------------------------------
@@ -137,13 +139,20 @@ def test_a_rewrite_failing_the_contract_check_is_never_returned(tmp_path, keeps)
 SECOND = f"{PROMPT} {MARKER} Be brief."
 
 
-def test_the_judge_grades_outputs_only_and_one_contract_check_holds_every_rewrite(tmp_path):
+def test_the_judge_compares_answers_only_and_one_contract_check_holds_every_rewrite(tmp_path):
+    """The pairwise calls see the original prompt as the request and the answers, never a
+    rewrite's text (ADR-002, ADR-012)."""
     result = run(tmp_path, World(rewrites=(BETTER, SECOND), task=tagged), K3M3)
     scoring = scoring_judges(result)
-    assert [judged_scenarios(c) for c in scoring] == [["s1", "s2", "s3"]] * 4  # 2 originals
-    for call in scoring:  # the evaluator's own calls: never a prompt (ADR-002)
-        assert call.system == _JUDGE_SYSTEM
-        assert not any(text in call.user for text in (PROMPT, BETTER, SECOND))
+    assert scoring and all(call.system == PAIRWISE_BATCH_SYSTEM for call in scoring)
+    for call in scoring:
+        sent = json.loads(call.user)
+        assert sent["request"] == PROMPT and [s["scenario"] for s in sent["scenarios"]] == [
+            "s1",
+            "s2",
+            "s3",
+        ]
+        assert not any(text in call.user for text in (BETTER, SECOND))
     (contract,) = [c for c in result.calls("judge") if is_contract_check(c)]
     sent = json.loads(contract.user)["scenarios"]
     assert [(s["scenario"], s["input"], s["output"]) for s in sent] == [
@@ -297,10 +306,10 @@ def test_a_checked_winner_that_loses_on_the_target_is_not_returned(tmp_path):
 
 def test_a_checked_run_without_a_winner_reports_no_held_out_score(tmp_path):
     """The score fields of the checked tier are held-out scores on the target model (SPEC R14a);
-    the original's score on the scenarios it was picked on is a search score."""
+    the preference on the scenarios it was picked on is set by a winner only (ADR-012)."""
     outcome = run(tmp_path, World(rewrites=("Answer the request well.",)), CHECKED).outcome
     assert (outcome.prompt, outcome.reason_code) == (PROMPT, "no_reliable_improvement")
-    assert (outcome.score_before, outcome.search_score_before) == (None, 0.0)
+    assert (outcome.score_before, outcome.search_score_before, outcome.noise) == (None, None, None)
     assert not [c for c in run(tmp_path / "b", World(), K1M2).raw.calls if c.model == MODELS.target]
 
 
@@ -331,12 +340,14 @@ def test_the_run_folder_keeps_the_contract_and_the_synthesised_scenarios(tmp_pat
     assert [s.input for s in scenarios or []] == [f"situation {i}" for i in range(1, 7)]
 
 
-GOOD_CHECK = {"id": "g", "group": "format", "text": "says GOOD", "rule": "contains", "arg": "GOOD"}
+NOBODY = {"id": "g", "group": "format", "text": "says XYZ", "rule": "contains", "arg": "XYZ"}
 
 
-def test_programmatic_checks_alone_need_no_judge_call_for_the_original(tmp_path):
-    result = run(tmp_path, World(intake=intake_reply(checks=[GOOD_CHECK])), K1M2)
-    assert [judged_scenarios(c) for c in result.calls("judge")] == [["contract-1"]]
+def test_the_contracts_scoring_checks_take_no_part_in_the_fast_pick(tmp_path):
+    """ADR-012 as briefed for WP16: the pairwise judge decides and the contract check is the
+    meaning floor; a check no answer passes neither vetoes nor costs a judge call."""
+    result = run(tmp_path, World(intake=intake_reply(checks=[NOBODY])), K1M2)
+    assert all(is_pairwise(c) or is_contract_check(c) for c in result.calls("judge"))
     outcome = result.outcome
     assert (outcome.prompt, outcome.score_before, outcome.score_after) == (BETTER, 0.0, 1.0)
 

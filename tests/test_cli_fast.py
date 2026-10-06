@@ -27,10 +27,11 @@ from autoimprover.runstore import runs_root
 from autoimprover.types import Call, Reply
 
 PLAIN = "Answer the request well."  # a rewrite without the marker: it scores no better
-# The default plan, 30 s on 6 workers (test_fastplan.py): K=2, M=2, 17 calls (A: intake, synthesis
-# and 2 rewrites = 4; B: (2 + 2 original runs) x 2 scenarios = 8; C: 4 judge calls and 1 contract
-# check = 5), about 25.5 s (I + 2 T + J2 = 8.83 + 11.09 + 5.54, a task run T = 3.4 + 150/70 s);
-# the budget is 3 x 17 = 51 calls.
+# The default plan, 30 s on 6 workers (test_fastplan.py): K=1, M=3, 17 calls (A: intake, synthesis
+# and 1 rewrite = 3; B: (1 + 2 original runs) x 3 scenarios = 9; C: two pairwise orders for the
+# rewrite and two for the original's runs, and 1 contract check = 5), about 25.0 s (I + 2 T + P3 =
+# 8.83 + 11.09 + 5.11, a task run T = 3.4 + 150/70 s, a pairwise call P3 = 3.4 + 40 x 3/70 s;
+# K=2 would need stage C's 7 calls in two waves); the budget is 3 x 17 = 51 calls.
 DEFAULT_PLAN = fast_plan(30, 6, count_tokens(PROMPT), False)
 
 
@@ -134,11 +135,12 @@ def test_the_users_examples_are_the_scenarios_and_nothing_is_synthesised(tmp_pat
     path.write_text("".join(json.dumps({"input": f"example {i}"}) + "\n" for i in range(3)))
     done = run(capsys, "--json", "--examples", str(path), PROMPT)
     assert done.calls("synth") == [] and done.obj()["prompt"] == BETTER
-    # With examples the default plan is K=2 on M=2 (I + 2 T + J2 = 25.46 s; M=3: I + 2 T + J3 =
-    # 26.53 s > 25.5): stage B runs on the first 2 of the 3.
+    # With examples the default plan is K=1 on M=3 (I + 2 T + P3 = 25.03 s; M=4: I + 2 T + P4 =
+    # 25.6 s > 25.5): stage B runs on all 3.
     assert {call.user.split("\n\n", 1)[0] for call in done.calls("task")} == {
         "example 0",
         "example 1",
+        "example 2",
     }
 
 
@@ -174,12 +176,16 @@ def test_its_twin_that_loses_on_the_target_model_keeps_the_original(capsys):
 
 
 def test_the_outcome_does_not_depend_on_the_workers(capsys):
-    """At 599 s 1 and 4 workers plan the same shape; the calls run one at a time or four at
-    a time, and the result and the calls are the same."""
+    """At 599 s 2 and 4 workers plan the same shape, K=6 on M=4 with 4 held out and two
+    reflections (1 worker has room for one reflection only: `test_fast_threads.py` runs one plan
+    on 1 and on several workers); the calls run two or four at a time, and the result and the
+    calls are the same."""
     tokens = count_tokens(PROMPT)
-    one, four = fast_plan(599, 1, tokens, False), fast_plan(599, 4, tokens, False)
-    assert (one.rewrites, one.scenarios, one.holdout) == (four.rewrites, four.scenarios, 4)
-    serial = run(capsys, "--json", "--time", "599s", "--workers", "1", PROMPT)
+    two, four = fast_plan(599, 2, tokens, False), fast_plan(599, 4, tokens, False)
+    shape = (four.rewrites, four.scenarios, four.holdout, four.generations, four.rewrites2)
+    assert (two.rewrites, two.scenarios, two.holdout, two.generations, two.rewrites2) == shape
+    assert shape == (6, 4, 4, 2, 2)
+    serial = run(capsys, "--json", "--time", "599s", "--workers", "2", PROMPT)
     parallel = run(capsys, "--json", "--time", "599s", "--workers", "4", PROMPT)
     assert comparable(serial.obj()) == comparable(parallel.obj())
     assert sorted(map(repr, serial.raw.calls)) == sorted(map(repr, parallel.raw.calls))
@@ -228,12 +234,12 @@ def test_dry_prints_the_fast_plan_with_no_call_and_nothing_written(capsys):
     plan = dry.obj()
     assert (dry.code, dry.err, dry.raw.calls, folders()) == (0, "", [], [])
     assert tuple(plan) == DRY_KEYS
-    assert (plan["tier"], plan["workers"], plan["rewrites"]) == ("fast", 6, 2)
-    assert (plan["scenarios"], plan["holdout"], plan["synthesised"]) == (2, 0, True)
+    assert (plan["tier"], plan["workers"], plan["rewrites"]) == ("fast", 6, 1)
+    assert (plan["scenarios"], plan["holdout"], plan["synthesised"]) == (3, 0, True)
     assert plan["efforts"] == {"task": "low", "judge": "low", "reflect": "low"}
-    assert [stage["calls"] for stage in plan["stages"]] == [4, 8, 5, 0]
+    assert [stage["calls"] for stage in plan["stages"]] == [3, 9, 5, 0]
     assert plan["est_calls"] == DEFAULT_PLAN.est_calls == 17
-    assert plan["est_seconds"] == pytest.approx(DEFAULT_PLAN.est_seconds) == 25.457143
+    assert plan["est_seconds"] == pytest.approx(DEFAULT_PLAN.est_seconds) == 25.028571
     assert plan["plan"]["budget"] == 51 and plan["plan"]["wall_clock_s"] == 30
     assert plan["refusal"] is None and plan["iterations"] is None
 
@@ -243,10 +249,12 @@ def test_dry_text_shows_the_tier_the_stages_and_the_estimate(capsys):
     assert text.startswith("dry run: no model call made, nothing written\n")
     assert "tier: fast (--time 30 s), 6 calls at a time\n" in text
     assert "effort: task low, judge low, reflection low\n" in text
-    assert "rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)" in text
-    assert "  B: task runs: 8 calls, about 11.1 s" in text
+    assert "rewrites: 1; scenarios: 3, synthesised by one call (3 to pick on, 0 held out)" in text
+    assert "  B: task runs: 9 calls, about 11.1 s" in text
     assert "estimate: 17 calls in about 25 s of 30 s; budget: 51 calls" in text
     assert "evidence: a fast check" in text and "would refuse" not in text
+    assert "preferred over the original by a pairwise judge" in text  # ADR-012
+    assert "noise measured by comparing the original with itself" in text
 
 
 def test_a_plan_that_cannot_fit_its_time_is_refused_and_dry_says_so(capsys):
@@ -314,20 +322,20 @@ def test_a_fast_run_cut_anywhere_resumes_to_the_same_outcome_with_its_saved_plan
 
 
 def test_a_resumed_fast_run_with_examples_rebuilds_the_same_plan(tmp_path, capsys):
-    """At 54 s on 3 workers (45.9 s planned; stage B runs the original twice, (K + 2) M task
-    runs of T = 3.4 + 150/70 s, stage C K + 3 calls) the plan with examples is K=2 on M=3: no
-    synthesis call, so stage A is one wave, I + 4 T + 2 J3 = 8.83 + 22.17 + 13.23 = 44.23 s (M=4:
-    I + 6 T + 2 J4 = 57.46 s). Without them it is K=2 on M=2, as stage A then needs a second wave:
-    2 I + 3 T + 2 J2 = 17.66 + 16.63 + 11.09 = 45.37 s (M=3: 2 I + 4 T + 2 J3 = 53.06 s). No plan
-    with a second generation fits (the smallest, K=1 on M=2 with one reflection, I + 2 T + 2 J2 +
-    Rs + T + J2, is 46.34 s). The resume knows from the run folder that the run had them, and runs
-    stage B on all 3."""
+    """At 50 s on 3 workers (42.5 s planned; stage B runs the original twice, (K + 2) M task
+    runs of T = 3.4 + 150/70 s, stage C 2 K + 3 calls of max(P(M), J(K))) the plan with examples
+    is K=2 on M=2: no synthesis call, so stage A is one wave, I + 3 T + 3 J2 = 8.83 + 16.63 +
+    16.63 = 42.09 s (M=3: I + 4 T + 3 J2 = 47.6 s). Without them stage A holds the synthesis too,
+    and K=2 needs a second wave of it (2 I + 3 T + 3 J2 = 50.9 s), so the plan is K=1 on M=4: I +
+    4 T + 2 P4 = 8.83 + 22.17 + 11.37 = 42.37 s. No plan with a second generation fits (the
+    smallest, K=1 on M=2 with one reflection, I + 2 T + 2 P2 + Rs + T + P2, is 43.34 s). The
+    resume knows from the run folder that the run had them, and runs stage B on the first 2."""
     tokens = count_tokens(PROMPT)
-    shapes = [fast_plan(54, 3, tokens, given) for given in (True, False)]
-    assert [(plan.rewrites, plan.scenarios) for plan in shapes] == [(2, 3), (2, 2)]
+    shapes = [fast_plan(50, 3, tokens, given) for given in (True, False)]
+    assert [(plan.rewrites, plan.scenarios) for plan in shapes] == [(2, 2), (1, 4)]
     path = tmp_path / "ex.jsonl"
     path.write_text("".join(json.dumps({"input": f"example {i}"}) + "\n" for i in range(3)))
-    argv = ["--json", "--time", "54s", "--workers", "3", "--examples", str(path), PROMPT]
+    argv = ["--json", "--time", "50s", "--workers", "3", "--examples", str(path), PROMPT]
     reference = run(capsys, *argv).obj()
     cli.main(["clean"])
     with pytest.raises(Cut):  # in stage A, before any task run
@@ -340,7 +348,6 @@ def test_a_resumed_fast_run_with_examples_rebuilds_the_same_plan(tmp_path, capsy
     assert {call.user.split("\n\n", 1)[0] for call in resumed.calls("task")} == {
         "example 0",
         "example 1",
-        "example 2",
     }
 
 

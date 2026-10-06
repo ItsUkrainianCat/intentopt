@@ -1,17 +1,20 @@
-"""The noise of the fast tiers (SPEC R12 in spirit, R25): stage B runs the original twice (samples 0
-and 1, so two calls, never a cache hit), stage C judges each run; the noise is the difference of
-the two runs' mean scores, the baseline their mean, and a rewrite must beat the baseline by MORE
-than max(FAST_MARGIN, 2 x noise) and win more scenarios than it loses against the baseline's
-per-scenario mean. And a rewrite that changes no meaning word of the original (case, punctuation,
-whitespace, single letters, articles) is dropped like an identical one, before it costs a call.
+"""The noise of the fast tiers (SPEC R12 in spirit, R25; ADR-012): stage B runs the original twice
+(samples 0 and 1, so two calls, never a cache hit), and stage C compares the two runs' answers
+with the pairwise judge in both orders; the noise is the number of scenarios where they have an
+agreed winner. A rewrite, compared with the original's run 0, must win more scenarios than it loses
+by more than that noise. And a rewrite that changes no meaning word of the original (case,
+punctuation, whitespace, single letters, articles) is dropped like an identical one, before it
+costs a call.
 
-The judge passes the first n of the 10 judged checks of a scenario (8 from the contract, 2 from
-the example's criteria), n read from a table by prompt (O and O1 are the original's two runs) and
-scenario, so every score is a tenth. Every "not returned" test has a twin that is.
+The judge prefers the answer of higher quality, read from a table by run (O and O1 are the
+original's two runs, A the rewrite) and scenario, and calls equal qualities a tie. Every "not
+returned" test has a twin that is.
 """
 
+import dataclasses
+import json
+
 import pytest
-from fakes import intake_reply
 from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     CHECKED,
@@ -21,27 +24,20 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     PROMPT,
     QUICK,
     World,
+    is_pairwise,
     mechanics_latency_model,
     no_disk_flush,
     prompt_of,
     run,
     runs_of,
     scenario_of,
-    scoring_judges,
 )
 
-from autoimprover.fast_stages import FAST_MARGIN, meaning_words
+from autoimprover.fast_stages import meaning_words
 from autoimprover.types import BackendError, Call, CallError, Scenario
 
-CHECKS = [
-    {"id": f"c{n}", "group": "content", "text": f"check {n}", "rule": None, "arg": None}
-    for n in range(1, 9)
-]
-SENT = [f"c:c{n}" for n in range(1, 9)] + ["s:crit-1", "s:crit-2"]
-EXAMPLES = [
-    Scenario(id=f"e{n}", input=f"example {n}", criteria=("criterion one", "criterion two"))
-    for n in (1, 2)
-]
+EXAMPLES = [Scenario(id=f"e{n}", input=f"example {n}") for n in (1, 2, 3, 4)]
+FOUR = dataclasses.replace(K1M2_EXAMPLES, scenarios=4)  # K=1 on the four examples
 A = "Answer the user's request now. [A]"
 
 
@@ -52,67 +48,74 @@ def tag(call: Call) -> str:
     return "O1" if call.sample == 1 else "O"
 
 
-def table_world(passed: dict[str, tuple[int, int]]) -> World:
-    """`passed[tag]`: how many checks the outputs of that run pass on e1 and e2."""
+def table_world(quality: dict[str, tuple[int, int, int, int]]) -> World:
+    """`quality[tag]`: how good that run's answers are on e1 to e4; the higher wins a pair."""
 
     def task(call: Call) -> str:
-        return f"answer {tag(call)} on e{scenario_of(call).split()[-1]}"
+        return f"{tag(call)} on {scenario_of(call).split()[-1]}"
 
-    def passes(scenario: str, check_id: str, output: str) -> bool:
-        return SENT.index(check_id) < passed[output.split()[1]][int(scenario[1:]) - 1]
+    def judge(call: Call) -> str:
+        results = []
+        for item in json.loads(call.user)["scenarios"]:
+            n = int(item["scenario"][1:]) - 1
+            a, b = (quality[item[key].split()[0]][n] for key in ("answer_A", "answer_B"))
+            winner = "A" if a > b else "B" if b > a else "tie"
+            results.append({"scenario": item["scenario"], "winner": winner, "reason": "r"})
+        return json.dumps({"results": results})
 
-    return World(rewrites=(A,), intake=intake_reply(checks=CHECKS), task=task, passes=passes)
+    return World(rewrites=(A,), task=task, pairwise=judge)
 
 
-def outcome(tmp_path, passed):
-    return run(tmp_path, table_world(passed), K1M2_EXAMPLES, examples=EXAMPLES).outcome
+def outcome(tmp_path, quality):
+    return run(tmp_path, table_world(quality), FOUR, examples=EXAMPLES).outcome
 
 
 def test_the_original_runs_twice_as_two_calls_the_rewrite_once(tmp_path):
-    result = run(tmp_path, World(), K1M2)
+    """Each answer names its run's sample, so the noise pair's two orders are two calls (with
+    equal answers they would be one call, and the cache would answer the second)."""
+
+    def task(call: Call) -> str:
+        return f"{'GOOD' if '[[better]]' in prompt_of(call) else 'BAD'} answer {call.sample}"
+
+    result = run(tmp_path, World(task=task), K1M2)
     assert runs_of(result) == [(PROMPT, 0)] * 2 + [(PROMPT, 1)] * 2 + [(BETTER, 0)] * 2
-    assert [c.sample for c in scoring_judges(result)] == [0, 1, 0]
-    assert result.outcome.noise == 0.0
+    pairwise = [c for c in result.calls("judge") if is_pairwise(c)]
+    assert len(pairwise) == 2 + 2  # the noise pair and the rewrite's pair, each in both orders
+    assert (result.outcome.noise, result.outcome.prompt) == (0.0, BETTER)
+
+
+SAME = (1, 1, 1, 1)
 
 
 @pytest.mark.parametrize(
-    ("runs", "rewrite", "returned", "noise"),
+    ("original", "noisy", "rewrite", "wins", "losses", "noise"),
     [
-        (((5, 5), (5, 5)), (7, 6), True, 0.0),  # +0.15 > max(0.1, 0)
-        (((5, 5), (5, 5)), (6, 6), False, 0.0),  # +0.1: not MORE than 0.1 (0.6 - 0.5 in floats)
-        (((5, 5), (6, 6)), (8, 8), True, 0.1),  # baseline 0.55, +0.25 > 2 x 0.1
-        (((5, 5), (6, 6)), (8, 7), False, 0.1),  # +0.2: not more than 2 x 0.1
-        (((5, 5), (6, 6)), (7, 7), False, 0.1),  # +0.15: enough without noise, not with it
-        (((5, 5), (5, 6)), (8, 6), True, 0.05),  # 2 x 0.05 = 0.1 is the bar: +0.15 clears it
-        (((5, 5), (5, 5)), (10, 3), False, 0.0),  # +0.15, but wins 1 and loses 1
+        (SAME, SAME, (2, 1, 1, 1), 1, 0, 0),  # a lead of 1 over no noise
+        (SAME, SAME, SAME, 0, 0, 0),  # ties only
+        (SAME, (2, 1, 1, 1), (2, 1, 1, 1), 1, 0, 1),  # a lead of 1 is not more than 1
+        (SAME, (2, 1, 1, 1), (2, 2, 1, 1), 2, 0, 1),  # 2 - 0 > 1
+        (SAME, SAME, (2, 2, 0, 1), 2, 1, 0),  # more wins than losses
+        (SAME, SAME, (2, 0, 1, 1), 1, 1, 0),  # as many losses as wins
+        (SAME, (0, 2, 1, 1), (2, 2, 2, 1), 3, 0, 2),  # noise in both directions counts: 3 > 2
+        (SAME, (0, 2, 1, 1), (2, 2, 1, 1), 2, 0, 2),  # 2 is not more than 2
     ],
 )
-def test_a_rewrite_must_beat_the_baseline_by_more_than_the_margin_or_twice_the_noise(
-    tmp_path, runs, rewrite, returned, noise
+def test_a_rewrite_must_lead_the_original_by_more_scenarios_than_the_noise(
+    tmp_path, original, noisy, rewrite, wins, losses, noise
 ):
-    result = outcome(tmp_path, {"O": runs[0], "O1": runs[1], "A": rewrite})
-    assert (result.prompt == A) is returned
-    baseline = (sum(runs[0]) + sum(runs[1])) / 40
-    assert result.noise == pytest.approx(noise) and result.score_before == pytest.approx(baseline)
+    result = outcome(tmp_path, {"O": original, "O1": noisy, "A": rewrite})
+    returned = wins - losses > noise
+    assert (result.prompt == A) is returned and result.noise == noise / 4
     if returned:
-        gain = sum(rewrite) / 20 - baseline
-        assert result.score_after == pytest.approx(sum(rewrite) / 20)
-        assert result.margin == pytest.approx(gain - max(FAST_MARGIN, 2 * noise))
+        assert (result.score_before, result.score_after) == (losses / 4, wins / 4)
+        assert result.margin == pytest.approx((wins - losses - noise) / 4)
     else:
         assert result.reason_code == "no_reliable_improvement"
 
 
-def test_wins_and_losses_count_against_the_baselines_mean_per_scenario(tmp_path):
-    """Baseline per scenario (0.5, 0.65): the rewrite's (0.8, 0.6) wins e1 and loses e2, so it
-    is not returned though it gains 0.125 on the mean; (0.8, 0.7) wins both and is."""
-    lost = outcome(tmp_path / "lost", {"O": (5, 6), "O1": (5, 7), "A": (8, 6)})
-    won = outcome(tmp_path / "won", {"O": (5, 6), "O1": (5, 7), "A": (8, 7)})
-    assert (lost.prompt, won.prompt) == ("Answer the user's request.", A)
-
-
 def test_a_fast_result_says_its_noise_is_measured_and_it_is_not_held_out(tmp_path):
-    reason = outcome(tmp_path, {"O": (5, 5), "O1": (5, 5), "A": (8, 8)}).reason
-    assert "noise measured from two runs of the original" in reason
+    reason = outcome(tmp_path, {"O": SAME, "O1": SAME, "A": (2, 2, 2, 2)}).reason
+    assert "noise measured by comparing the original with itself" in reason
     assert "not verified on held-out scenarios" in reason and "no noise" not in reason
 
 
@@ -128,15 +131,17 @@ def test_an_original_run_whose_task_calls_all_fail_ends_the_run(tmp_path, run_in
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_an_original_run_whose_judge_call_fails_ends_the_run(tmp_path, fails):
+def test_a_noise_pair_the_judge_cannot_compare_ends_the_run(tmp_path, fails):
+    """The noise pair is the one whose answers are all the original's (BAD) on both sides."""
+
     def hook(call: Call) -> None:
-        if fails and call.role == "judge" and call.sample == 1 and "BAD answer" in call.user:
+        if fails and is_pairwise(call) and "GOOD" not in call.user:
             raise CallError("down")
 
     if not fails:
         assert run(tmp_path, World(hook=hook), K1M2).outcome.prompt == BETTER
         return
-    with pytest.raises(BackendError, match="original"):
+    with pytest.raises(BackendError, match="could not compare the original's two runs"):
         run(tmp_path, World(hook=hook), K1M2)
 
 
