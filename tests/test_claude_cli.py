@@ -36,6 +36,8 @@ COMMAND = [
     "--safe-mode",
     "--settings",
     '{"outputStyle":"default"}',
+    "--setting-sources",
+    "",
     "--tools",
     "",
     "--strict-mcp-config",
@@ -56,6 +58,8 @@ ALLOWED = {
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "ALL_PROXY", "all_proxy",
 }  # fmt: skip
+# Set on every child with these values whatever the parent has (ADR-009, amendment 2026-10-06).
+FIXED = {"DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 SECRETS = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_FOO", "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "SECRET_X", "PYTHONPATH",
@@ -214,7 +218,7 @@ def test_the_environment_is_an_allowlist(fake, tmp_path, monkeypatch):
     ask(tmp_path)
     env = fake.env()
     assert "must-not-leak" not in env.values()
-    assert all(name in ALLOWED or name.startswith("LC_") for name in env), sorted(env)
+    assert all(name in ALLOWED | FIXED.keys() or name.startswith("LC_") for name in env), env
     assert {name: env.get(name) for name in kept} == kept
     assert env["HOME"] == os.environ["HOME"]
 
@@ -227,6 +231,19 @@ def test_config_folders_and_the_all_proxy_setting_reach_the_child(
     monkeypatch.setenv(name, f"value of {name}")
     ask(tmp_path)
     assert fake.env()[name] == f"value of {name}"
+
+
+@real
+def test_the_child_gets_the_two_start_up_trims_and_no_other_claude_variable(
+    fake, tmp_path, monkeypatch
+):
+    parent = {"CLAUDE_CODE_FOO": "x", "ANTHROPIC_API_KEY": "sk-x", "DISABLE_TELEMETRY": "0"}
+    for name, value in {**parent, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"}.items():
+        monkeypatch.setenv(name, value)
+    ask(tmp_path)
+    env = fake.env()
+    prefixes = ("CLAUDE", "ANTHROPIC", "DISABLE_")
+    assert {name: value for name, value in env.items() if name.startswith(prefixes)} == FIXED
 
 
 def test_a_missing_claude_binary_ends_the_run_before_any_process(tmp_path, monkeypatch):

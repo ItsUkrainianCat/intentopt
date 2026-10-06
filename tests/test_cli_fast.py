@@ -27,7 +27,10 @@ from autoimprover.runstore import runs_root
 from autoimprover.types import Call, Reply
 
 PLAIN = "Answer the request well."  # a rewrite without the marker: it scores no better
-DEFAULT_PLAN = fast_plan(30, 6, count_tokens(PROMPT), False)  # K=3, M=3: 22 calls
+# The default plan, 30 s on 6 workers (test_fastplan.py): K=2, M=2, 14 calls (A: intake, synthesis
+# and 2 rewrites = 4; B: 3 prompts x 2 scenarios = 6; C: 3 judge calls and 1 contract check = 4),
+# about 20.6 s (I 8.83 + T 6.26 + J2 5.54, one wave each); the budget is 3 x 14 = 42 calls.
+DEFAULT_PLAN = fast_plan(30, 6, count_tokens(PROMPT), False)
 
 
 @dataclass
@@ -130,10 +133,11 @@ def test_the_users_examples_are_the_scenarios_and_nothing_is_synthesised(tmp_pat
     path.write_text("".join(json.dumps({"input": f"example {i}"}) + "\n" for i in range(3)))
     done = run(capsys, "--json", "--examples", str(path), PROMPT)
     assert done.calls("synth") == [] and done.obj()["prompt"] == BETTER
+    # With examples the default plan is K=2 on M=2 (I + T + J2 = 20.6 s; M=3 needs a second wave
+    # of stage B: I + 2 T + J3 = 28.0 s > 25.5): stage B runs on the first 2 of the 3.
     assert {call.user.split("\n\n", 1)[0] for call in done.calls("task")} == {
         "example 0",
         "example 1",
-        "example 2",
     }
 
 
@@ -223,13 +227,13 @@ def test_dry_prints_the_fast_plan_with_no_call_and_nothing_written(capsys):
     plan = dry.obj()
     assert (dry.code, dry.err, dry.raw.calls, folders()) == (0, "", [], [])
     assert tuple(plan) == DRY_KEYS
-    assert (plan["tier"], plan["workers"], plan["rewrites"]) == ("fast", 6, 3)
-    assert (plan["scenarios"], plan["holdout"], plan["synthesised"]) == (3, 0, True)
+    assert (plan["tier"], plan["workers"], plan["rewrites"]) == ("fast", 6, 2)
+    assert (plan["scenarios"], plan["holdout"], plan["synthesised"]) == (2, 0, True)
     assert plan["efforts"] == {"task": "low", "judge": "low", "reflect": "low"}
-    assert [stage["calls"] for stage in plan["stages"]] == [5, 12, 5, 0]
-    assert plan["est_calls"] == DEFAULT_PLAN.est_calls == 22
-    assert plan["est_seconds"] == pytest.approx(DEFAULT_PLAN.est_seconds)
-    assert plan["plan"]["budget"] == 66 and plan["plan"]["wall_clock_s"] == 30
+    assert [stage["calls"] for stage in plan["stages"]] == [4, 6, 4, 0]
+    assert plan["est_calls"] == DEFAULT_PLAN.est_calls == 14
+    assert plan["est_seconds"] == pytest.approx(DEFAULT_PLAN.est_seconds) == 20.628571
+    assert plan["plan"]["budget"] == 42 and plan["plan"]["wall_clock_s"] == 30
     assert plan["refusal"] is None and plan["iterations"] is None
 
 
@@ -238,9 +242,9 @@ def test_dry_text_shows_the_tier_the_stages_and_the_estimate(capsys):
     assert text.startswith("dry run: no model call made, nothing written\n")
     assert "tier: fast (--time 30 s), 6 calls at a time\n" in text
     assert "effort: task low, judge low, reflection low\n" in text
-    assert "rewrites: 3; scenarios: 3, synthesised by one call (3 to pick on, 0 held out)" in text
-    assert "  B: task runs: 12 calls, about " in text
-    assert "estimate: 22 calls in about 24 s of 30 s; budget: 66 calls" in text
+    assert "rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)" in text
+    assert "  B: task runs: 6 calls, about 6.3 s" in text
+    assert "estimate: 14 calls in about 21 s of 30 s; budget: 42 calls" in text
     assert "evidence: a fast check" in text and "would refuse" not in text
 
 
@@ -309,13 +313,16 @@ def test_a_fast_run_cut_anywhere_resumes_to_the_same_outcome_with_its_saved_plan
 
 
 def test_a_resumed_fast_run_with_examples_rebuilds_the_same_plan(tmp_path, capsys):
-    """At 45 s on 4 workers the plan picks on 3 examples, and on 2 without them: the resume
-    knows from the run folder that the run had them, and runs stage B on all 3."""
+    """At 50 s on 4 workers (42.5 s planned) the plan with examples is K=3 on M=3: no synthesis
+    call, so stage A is one wave, I + 3 T + 2 J3 = 40.8 s. Without them it is K=2 on M=4,
+    I + 3 T + J4 = 35.3 s, as K=3 then needs a second wave in stage A (2 I + 2 T + 2 J3 = 43.4 s).
+    The resume knows from the run folder that the run had them, and runs stage B on all 3."""
     tokens = count_tokens(PROMPT)
-    assert [fast_plan(45, 4, tokens, given).scenarios for given in (True, False)] == [3, 2]
+    shapes = [fast_plan(50, 4, tokens, given) for given in (True, False)]
+    assert [(plan.rewrites, plan.scenarios) for plan in shapes] == [(3, 3), (2, 4)]
     path = tmp_path / "ex.jsonl"
     path.write_text("".join(json.dumps({"input": f"example {i}"}) + "\n" for i in range(3)))
-    argv = ["--json", "--time", "45s", "--workers", "4", "--examples", str(path), PROMPT]
+    argv = ["--json", "--time", "50s", "--workers", "4", "--examples", str(path), PROMPT]
     reference = run(capsys, *argv).obj()
     cli.main(["clean"])
     with pytest.raises(Cut):  # in stage A, before any task run
@@ -345,7 +352,7 @@ def test_a_saved_tier_its_clock_does_not_select_is_a_damaged_manifest(capsys):
 
 
 @pytest.mark.parametrize(
-    ("argv", "limit", "deadline"), [([], 66, 30.0), (["--time", "2m"], None, 120.0)]
+    ("argv", "limit", "deadline"), [([], 42, 30.0), (["--time", "2m"], None, 120.0)]
 )
 def test_a_fast_run_has_the_whole_budget_and_clock(monkeypatch, capsys, argv, limit, deadline):
     built: list[tuple[int, float]] = []

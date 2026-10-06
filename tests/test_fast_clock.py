@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 from fakes import FakeClock
-from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixture)
+from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     CHECKED,
     K1M2,
@@ -25,6 +25,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     World,
     is_contract_check,
     judged_scenarios,
+    mechanics_latency_model,
     no_disk_flush,
     prompt_of,
     run,

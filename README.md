@@ -60,20 +60,21 @@ tier: fast (--time 30 s), 6 calls at a time
 models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
 effort: task low, judge low, reflection low
 strictness: conservative, length cap 1.25x the original's tokens (at least the original plus 40)
-rewrites: 3; scenarios: 3, synthesised by one call (3 to pick on, 0 held out)
+rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
 stages:
-  A: intake, synthesis and rewrites: 5 calls, about 7.8 s
-  B: task runs: 12 calls, about 10.5 s
-  C: judge and contract checks: 5 calls, about 5.6 s
+  A: intake, synthesis and rewrites: 4 calls, about 8.8 s
+  B: task runs: 6 calls, about 6.3 s
+  C: judge and contract checks: 4 calls, about 5.5 s
   D: free gates and pick: 0 calls, about 0.0 s
-estimate: 22 calls in about 24 s of 30 s; budget: 66 calls (ceiling 300)
+estimate: 14 calls in about 21 s of 30 s; budget: 42 calls (ceiling 300)
 evidence: a fast check: scored on the scenarios it is picked on, not verified on held-out scenarios, no noise measured
 ```
 
-The stage times come from the latency model of ADR-011 (about 2.4 s per call plus its output
-tokens at 70 per second, one slowest call per wave of `--workers` calls). With `--workers 1` it
-adds `a real run would refuse: the fast plan needs about 58 s, more than --time 30 s; give a longer
---time, or more --workers (now 1)` and still exits 0. With `--deep` it prints the plan of the GEPA
+The stage times come from the latency model of ADR-011 (about 3.4 s per call, the start-up
+measured with the trims of ADR-009, plus its output tokens at 70 per second, one slowest call per
+wave of `--workers` calls). With `--workers 1` it adds `a real run would refuse: the fast plan
+needs about 68 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
+still exits 0. With `--deep` it prints the plan of the GEPA
 search instead: its budget, fixed costs, split, estimated iterations and clock share; with
 `--target-model opus` the judge becomes `claude-sonnet-5-5` (never the task or target model).
 

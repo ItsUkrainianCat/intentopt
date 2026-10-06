@@ -10,7 +10,7 @@ import dataclasses
 
 import pytest
 from fakes import MARKER, intake_reply
-from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixture)
+from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     CHECKED,
     K1M2_EXAMPLES,
@@ -18,6 +18,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     MODELS,
     PROMPT,
     World,
+    mechanics_latency_model,
     no_disk_flush,
     prompt_of,
     run,

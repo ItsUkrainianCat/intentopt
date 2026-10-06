@@ -1,11 +1,14 @@
 """The raw model layer: one `claude -p` child process per call (ADR-004, ADR-009), and the only
-code that builds that command (SPEC R18). The flags are those of R18, plus `--effort <level>`
-after the model when the call asks for one (SPEC R25); the system prompt is the single argument
-`--system-prompt=<text>` and the reply schema follows `--json-schema`. The user text goes to the
-child's stdin only, never into an argument, and no shell is involved (SPEC R19).
-The child runs in the run's empty working folder with an allowlisted environment (no API key,
-nothing `ANTHROPIC_*` or `CLAUDE_CODE_*`), so it uses the subscription login and reads no project
-file.
+code that builds that command (SPEC R18). The flags are those of R18, including
+`--setting-sources ""` (no user, project or local settings file is read; ADR-009, amendment
+2026-10-06), plus `--effort <level>` after the model when the call asks for one (SPEC R25); the
+system prompt is the single argument `--system-prompt=<text>` and the reply schema follows
+`--json-schema`. The user text goes to the child's stdin only, never into an argument, and no
+shell is involved (SPEC R19). The child runs in the run's empty working folder with an
+allowlisted environment (no API key, nothing `ANTHROPIC_*` or `CLAUDE_CODE_*` from the parent),
+so it uses the subscription login and reads no project file; to that it adds exactly
+`DISABLE_TELEMETRY=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which cut a call's
+start-up (ADR-009, amendment 2026-10-06; the child then sends no telemetry).
 
 Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools,
 MCP servers, skills or slash commands, only the built-in agents and the default output style, or
@@ -57,6 +60,8 @@ _HEAD = (
     "--safe-mode",
     "--settings",
     '{"outputStyle":"default"}',
+    "--setting-sources",
+    "",
     "--tools",
     "",
     "--strict-mcp-config",
@@ -97,6 +102,9 @@ _ENV_NAMES = frozenset(
     }
 )
 _ENV_PREFIX = "LC_"
+# Set on every child with these values, whatever the parent has: they cut a call's start-up
+# (ADR-009, amendment 2026-10-06). The only CLAUDE_CODE_* style variables the child gets.
+_ENV_FIXED = {"DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 # The lockdown of ADR-009: these init fields must be empty lists, the tools and agents subsets of
 # `_allowed_tools(call)` and the built-in agents, each name listed once, the output style the
 # default.
@@ -160,7 +168,8 @@ class ClaudeCliBackend:
 
 
 def _environment(environ: Mapping[str, str]) -> dict[str, str]:
-    return {k: v for k, v in environ.items() if k in _ENV_NAMES or k.startswith(_ENV_PREFIX)}
+    kept = {k: v for k, v in environ.items() if k in _ENV_NAMES or k.startswith(_ENV_PREFIX)}
+    return {**kept, **_ENV_FIXED}
 
 
 def _argv(binary: str, call: Call) -> list[str]:

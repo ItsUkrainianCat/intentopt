@@ -8,7 +8,7 @@ import json
 
 import pytest
 from fakes import MARKER
-from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixture)
+from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     CHECKED,
     K2M2,
@@ -16,6 +16,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     QUICK,
     World,
     is_contract_check,
+    mechanics_latency_model,
     no_disk_flush,
     prompt_of,
     run,
