@@ -87,6 +87,11 @@ REFLECT_NOTES: dict[str, str] = {
 }
 # A reflection's sample is this plus its number, never a first-generation rewrite's sample.
 REFLECT_SAMPLE = 100
+# A best candidate with at least this share of the token cap is near it, and a reflection is asked
+# for a shorter text than it: the reflections of the bench's vague-1 and code-1 (2026-10-06) read
+# candidates of 50 of 62 and 85 of 110 tokens, followed the judge's reasons by adding, and wrote 81
+# to 128 tokens, all four over the cap.
+NEAR_CAP_SHARE = 0.75
 # The end of every scoring run's user text in the quick, fast and checked tiers: open-ended prompts
 # made the task model write 600 tokens and more (SPEC R25; ADR-011, third live run).
 FAST_TASK_SUFFIX = "\n\n(Answer in at most 120 words.)"
@@ -199,11 +204,14 @@ def reflect_call(
     effort: str | None = None,
 ) -> Call:
     """The call that asks `model`, the reflection model, for a second-generation rewrite of
-    `prompt` from `candidates` (the best earlier versions with, per scenario, the situation, an
-    excerpt of the answer and the failed checks with the judge's quotes) under the note of
-    `variant` (SPEC R16, R25; ADR-006, ADR-008). All user text travels in the user JSON."""
+    `prompt` from `candidates` (the best earlier versions, best first, with, per scenario they
+    lost or tied, the situation, the verdict and the judge's reasons) under the note of `variant`
+    (SPEC R16, R25; ADR-006, ADR-008). Its token cap is the first generation's; when the best
+    candidate is near it (NEAR_CAP_SHARE), the system prompt also gives that candidate's token
+    count and asks for a shorter text (SPEC R7). All user text travels in the user JSON."""
     text = REFLECT_VARIANTS[reflect_strategy(variant)]
-    system = _system(_REFLECT_SYSTEM, text, prompt, strictness, allow_growth)
+    best = str(candidates[0]["prompt"]) if candidates else None
+    system = _system(_REFLECT_SYSTEM, text, prompt, strictness, allow_growth, best)
     meant = {
         "goal": contract.goal,
         "keep": list(contract.keep),
@@ -221,20 +229,55 @@ def reflect_call(
     return Call(role="reflect", model=model, user=user, system=system, sample=sample, effort=effort)
 
 
+def evidence(
+    text: str,
+    pick: Sequence[Scenario],
+    feedback: Mapping[str, tuple[str, Sequence[str]]],
+) -> dict[str, Any]:
+    """What a reflection reads of a candidate: its prompt and, per scenario it lost or tied (its
+    `feedback`: the verdict and the judge's reasons), the situation, the verdict and the reasons
+    (stage C's replies, nothing asked anew; SPEC R16, R25)."""
+    scenarios = []
+    for scenario in pick:
+        if scenario.id in feedback:
+            verdict, reasons = feedback[scenario.id]
+            scenarios.append(
+                {"input": scenario.input, "verdict": verdict, "reasons": list(reasons)}
+            )
+    return {"prompt": text, "scenarios": scenarios}
+
+
 def _system(
-    template: str, strategy_text: str, prompt: str, strictness: Strictness, allow_growth: bool
+    template: str,
+    strategy_text: str,
+    prompt: str,
+    strictness: Strictness,
+    allow_growth: bool,
+    best: str | None = None,
 ) -> str:
     """A rewrite's or a reflection's system prompt: the strategy, the rules of ADR-006 with the
-    token cap of `strictness` (SPEC R7, R8) and the reply format of ADR-008."""
+    token cap of `strictness` (SPEC R7, R8), for a reflection whose `best` candidate is near that
+    cap a shorter text than it, and the reply format of ADR-008."""
     if strictness not in _LEVELS:
         raise ValueError(f"unknown strictness {strictness!r}")
     tokens = count_tokens(prompt)
+    cap = _token_cap(tokens, strictness)
     length = (
         "Length: no length cap, but add nothing without need."
         if allow_growth
-        else f"Length: at most {_token_cap(tokens, strictness)} tokens, counting words and "
-        f"punctuation marks (the original has {tokens})."
+        else f"Length: at most {cap} tokens, counting words and punctuation marks (the original "
+        f"has {tokens})."
     )
+    if (
+        best is not None
+        and not allow_growth
+        and (near := count_tokens(best)) >= NEAR_CAP_SHARE * cap
+    ):
+        length += (
+            f" The best earlier version already has {near} tokens, near that cap: write a text "
+            "shorter than it, making room for what the reasons ask by cutting, not by adding; a "
+            "version over the cap is discarded."
+        )
     return template.format(
         strategy=strategy_text,
         length=length,
@@ -268,9 +311,12 @@ def parse_rewrite(text: str) -> str:
     return rewrite
 
 
-def synth_call(prompt: str, count: int, model: str, effort: str | None = None) -> Call:
+def synth_call(
+    prompt: str, count: int, model: str, effort: str | None = None, sample: int = 0
+) -> Call:
     """The call that asks `model`, the reflection model, for `count` scenarios of `prompt`, with
-    SYNTH_SCHEMA held to exactly `count` items (SPEC R11, R25; ADR-008). It sends no contract."""
+    SYNTH_SCHEMA held to exactly `count` items (SPEC R11, R25; ADR-008). It sends no contract.
+    `sample` sets a later wave apart from the first (`fast.MORE_SAMPLE`)."""
     schema = copy.deepcopy(SYNTH_SCHEMA)
     schema["properties"]["scenarios"] |= {"minItems": count, "maxItems": count}
     user = json.dumps({"prompt": prompt, "count": count})
@@ -280,6 +326,7 @@ def synth_call(prompt: str, count: int, model: str, effort: str | None = None) -
         user=user,
         system=_SYNTH_SYSTEM,
         json_schema=json.dumps(schema),
+        sample=sample,
         effort=effort,
     )
 

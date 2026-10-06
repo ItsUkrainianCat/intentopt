@@ -20,12 +20,14 @@ for all of them). Stage D picks over every winner of both generations: the large
 the shorter rewrite, then the earlier. When the second generation does not fit the time left or
 is cut, the first generation's result stands.
 
-Before each stage the time and calls left are compared with its estimate (`fastplan`): what does
-not fit is shrunk, scenarios first, and a deadline or call limit reached inside a stage ends it
-(`ended`). Stage B's calls end by the deadline less the cheapest stage C (and E), so a task run
-that cannot finish by then is abandoned (ADR-011 decision 2); after such a cut the scenarios that
-both runs of the original and a rewrite answered in time go on to stage C, shrunk to the time
-left, or on one rewrite and one scenario when the time left covers one pairwise call
+Before each stage the time and calls left are compared with its estimate (`fastplan`), by the
+latency model fitted to the run's replies once there is one (after stage A, again after stage B,
+`fast_calibrate`): what does not fit is shrunk, scenarios first, and a deadline or call limit
+reached inside a stage ends it (`ended`). Stage B's calls end by the deadline less the cheapest
+stage C (and E), so a task run that cannot finish by then is abandoned (ADR-011 decision 2); after
+such a cut the scenarios that both runs of the original and a rewrite answered in time go on to
+stage C, shrunk to the time left, or on one rewrite and one scenario when the time left covers
+one pairwise call
 (`fastplan.last_chance`). The deadline itself is never passed (SPEC R17, R25). A failed rewrite,
 reflection, task or pairwise call drops what it was for (a pairwise order that failed makes its
 scenarios ties); an original run left with no answer, a noise pair with no scenario both runs
@@ -43,6 +45,7 @@ from typing import Any, NamedTuple, TextIO, cast
 from autoimprover.backend import BudgetedBackend, Clock
 from autoimprover.bench_judge import parse_pairwise_batch
 from autoimprover.contract import Violation, _ask, check_many, literals_preserved
+from autoimprover.fast_calibrate import Timed, fit
 from autoimprover.fast_pairwise import (
     Preference,
     noise_count,
@@ -55,6 +58,7 @@ from autoimprover.fast_prompts import (
     REFLECT_NOTES,
     STRATEGY_NOTES,
     FastEvaluator,
+    evidence,
     parse_rewrite,
     reflect_call,
     reflect_strategy,
@@ -62,6 +66,7 @@ from autoimprover.fast_prompts import (
 )
 from autoimprover.fastplan import (
     FastPlan,
+    Latency,
     Stage,
     last_chance,
     misfit,
@@ -133,8 +138,9 @@ class Judged(NamedTuple):
 class Stages:
     """One fast run: its inputs, the free gates, stages B to D and the second generation, and what
     every ending reports: `stop`, the first cause that shrank or cut a stage, and in `measured`
-    the noise once known. `ended` is set when a stage was cut short, after
-    which no stage runs."""
+    the noise once known. `ended` is set when a stage was cut short, after which no stage runs.
+    Every call goes through `timed`, and `latency` is the model fitted to its replies once there
+    is one (`calibrate`), which every later estimate uses (SPEC R25)."""
 
     prompt: str
     plan: Plan
@@ -148,6 +154,12 @@ class Stages:
     stop: StopCause | None = None
     ended: bool = False
     measured: dict[str, Any] = field(default_factory=dict)
+    latency: Latency | None = None
+    timed: Timed = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.timed = Timed(self.backend)
+        self.backend = self.timed
 
     def gates(
         self, drafts: list[tuple[int, str]], earlier: Sequence[Rewrite] = (), second: bool = False
@@ -184,7 +196,9 @@ class Stages:
     ) -> Win | None:
         """Stages B, C, the second generation and D: the best rewrite by the pick rule, or None."""
         w, p = self.workers, count_tokens(self.prompt)
-        shape = self.shrunk(len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p))
+        shape = self.shrunk(
+            len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p, self.latency)
+        )
         if shape is None:
             return None
         rewrites, pick = rewrites[: shape[0]], pick[: shape[1]]
@@ -194,9 +208,11 @@ class Stages:
         )
 
         def judging(k: int, m: int) -> tuple[Stage, ...]:  # stage C, then E
-            return (scoring_stages(k, m, w, p)[1], *tail(0, 0, holdout, w, p))
+            lat = self.latency
+            return (scoring_stages(k, m, w, p, lat)[1], *tail(0, 0, holdout, w, p, lat))
 
         outputs = self.stage_b(contract, runs, pick, judging(1, 1))
+        self.calibrate("B")
         if self.ended:  # cut: the scenarios every run answered in time go on (ADR-011 decision 2)
             self.ended = False
             pick = [s for s in pick if answered(outputs, s.id)]
@@ -207,7 +223,7 @@ class Stages:
             raise BackendError("every task run of one of the original's two runs failed")
         alive = [n for n in range(2, len(runs)) if ran[n]]
         shape = self.shrunk(len(alive), len(pick), judging)
-        if shape is None and alive and self.fits(last_chance(holdout, w, p)):
+        if shape is None and alive and self.fits(last_chance(holdout, w, p, self.latency)):
             shape = (1, 1)  # stage B ended late: the time left covers one pairwise call
         if shape is None:
             return None
@@ -240,14 +256,15 @@ class Stages:
         """The second generation's winners (stages R, B2, C2), or none when it does not fit the
         time and calls left or is cut: then the first generation's result stands."""
         w, plan, k2, p = self.workers, self.plan, self.fplan.rewrites2, count_tokens(self.prompt)
-        later = (*second_stages(k2, len(pick), w, p), *tail(0, 0, holdout, w, p))
+        lat = self.latency
+        later = (*second_stages(k2, len(pick), w, p, lat), *tail(0, 0, holdout, w, p, lat))
         if not self.fits(later):
             return []
         kept = sorted(
             (j for j in first if j.keep),
             key=lambda j: (j.found.losses - j.found.wins, count_tokens(j.rewrite.text)),
         )
-        parents = [evidence(j.rewrite.text, pick, j.found) for j in kept[:_PARENTS]]
+        parents = [evidence(j.rewrite.text, pick, j.found.feedback) for j in kept[:_PARENTS]]
         parents = parents or [{"prompt": self.prompt, "scenarios": []}]
         self.note(f"stage R: {k2} reflection(s) on {len(parents)} candidate(s)")
         calls = [
@@ -393,6 +410,17 @@ class Stages:
         budgeted = self.budgeted
         return self.clock.remaining(budgeted.deadline), budgeted.limit - budgeted.used
 
+    def calibrate(self, after: str) -> None:
+        """The latency model fitted to every reply so far (`fast_calibrate.fit`), kept for the
+        estimates that follow; nothing changes while too few replies carry a duration."""
+        fitted = fit(self.timed.samples())
+        if fitted is not None:
+            self.latency = fitted
+            self.note(
+                f"after stage {after}: a call takes {fitted.overhead_s:.1f} s plus its output "
+                f"tokens at {fitted.tokens_per_s:.0f} per s"
+            )
+
     def fits(self, stages: Sequence[Stage]) -> bool:
         """Whether `stages` fit in what is left; the cause of a misfit is kept in `stop`."""
         cause = misfit(stages, *self.left())
@@ -460,17 +488,3 @@ def won(judged: Judged, noise: int, m: int) -> Win | None:
     return Win(
         judged.rewrite, found.losses / m, found.wins / m, (found.wins - found.losses) / m, noise / m
     )
-
-
-def evidence(text: str, pick: Sequence[Scenario], found: Preference) -> dict[str, Any]:
-    """What a reflection reads of a candidate: its prompt and, per scenario it lost or tied, the
-    situation, the verdict and the judge's reasons (stage C's replies, nothing asked anew; SPEC
-    R16, R25)."""
-    scenarios = []
-    for scenario in pick:
-        if scenario.id in found.feedback:
-            verdict, reasons = found.feedback[scenario.id]
-            scenarios.append(
-                {"input": scenario.input, "verdict": verdict, "reasons": list(reasons)}
-            )
-    return {"prompt": text, "scenarios": scenarios}
