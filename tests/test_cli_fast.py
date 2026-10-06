@@ -27,9 +27,9 @@ from autoimprover.runstore import runs_root
 from autoimprover.types import Call, Reply
 
 PLAIN = "Answer the request well."  # a rewrite without the marker: it scores no better
-# The default plan, 30 s on 6 workers (test_fastplan.py): K=2, M=2, 14 calls (A: intake, synthesis
-# and 2 rewrites = 4; B: 3 prompts x 2 scenarios = 6; C: 3 judge calls and 1 contract check = 4),
-# about 20.6 s (I 8.83 + T 6.26 + J2 5.54, one wave each); the budget is 3 x 14 = 42 calls.
+# The default plan, 30 s on 6 workers (test_fastplan.py): K=1, M=2, 13 calls (A: intake, synthesis
+# and 1 rewrite = 3; B: (1 + 2 original runs) x 2 scenarios = 6; C: 3 judge calls and 1 contract
+# check = 4), about 20.6 s (one wave each); the budget is 3 x 13 = 39 calls.
 DEFAULT_PLAN = fast_plan(30, 6, count_tokens(PROMPT), False)
 
 
