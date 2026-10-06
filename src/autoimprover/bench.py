@@ -13,9 +13,15 @@ that ends in a backend failure is an error and the bench goes on (SPEC R24). An 
 and with the naive baseline every prompt, is then judged pairwise (`bench_judge`) through a stack
 of its own, `Effort(Cached(Resilient(Budgeted(raw))))` (SPEC R17, R24; ADR-004, ADR-011): the
 plan's efforts, the run folder's cache, its own call limit and its own clock, so neither the run's
-limit nor its deadline cuts the measurement. An unchanged prompt without the baseline is a tie and
-costs no call. Ctrl-C ends the bench after the prompts already measured; the prompt it cut is not
-counted, and the bench's own calls in flight are cancelled (SPEC R2, R21).
+limit nor its deadline cuts the measurement. The plan's models and efforts are the runs' own (the
+run's flags a bench takes, `cli_bench`), so the comparisons follow the run's choice: the target
+model answers the fresh scenarios, both prompts alike, at the task role's effort (the task model
+works only inside the runs); the judge model, never the task or target model (SPEC R14), judges
+the answers at the judge role's effort; the reflection model writes the scenarios at the
+reflection role's effort and the naive rewrite at low effort (SPEC R26). An unchanged prompt
+without the baseline is a tie and costs no call. Ctrl-C ends the bench after the prompts already
+measured; the prompt it cut is not counted, and the bench's own calls in flight are cancelled
+(SPEC R2, R21).
 
 DEBT, a private name used here until its owner adds a public seam: `scenarios._example`.
 """
@@ -191,8 +197,9 @@ RunOne = Callable[[BenchPrompt, Path], Collected]
 
 @dataclass(frozen=True)
 class BenchPlan:
-    """What every prompt of a bench shares: the models (the pairwise judge is the plan's judge,
-    SPEC R14), the efforts, the calls at a time, the naive baseline, and `--seed`."""
+    """What every prompt of a bench shares: the models and efforts of its runs, which its
+    comparisons use too (the target model answers, the plan's judge judges, SPEC R14, R26), the
+    calls at a time, the naive baseline, and `--seed`."""
 
     models: Models
     efforts: Efforts
