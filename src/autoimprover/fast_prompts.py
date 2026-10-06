@@ -1,7 +1,7 @@
 """The model messages of the fast tiers and how their replies are read (SPEC R7, R8, R9, R10, R10b,
 R11, R16, R18, R24, R25; ADR-006, ADR-008, ADR-011): the rewrite call, the reflection call of the
-second generation and their parser, the synthesis call and its parser, and the scores and side
-info of what stages B and C gathered.
+second generation and their parser, the synthesis call and its parser, the task call of the scoring
+runs, and the scores and side info of what stages B and C gathered.
 
 A rewrite is one call to the reflection model (ADR-008: intake, synthesis and rewrites use it),
 beside the intake, so it carries no intent contract. Its user message is JSON holding the prompt
@@ -16,7 +16,9 @@ carries its own sample, so no two rewrites share a cache key. A reflection is th
 the second generation, with the contract and the best earlier versions, their outputs and failed
 checks in its user JSON and a note of its own (SPEC R16). The synthesis call asks for `count` test
 cases that fit a prompt of either kind; its reply is checked as `scenarios.synthesize` checks its
-own (SPEC R11).
+own (SPEC R11). A scoring run is the evaluator's task call with FAST_TASK_SUFFIX at the end of
+its user text, the same for every candidate (`FastEvaluator`, SPEC R25): the run measures the
+prompt, the suffix only keeps the answer short, and no returned prompt holds it.
 
 The scores come from the evaluator's own code, so a fast score means what a search score means.
 """
@@ -24,6 +26,7 @@ The scores come from the evaluator's own code, so a fast score means what a sear
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -83,6 +86,9 @@ REFLECT_NOTES: dict[str, str] = {
 }
 # A reflection's sample is this plus its number, never a first-generation rewrite's sample.
 REFLECT_SAMPLE = 100
+# The end of every scoring run's user text in the quick, fast and checked tiers: open-ended prompts
+# made the task model write 600 tokens and more (SPEC R25; ADR-011, third live run).
+FAST_TASK_SUFFIX = "\n\n(Answer in at most 120 words.)"
 # GEPA's template tokens: a prompt holding one is refused everywhere (SPEC R1; ADR-006).
 _GEPA_TOKENS = ("<curr_param>", "<side_info>")
 
@@ -314,6 +320,16 @@ def gathered(
         for scenario, (score, info) in zip(scenarios, entries, strict=True)
         if "incomplete" not in info
     }
+
+
+class FastEvaluator(Evaluator):
+    """The evaluator of the fast tiers' scoring runs: its task call is the evaluator's own with
+    FAST_TASK_SUFFIX at the end of the user text, after the scenario input (template) or after the
+    candidate (task); so the suffix is part of the call and its cache key (SPEC R25)."""
+
+    def _task_call(self, candidate: str, scenario: Scenario) -> Call:
+        call = super()._task_call(candidate, scenario)
+        return dataclasses.replace(call, user=call.user + FAST_TASK_SUFFIX)
 
 
 class _NoCalls:

@@ -190,7 +190,7 @@ def test_a_reflection_without_a_delimited_prompt_is_dropped(tmp_path):
 @pytest.mark.parametrize("late", [False, True])
 def test_a_second_generation_that_does_not_fit_leaves_the_first_ones_result(tmp_path, late):
     """The first generation's last judge call leaves 20 s; the second needs 2 Rs + 4 T + 3 J2 =
-    41.2 s at workers 1."""
+    38.3 s at workers 1."""
     clock = FakeClock()
 
     def hook(call: Call) -> None:
@@ -262,8 +262,8 @@ def test_the_checked_tier_confirms_a_second_generation_winner_on_the_target(tmp_
 def test_the_checked_tier_keeps_the_time_of_its_held_out_check_from_the_second_generation(
     tmp_path, left
 ):
-    """At workers 1 the second generation of one reflection needs Rs + 2 T + 2 J2 = 22.9 s and
-    stage E 8 T + 2 J4 = 55.4 s, 78.3 s in all: with 60 s left after the first generation's judge
+    """At workers 1 the second generation of one reflection needs Rs + 2 T + 2 J2 = 21.4 s and
+    stage E 8 T + 2 J4 = 49.7 s, 71.1 s in all: with 60 s left after the first generation's judge
     calls, E checks the first's winner; with 80 s, the second's."""
     clock, once = FakeClock(), []
 
@@ -293,7 +293,7 @@ def test_a_scenario_a_candidate_did_not_complete_is_left_out_of_what_the_reflect
 @pytest.mark.parametrize("late", [False, True])
 def test_no_second_task_run_when_the_reflections_leave_no_time_for_it(tmp_path, late):
     """A reflection that overruns leaves 20 s; the second generation's runs and judge calls
-    need 4 T + 3 J2 = 34.7 s at workers 1."""
+    need 4 T + 3 J2 = 31.8 s at workers 1."""
     clock = FakeClock()
 
     def hook(call: Call) -> None:
