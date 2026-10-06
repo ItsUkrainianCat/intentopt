@@ -10,7 +10,12 @@ baseline's comparisons, the median and 90th percentile (nearest rank) of the run
 calls of the runs and of the bench itself, and a row per prompt. Contract violations in returned
 prompts are null: the pipeline never returns a rewrite its contract check vetoed (SPEC R6) and the
 pairwise judge sees answers, not prompts, so the bench has no count of its own. Everything shown is
-an id, a fixed code or a number, never a prompt (SPEC R26)."""
+an id, a fixed code or a number, never a prompt (SPEC R26).
+
+A bench of `--ungated` runs says so in its header and its plan (its returned prompts are the
+best-ranked candidates, not gate-verified), keeps the same measures, and adds the tally of the
+improved rows compared: their wins, ties and losses against the original, and the share of wins
+among the decided ones (wins and losses) with the count behind it."""
 
 from __future__ import annotations
 
@@ -26,12 +31,17 @@ from autoimprover.report import one_line
 from autoimprover.types import Efforts, Models, Strictness, Tier
 
 _COUNTED = ("win", "tie", "loss")
+# What the header and the plan of an `--ungated` bench say of its returned prompts.
+_UNGATED_HEAD = (
+    ", ungated (--ungated): a returned prompt is the best-ranked candidate, not gate-verified"
+)
 
 
 @dataclass(frozen=True)
 class Summary:
     """The measure of a bench: what was measured, the prompts in the set (after `--limit`), the
-    tier and clock of every run, whether the naive baseline ran, and the bench's folder."""
+    tier and clock of every run, whether the naive baseline ran, the bench's folder, and whether
+    its runs were `--ungated`."""
 
     measured: Measured
     prompts: int
@@ -39,12 +49,23 @@ class Summary:
     time_s: int
     baseline: bool
     folder: str
+    ungated: bool = False
 
     def object(self) -> dict[str, Any]:
         rows = self.measured.rows
         done = [row for row in rows if row.status != "error"]
         improved = [row for row in done if row.status == "improved"]
         tool = _tally([row.tool for row in done])
+        returned = _tally([row.tool for row in improved])
+        decided = returned["wins"] + returned["losses"]
+        tally = {
+            "rows": decided + returned["ties"],
+            "wins": returned["wins"],
+            "ties": returned["ties"],
+            "losses": returned["losses"],
+            "decided": decided,
+            "win_share_of_decided": _rate(returned["wins"], decided),
+        }
         seconds = [row.seconds for row in done if row.seconds is not None]
         run_calls = sum(row.calls for row in rows)
         bench_calls = sum(row.bench_calls for row in rows)
@@ -67,7 +88,9 @@ class Summary:
             "losses": tool["losses"],
             "compare_errors": tool["errors"],
             "win_rate": tool["win_rate"],
-            "win_rate_of_improved": _tally([row.tool for row in improved])["win_rate"],
+            "win_rate_of_improved": returned["win_rate"],
+            "ungated": self.ungated,
+            "ungated_tally": tally if self.ungated else None,
             "baseline": naive,
             "contract_violations": None,
             "seconds_median": statistics.median(seconds) if seconds else None,
@@ -83,7 +106,7 @@ class Summary:
         measured, prompts = found["measured"], found["prompts"]
         lines = [
             f"bench: {measured} of {prompts} prompts measured, tier {self.tier} (--time "
-            f"{self.time_s} s)",
+            f"{self.time_s} s){_UNGATED_HEAD if self.ungated else ''}",
         ]
         if self.measured.interrupted:
             lines.append(
@@ -102,6 +125,14 @@ class Summary:
         if found["compare_errors"]:
             lines.append(
                 f"  {found['compare_errors']} comparison(s) judged no scenario: not counted"
+            )
+        if self.ungated:
+            tally = found["ungated_tally"]
+            lines.append(
+                "ungated: the returned prompts against the original over the "
+                f"{tally['rows']} improved rows compared: {_counts(tally)}; wins among the "
+                f"decided: {_percent(tally['win_share_of_decided'])} ({tally['wins']} of "
+                f"{tally['decided']})"
             )
         if found["baseline"] is not None:
             base = found["baseline"]
@@ -137,8 +168,8 @@ class DryRow:
 @dataclass(frozen=True)
 class DryView:
     """The plan of `autoimprover bench --dry` (SPEC R4, R26): no call, nothing written. The models,
-    efforts and strictness are every run's; the bench's own comparisons answer on the target
-    model at the task effort and judge with the judge model at the judge effort."""
+    efforts, strictness and `--ungated` are every run's; the bench's own comparisons answer on the
+    target model at the task effort and judge with the judge model at the judge effort."""
 
     path: str
     tier: Tier
@@ -151,6 +182,7 @@ class DryView:
     scenarios: int
     rows: tuple[DryRow, ...]
     refusal: str | None = None
+    ungated: bool = False
 
     def object(self) -> dict[str, Any]:
         run_calls = sum(row.run_calls for row in self.rows)
@@ -176,6 +208,7 @@ class DryView:
             "bench_calls": bench_calls,
             "bench_seconds": bench_seconds,
             "refusal": self.refusal,
+            "ungated": self.ungated,
             "per_prompt": [
                 {
                     "id": row.id,
@@ -193,7 +226,8 @@ class DryView:
         naive = f", the naive rewrite {NAIVE_EFFORT}" if self.baseline else ""
         lines = [
             f"bench: {found['prompts']} prompts from {self.path}; tier {self.tier} (--time "
-            f"{self.time_s} s), {self.workers} calls at a time",
+            f"{self.time_s} s), {self.workers} calls at a time"
+            f"{_UNGATED_HEAD if self.ungated else ''}",
             f"models: task {models.task}, judge {models.judge} (also the pairwise judge), "
             f"reflection {models.reflect} (also the fresh scenarios), target {models.target} "
             "(the pairwise answers)",

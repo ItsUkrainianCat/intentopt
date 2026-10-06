@@ -25,7 +25,11 @@ const CODES = [
   'no_holdout',
   'no_candidate_beat_seed',
   'unconfirmed_out_of_budget',
+  'ungated_best_candidate',
 ]
+// The code of `--ungated`'s best-ranked candidate, which only an improved result carries (the mod
+// does not forward --ungated).
+const UNGATED = 'ungated_best_candidate'
 
 const end = (result: object | string, over: object = {}) => ({
   stdout: typeof result === 'string' ? result : `${JSON.stringify(result)}\n`,
@@ -55,7 +59,7 @@ describe('a finished run', () => {
   })
 
   test('every reason code of a kept original reads as unchanged, with its meaning', () => {
-    for (const code of CODES) {
+    for (const code of CODES.filter((each) => each !== UNGATED)) {
       const view = viewOf(end(kept(code)))
       expect(view.state, code).toBe('unchanged')
       expect(view.status, code).toBe(`result: unchanged (${code})`)

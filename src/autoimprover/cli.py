@@ -10,10 +10,11 @@ the original without a call below 8 scenarios unless `--trust-search` (SPEC R11)
 `runner.improve` with the search's share of the clock; the quick, fast and checked tiers get a fast
 plan and run `fast.improve_fast` with the whole clock, its stages reported on stderr as they go
 (`cli_fast`). Every run gets its folder and `Cached(Resilient(Budgeted(raw)))` on one clock, under
-`EffortBackend` in the fast tiers; `--resume <id>` continues it with its saved plan, budget and
-clock (SPEC R22). The outcome gets its tier in one place. Ctrl-C and SIGTERM end a run with exit
-130: no call starts any more and the raw layer's children are killed (SPEC R2, R21). Every ending
-maps to an exit code of SPEC R2; `report.Emitter` is the only writer to stdout."""
+`EffortBackend` in the fast tiers; `--resume <id>` continues it with its saved plan, flags (also
+`--ungated`), budget and clock (SPEC R22). The outcome gets its tier in one place. Ctrl-C and
+SIGTERM end a run with exit 130: no call starts any more and the raw layer's children are killed
+(SPEC R2, R21). Every ending maps to an exit code of SPEC R2; `report.Emitter` is the only writer
+to stdout."""
 
 from __future__ import annotations
 
@@ -230,7 +231,8 @@ class _Session:
         fplan = fast_plan(chosen.time_s, chosen.workers, count_tokens(prompt), given)
         refusal = _root_refusal() or fast_refusal(fplan)
         plan = _plan(opts, chosen, budget(opts, chosen.tier, chosen.time_s, fplan.est_calls))
-        view = FastView(plan, fplan, examples is None, refusal, checked_keeps(fplan, examples))
+        keeps = checked_keeps(fplan, examples)
+        view = FastView(plan, fplan, examples is None, refusal, keeps, opts.ungated)
         return self.open(opts, plan, prompt, view, examples, fplan)
 
     def start_deep(
@@ -277,12 +279,15 @@ class _Session:
         make_raw = self.raw_maker()
         given = examples is not None
         saved = {"kind": opts.kind, "trust_search": opts.trust_search, "examples": given}
+        saved["ungated"] = opts.ungated  # so a resumed run stays as it began (SPEC R22)
         store = self.store = RunStore.open_or_create(self.root or runs_root(), plan, prompt, saved)
         if examples is not None:
             store.save_scenarios(examples)
         self.emit.plan(view, dry=False)
         self.emit.notice(f"run folder: {store.path}")
-        return self.improve(make_raw, tier_plan, examples, opts.kind, opts.trust_search)
+        return self.improve(
+            make_raw, tier_plan, examples, opts.kind, opts.trust_search, opts.ungated
+        )
 
     def resume(self, opts: Options) -> int:
         """The run `--resume` names, with the prompt, plan, flags, scenarios, call count and
@@ -296,7 +301,7 @@ class _Session:
             self.emit.notice(
                 f"notice: --resume continues the saved run; ignoring {', '.join(ignored)}"
             )
-        kind, trust_search, had_examples = _saved(store)
+        kind, trust_search, had_examples, ungated = _saved(store)
         plan, saved = store.plan, store.scenarios()
         tier_plan: TierPlan = (
             runner.fixed_costs(plan, len(saved or ()) or SYNTH_COUNT, not saved)
@@ -308,7 +313,7 @@ class _Session:
             f"{store.elapsed_s:.0f} s of {plan.wall_clock_s} s of the clock"
         )
         self.emit.notice(f"run folder: {store.path}")
-        return self.improve(make_raw, tier_plan, None, kind, trust_search)
+        return self.improve(make_raw, tier_plan, None, kind, trust_search, ungated)
 
     def improve(
         self,
@@ -317,11 +322,13 @@ class _Session:
         scenarios: Sequence[Scenario] | None,
         kind: Kind | None,
         trust_search: bool,
+        ungated: bool = False,
     ) -> int:
         """The run in the held folder: one clock carried across resumes; for the deep tier the
         call limit at what the final steps leave and the deadline at the search's share of the
-        clock (SPEC R17), for the fast tiers the whole budget and clock (SPEC R25); all printed
-        output meanwhile in the run's log, the Outcome reported (SPEC R2)."""
+        clock (SPEC R17), for the fast tiers the whole budget and clock (SPEC R25) and
+        `--ungated`; all printed output meanwhile in the run's log, the Outcome reported (SPEC
+        R2)."""
         store = cast(RunStore, self.store)
         plan = store.plan
         clock = Clock(self.now or time.monotonic, elapsed=store.elapsed_s)
@@ -357,6 +364,7 @@ class _Session:
                     kind=kind,
                     log=Progress(self.emit, log),
                     workers=plan.workers,
+                    ungated=ungated,
                 )
             else:
                 outcome = runner.improve(
@@ -435,22 +443,24 @@ def _ignored(opts: Options) -> list[str]:
     return ignored + ["the prompt argument"] * bool(opts.words)
 
 
-def _saved(store: RunStore) -> tuple[Kind | None, bool, bool]:
-    """The flags a run saved in its manifest (`kind`, `trust_search`, and whether it had the
-    user's examples, false for a run from before the time tiers)."""
+def _saved(store: RunStore) -> tuple[Kind | None, bool, bool, bool]:
+    """The flags a run saved in its manifest (`kind`, `trust_search`, whether it had the user's
+    examples, false for a run from before the time tiers, and `ungated`, false for a run from
+    before that flag)."""
     opts = store.opts
     kind, trust_search = opts.get("kind"), opts.get("trust_search", False)
-    examples = opts.get("examples", False)
+    examples, ungated = opts.get("examples", False), opts.get("ungated", False)
     if (
         kind not in (None, *get_args(Kind))
         or type(trust_search) is not bool
         or type(examples) is not bool
+        or type(ungated) is not bool
     ):
         raise RunStoreError(
             f"manifest.json in the run folder {store.path} is damaged (its saved flags); start a "
             f"new run, or remove this one with `autoimprover clean {store.run_id}`"
         )
-    return cast(Kind | None, kind), trust_search, examples
+    return cast(Kind | None, kind), trust_search, examples, ungated
 
 
 def _clean(opts: Options, emit: Emitter) -> int:

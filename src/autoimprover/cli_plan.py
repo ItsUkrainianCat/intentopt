@@ -3,9 +3,10 @@ R25): `PlanView` for the deep tier (the models, the efforts, the budget and its 
 scenarios and their split, the estimated GEPA iterations, the clock and the share kept for the
 final steps) and `FastView` for the quick, fast and checked tiers (the tier, the time, the workers,
 the models and efforts, K rewrites, M scenarios to pick on and H held out, the stages with their
-calls and estimated seconds, the estimate of calls and seconds). Both say why a real run would
-refuse, or keep the original without a call. Their `--json` objects share one key set, DRY_KEYS,
-in one order; a key that does not apply to a tier is null. Neither makes a call or writes."""
+calls and estimated seconds, the estimate of calls and seconds, and whether it is `--ungated`).
+Both say why a real run would refuse, or keep the original without a call. Their `--json` objects
+share one key set, DRY_KEYS, in one order; a key that does not apply to a tier is null. Neither
+makes a call or writes."""
 
 from __future__ import annotations
 
@@ -48,6 +49,7 @@ DRY_KEYS = (
     "stages",
     "est_calls",
     "est_seconds",
+    "ungated",
 )
 # What a result of each fast tier is worth (SPEC R25).
 EVIDENCE = {
@@ -58,6 +60,10 @@ EVIDENCE = {
     "scenarios",
     "checked": "verified on held-out scenarios on the target model, no noise measured",
 }
+UNGATED_EVIDENCE = (
+    "ungated (--ungated): a rewrite that wins is returned as above; with no win, the best-ranked "
+    "rewrite that passed every gate is returned anyway, never verified (a measuring aid)"
+)
 
 
 def dry_object(**values: Any) -> dict[str, Any]:
@@ -212,14 +218,15 @@ def plan_object(view: PlanView) -> dict[str, Any]:
 @dataclass(frozen=True)
 class FastView:
     """The plan of a quick, fast or checked run: the plan, its fast plan (`fastplan.fast_plan`),
-    whether the scenarios are synthesised, why a real run would refuse, and why it would keep the
-    original without a call."""
+    whether the scenarios are synthesised, why a real run would refuse, why it would keep the
+    original without a call, and whether it is `--ungated`."""
 
     plan: Plan
     fast: FastPlan
     synthesised: bool
     refusal: str | None = None
     keeps_original: str | None = None
+    ungated: bool = False
 
     @property
     def scenarios(self) -> int:
@@ -252,6 +259,7 @@ class FastView:
                 f"{duration(fast.time_s)}; budget: {plan.budget} calls (ceiling "
                 f"{BUDGET_CEILING})",
                 f"evidence: {EVIDENCE[fast.tier]}",
+                *([f"evidence: {UNGATED_EVIDENCE}"] if self.ungated else []),
                 *verdict_lines(self.refusal, self.keeps_original),
             ]
         )
@@ -276,4 +284,5 @@ class FastView:
             ],
             est_calls=fast.est_calls,
             est_seconds=fast.est_seconds,
+            ungated=self.ungated,
         )
