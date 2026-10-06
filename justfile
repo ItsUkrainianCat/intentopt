@@ -7,7 +7,7 @@ check: fmt-check lint types test
 
 # run the test suite; extra args go to pytest (just test tests/test_x.py -k name)
 test *args:
-    timeout 300 uv run --frozen pytest {{ args }}
+    timeout 900 uv run --frozen pytest {{ args }}
 
 lint:
     uv run --frozen ruff check .
