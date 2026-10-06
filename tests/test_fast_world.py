@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fakes import MARKER, FakeClock, ScriptedBackend, intake_reply, judge_reply, synth_reply
 
+from autoimprover import fastplan
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
 from autoimprover.fast import improve_fast
 from autoimprover.fastplan import FastPlan, fast_plan
@@ -42,15 +43,26 @@ MODELS = Models(
 PLAN = Plan(models=MODELS, wall_clock_s=30)
 SHORT = count_tokens(PROMPT)
 WAIT = 10.0  # seconds; only a broken implementation ever waits this long
+# Mechanics tests are calibration-independent; the calibration is pinned in test_fastplan.py. They
+# keep the per-call start-up they were written against: the plans below and every estimate the
+# fast runner makes while a test runs (the autouse fixture `mechanics_latency_model`).
+MECHANICS_OVERHEAD_S = 2.4
 
-# Plans by shape: K rewrites, M scenarios, H held out (worked out in test_fastplan.py).
-QUICK = fast_plan(15, 4, SHORT, False)  # K=1
-K1M2 = fast_plan(25, 4, SHORT, False)  # synthesises 2
-K2M2 = fast_plan(30, 4, SHORT, False)  # synthesises 2
-K3M3 = fast_plan(30, 6, SHORT, False)  # synthesises 3: the default time and workers
-K3M2_EXAMPLES = fast_plan(25, 8, SHORT, True)
-K1M2_EXAMPLES = fast_plan(25, 4, SHORT, True)
-CHECKED = fast_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
+
+def mechanics_plan(time_s: int, workers: int, prompt_tokens: int, examples: bool) -> FastPlan:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(fastplan, "OVERHEAD_S", MECHANICS_OVERHEAD_S)
+        return fast_plan(time_s, workers, prompt_tokens, examples)
+
+
+# Plans by shape: K rewrites, M scenarios, H held out (at MECHANICS_OVERHEAD_S).
+QUICK = mechanics_plan(15, 4, SHORT, False)  # K=1
+K1M2 = mechanics_plan(25, 4, SHORT, False)  # synthesises 2
+K2M2 = mechanics_plan(30, 4, SHORT, False)  # synthesises 2
+K3M3 = mechanics_plan(30, 6, SHORT, False)  # synthesises 3
+K3M2_EXAMPLES = mechanics_plan(25, 8, SHORT, True)
+K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)
+CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
 
 
 class Verbatim(str):
@@ -181,6 +193,13 @@ def run(
         return Result(outcome, raw, log.getvalue(), store.run_id)
     finally:
         store.close()
+
+
+@pytest.fixture(autouse=True)
+def mechanics_latency_model(monkeypatch: pytest.MonkeyPatch):
+    """Mechanics tests are calibration-independent; the calibration is pinned in
+    test_fastplan.py. The fast runner's estimates use MECHANICS_OVERHEAD_S while a test runs."""
+    monkeypatch.setattr(fastplan, "OVERHEAD_S", MECHANICS_OVERHEAD_S)
 
 
 @pytest.fixture(autouse=True)
