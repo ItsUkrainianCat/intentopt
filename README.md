@@ -228,7 +228,7 @@ JSON Lines, UTF-8 (a leading BOM is accepted), one object per non-blank line:
 - `expected` (optional, string or null): adds one judged check, "the output agrees with the
   reference answer in substance". `criteria` (optional, non-blank strings): one judged check each.
 
-Other keys are ignored; there are no exact-match or regular-expression checks. A bad line is exit 2
+When every example has `expected` or `criteria`, the fast and checked tiers decide by agreement with them (the reference-scored label), not by a blind preference. Other keys are ignored; there are no exact-match or regular-expression checks. A bad line is exit 2
 naming the line. The file is read once and copied into the run folder. The fast tiers pick on the
 first examples; the checked tier holds out the ones after them and keeps the original without a
 call when none are left.
