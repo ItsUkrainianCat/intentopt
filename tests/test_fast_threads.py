@@ -9,7 +9,7 @@ import threading
 from collections import Counter
 
 import pytest
-from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixture)
+from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     BETTER,
     CHECKED,
     K3M2_EXAMPLES,
@@ -18,6 +18,7 @@ from test_fast_world import (  # noqa: F401  (no_disk_flush is an autouse fixtur
     QUICK,
     WAIT,
     World,
+    mechanics_latency_model,
     no_disk_flush,
     run,
     tagged,
