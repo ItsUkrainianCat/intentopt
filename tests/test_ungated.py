@@ -145,18 +145,27 @@ def test_a_rewrite_that_failed_a_free_gate_is_never_returned_ungated(tmp_path, r
     assert outcome.prompt == (rewrite if returned else PROMPT)
 
 
-@pytest.mark.parametrize(("rewrite", "won"), [(PLAIN, False), (BETTER, True)])
-def test_an_ungated_checked_run_makes_no_held_out_call_unless_a_rewrite_won(tmp_path, rewrite, won):
-    """A winner goes to stage E as without the flag; the ungated pick skips it."""
+@pytest.mark.parametrize("rewrite", [PLAIN, BETTER])
+def test_an_ungated_checked_run_never_makes_a_held_out_call(tmp_path, rewrite):
+    """Stage E is skipped even for a winner (BETTER), which is returned as the ungated pick, so
+    the measure sees the ranking's choice and not E's verdict on it."""
     result = run(tmp_path, World(rewrites=(rewrite,)), CHECKED, ungated=True)
     outcome = result.outcome
     on_target = [call for call in result.calls("task") if call.model == MODELS.target]
-    assert (outcome.prompt, outcome.verified, outcome.mode) == (rewrite, won, "checked")
-    assert outcome.reason_code == ("improved" if won else "ungated_best_candidate")
-    assert bool(on_target) is won
-    if not won:
-        assert outcome.reason == f"tier checked: {LABEL}"
-        assert (outcome.score_before, outcome.score_after) == (None, None)
+    assert (outcome.prompt, outcome.verified, outcome.mode) == (rewrite, False, "checked")
+    assert (outcome.reason_code, outcome.reason) == (
+        "ungated_best_candidate",
+        f"tier checked: {LABEL}",
+    )
+    assert on_target == []
+    assert (outcome.score_before, outcome.score_after) == (None, None)
+
+
+def test_its_twin_without_the_flag_checks_the_winner_on_held_out_scenarios(tmp_path):
+    result = run(tmp_path, World(), CHECKED)
+    outcome = result.outcome
+    assert (outcome.prompt, outcome.verified, outcome.reason_code) == (BETTER, True, "improved")
+    assert [call for call in result.calls("task") if call.model == MODELS.target]
 
 
 def test_a_rewrite_that_wins_is_returned_as_without_the_flag(tmp_path):

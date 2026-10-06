@@ -13,7 +13,8 @@ with MIN_THRESHOLD as the margin (SPEC R14a); a second held-out run of the origi
 calls than that, so the checked tier measures no held-out noise. The quick tier only checks its one
 rewrite's contract. With `--ungated` (fast and checked tiers, a measuring aid), a pick that found
 no winner returns the best-ranked rewrite that passed every gate (`fast_pairwise.best_ungated`),
-under its own reason code and label, never verified, and stage E is not run for it.
+under its own reason code and label, never verified; the checked tier then never runs stage E,
+and returns a winner under that code too, so the measure sees the ranking's choice, not E's.
 
 After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
 leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
@@ -105,8 +106,9 @@ def improve_fast(
     synthesise them; the run folder's contract and scenarios win over a new intake, `kind` and
     `scenarios` (a resumed run). `log` gets a line per stage and per dropped call; `workers` is
     how many calls run at a time; `ungated` is `--ungated` (fast and checked tiers): with no win,
-    the best-ranked rewrite that passed every gate is returned, unverified and without stage E.
-    The checked tier with nothing left to hold out keeps the original before any call."""
+    the best-ranked rewrite that passed every gate is returned, unverified, and the checked tier
+    skips stage E, also for a winner. The checked tier with nothing left to hold out keeps the
+    original before any call."""
     run = _Fast(prompt, plan, fplan, backend, budgeted, clock, store, log, workers, ungated)
     given = store.scenarios() or (None if scenarios is None else list(scenarios))
     if fplan.tier == "checked" and given is not None and len(given) <= fplan.scenarios:
@@ -142,7 +144,8 @@ class _Fast(Stages):
         win = self.contest(contract, rewrites, scenarios[:m], h)
         if win is None:
             return self.kept(_NO_WIN)
-        if not win.gated:  # --ungated: no stage E, never verified
+        checked = self.fplan.tier == "checked"
+        if not win.gated or (self.ungated and checked):  # --ungated: no stage E, never verified
             return self.outcome(
                 "ungated_best_candidate",
                 win.rewrite,
@@ -152,7 +155,7 @@ class _Fast(Stages):
                 noise=win.bar,
                 margin=win.gain - win.bar,
             )
-        if self.fplan.tier == "checked":
+        if checked:
             return self.confirm(contract, win, scenarios[m : m + h])
         return self.outcome(
             "improved",
