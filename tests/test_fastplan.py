@@ -10,6 +10,7 @@ model.
 
 import pytest
 
+from autoimprover import fastplan
 from autoimprover.fastplan import (
     CHECKED_HOLDOUT,
     FastPlan,
@@ -22,6 +23,7 @@ from autoimprover.fastplan import (
     tail,
     tier_for,
 )
+from autoimprover.runner import count_tokens
 
 SHORT, LONG = 20, 500  # prompt tokens: a one-line prompt and a long system prompt
 
@@ -45,7 +47,8 @@ def test_a_time_below_15_seconds_is_refused_naming_the_flag_and_the_minimum(time
 # second-generation rewrites, seconds)
 # Calls at 3.4 s + tokens / 70: intake I = 3.4 + 380/70 = 8.828571; rewrite of SHORT (60 tokens, the
 # floor) Rs = 4.257143, of LONG (600) Rl = 11.971429; task T = 3.4 + 150/70 = 5.542857 (a scoring
-# run asks for at most 120 words, SPEC R25); a pairwise judge call over n scenarios P(n) = 3.4 +
+# run asks for at most 120 words, SPEC R25), of LONG TL = 3.4 + 600/70 = 11.971429 (its output
+# grows with the prompt, `task_tokens`); a pairwise judge call over n scenarios P(n) = 3.4 +
 # 40 n/70: P2 4.542857, P3 5.114286, P4 5.685714 (ADR-012); a contract check of n rewrites, or an
 # absolute judge call over n outputs (stage E), J(n) = 3.4 + 75 n/70: J1 4.471429, J2 5.542857
 # (= T), J3 6.614286, J4 7.685714, J5 8.757143, J6 9.828571. Stage A: 1 + K (+ 1 synthesis) calls
@@ -67,12 +70,12 @@ TABLE = [
     ((25, 8, SHORT, False), ("fast", 2, 2, 0, 1, 0, 19.914286)),  # I + T + J2; M=3: 25.46
     ((30, 1, SHORT, False), ("fast", 1, 2, 0, 1, 0, 82.457143)),  # none fits: 3 I + 6 T + 5 P2
     ((30, 4, SHORT, False), ("fast", 1, 2, 0, 1, 0, 29.0)),  # none fits: I + 2 T + 2 P2
-    ((30, 4, LONG, False), ("fast", 1, 2, 0, 1, 0, 32.142857)),  # none fits: Rl + 2 T + 2 P2
+    ((30, 4, LONG, False), ("fast", 1, 2, 0, 1, 0, 45.0)),  # none fits: Rl + 2 TL + 2 P2
     ((30, 6, SHORT, False), ("fast", 1, 3, 0, 1, 0, 25.028571)),  # I + 2 T + P3; K=2: 31.0
-    ((30, 6, LONG, False), ("fast", 1, 2, 0, 1, 0, 22.057143)),  # Rl + T + P2
+    ((30, 6, LONG, False), ("fast", 1, 2, 0, 1, 0, 28.485714)),  # none fits: Rl + TL + P2
     ((30, 8, SHORT, False), ("fast", 2, 3, 0, 1, 0, 25.457143)),  # I + 2 T + J2; M=4: 25.6
     ((45, 4, SHORT, False), ("fast", 2, 3, 0, 1, 0, 36.542857)),  # I + 3 T + 2 J2
-    ((45, 4, LONG, False), ("fast", 2, 2, 0, 1, 0, 34.142857)),  # Rl + 2 T + 2 J2
+    ((45, 4, LONG, False), ("fast", 1, 2, 0, 1, 0, 45.0)),  # none fits: Rl + 2 TL + 2 P2
     ((45, 6, SHORT, False), ("fast", 1, 2, 0, 2, 2, 34.257143)),  # I + T + P2 + G2
     ((45, 8, SHORT, False), ("fast", 2, 2, 0, 2, 2, 35.257143)),  # I + T + J2 + G2
     ((59, 1, SHORT, False), ("fast", 1, 2, 0, 1, 0, 82.457143)),  # none fits, as at 30 s
@@ -228,6 +231,49 @@ def test_a_long_prompts_reflection_takes_as_long_as_its_rewrite():
     assert reflection.seconds == pytest.approx(3.4 + 600 / 70)
 
 
+# The long-1 prompt of the bench (2026-10-06): it asks for a full deliverable, and its scoring runs
+# took 6.7 to 13.9 s each although each asked for at most 120 words; the plan was K=1 on M=3, so
+# stage B took two waves and stage C never ran.
+LONG1 = (
+    "I run a small bakery with two shops in the same town. We sell bread, pastries and cakes, and "
+    "about a third of our income now comes from cake orders that people place by phone or in the "
+    "shop.\n\nThe order process is all paper: a form in a binder, copied into a spreadsheet at the "
+    "end of the day. Orders get lost, we sometimes bake the same cake twice, and customers call to "
+    "check on their order because they have no confirmation.\n\nI want a simple way to take cake "
+    "orders online, with a confirmation for the customer and one list of orders for both shops. "
+    "We have no developer and a small budget. Suggest two or three ways to do this, with rough "
+    "costs and what each would need from us."
+)
+T148 = 3.4 + 444 / 70  # a scoring run of a 148-token prompt: 150 + 3 x (148 - 50) tokens
+
+
+def test_the_task_output_estimate_grows_with_the_prompt():
+    """150 tokens up to a 50-token prompt (the 120-word answer binds), 3 more per prompt token
+    above it, at most 600 (from 200 prompt tokens)."""
+    estimate = fastplan.task_tokens
+    assert [estimate(p) for p in (0, 20, 50)] == [150, 150, 150]
+    assert [estimate(p) for p in (51, 100, 148, 199)] == [153, 300, 444, 597]
+    assert [estimate(p) for p in (200, 400, 5000)] == [600, 600, 600]
+
+
+def test_the_long_1_prompt_plans_two_scenarios_in_one_wave_of_task_runs():
+    """At 30 s on 6 workers: M=3 needs two waves of task runs, I + 2 T148 + P3 = 33.43 s, over
+    25.5; M=2 needs one, I + T148 + P2 = 23.114 s."""
+    assert count_tokens(LONG1) == 148
+    plan = fast_plan(30, 6, count_tokens(LONG1), False)
+    assert (plan.rewrites, plan.scenarios, plan.generations) == (1, 2, 1)
+    assert plan.stages[1] == Stage("B: task runs", 6, pytest.approx(T148))
+    assert plan.est_seconds == pytest.approx(8.828571 + T148 + 4.542857, abs=1e-5)
+
+
+def test_every_stage_of_task_runs_takes_the_prompts_estimate():
+    """Stage B at run time, stage B2 and stage E (two waves of 8 runs on 6 workers, then J4)."""
+    assert tail(1, 2, 0, 6, 148)[0] == Stage("B: task runs", 6, pytest.approx(T148))
+    assert second_stages(2, 2, 6, 148)[1].seconds == pytest.approx(T148)
+    assert fastplan.holdout_stage(4, 6, 148).seconds == pytest.approx(2 * T148 + 3.4 + 300 / 70)
+    assert tail(1, 2, 0, 6, SHORT)[0].seconds == pytest.approx(3.4 + 150 / 70)
+
+
 def test_the_second_generations_contract_check_can_be_its_slowest_judge_call():
     """C2's slowest call: a pairwise call over the M scenarios, or 3 questions on each of K2."""
     name = "C2: pairwise judge and contract checks of the second generation"
@@ -261,12 +307,13 @@ def test_a_plan_needs_a_worker_and_a_token_count(workers, tokens):
 
 
 def test_the_tail_of_a_shape_is_stages_b_to_d_then_e_for_a_holdout():
-    assert tail(0, 0, 0, 4) == ()
-    assert [s.name[:2] for s in tail(1, 2, 0, 4)] == ["B:", "C:", "D:"]
-    assert [s.name[:2] for s in tail(0, 0, 4, 4)] == ["E:"]
-    assert [s.name[:2] for s in tail(3, 2, 4, 4)] == ["B:", "C:", "D:", "E:"]
-    assert tail(3, 2, 4, 4)[0] == Stage("B: task runs", 10, pytest.approx(3 * (3.4 + 150 / 70)))
-    assert tail(3, 2, 4, 4)[1].calls == 2 * 3 + 2 + 1  # two orders per pair, one contract check
+    assert tail(0, 0, 0, 4, SHORT) == ()
+    assert [s.name[:2] for s in tail(1, 2, 0, 4, SHORT)] == ["B:", "C:", "D:"]
+    assert [s.name[:2] for s in tail(0, 0, 4, 4, SHORT)] == ["E:"]
+    assert [s.name[:2] for s in tail(3, 2, 4, 4, SHORT)] == ["B:", "C:", "D:", "E:"]
+    b, c, *_ = tail(3, 2, 4, 4, SHORT)
+    assert b == Stage("B: task runs", 10, pytest.approx(3 * (3.4 + 150 / 70)))
+    assert c.calls == 2 * 3 + 2 + 1  # two orders per pair, one contract check
 
 
 TWO = (Stage("x", 2, 3.0), Stage("y", 1, 2.0))  # 3 calls, 5 seconds
