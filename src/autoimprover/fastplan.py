@@ -2,6 +2,7 @@
 `fast_plan` picks how many rewrites (K) and scenarios (M) the tier's stages can afford within the
 time, from the measured latency model of ADR-011: a call costs OVERHEAD_S plus its output tokens
 at TOKENS_PER_S, and a stage of parallel calls costs one slowest call per wave of `workers` calls.
+A rewrite's output and a scoring run's grow with the prompt (`rewrite_tokens`, `task_tokens`).
 
 Stages of the quick tier: the intake and one rewrite side by side, then the contract check (no
 scoring). Stages of the fast and checked tiers: A one wave of the intake, the synthesis of the
@@ -48,7 +49,16 @@ SYNTH_TOKENS_PER_SCENARIO = 45
 REWRITE_MIN_TOKENS = 60
 REWRITE_GROWTH = 1.2
 REWRITE_MAX_TOKENS = 600
-TASK_OUT_TOKENS = 150  # a scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX)
+# A scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX), which binds for a short
+# prompt but not for one that asks for a full document: task_tokens(p) = 150 for p <= 50 prompt
+# tokens (`runner.count_tokens`), 150 + 3 (p - 50) above, at most 600 (from p = 200). From the
+# fast scoring runs of the live benches of 2026-10-06, read as (seconds - OVERHEAD_S) x
+# TOKENS_PER_S: run medians 84 to 273 for prompts of 18 to 46 tokens, 357 to 602 for prompts of 135
+# and 148 (formula: 405 and 444); the slowest run of the 148-token prompt took 13.9 s, 735.
+TASK_MIN_TOKENS = 150
+TASK_FROM_PROMPT_TOKENS = 50
+TASK_GROWTH = 3
+TASK_MAX_TOKENS = 600
 JUDGE_TOKENS_PER_CHECK = 25  # a pass/fail and a quote of at most 8 words
 JUDGED_CHECKS_PER_SCENARIO = 3
 PAIRWISE_TOKENS_PER_SCENARIO = 40  # a winner and one short reason (ADR-012)
@@ -123,6 +133,13 @@ def rewrite_tokens(prompt_tokens: int) -> float:
     return min(REWRITE_MAX_TOKENS, max(REWRITE_MIN_TOKENS, REWRITE_GROWTH * prompt_tokens))
 
 
+def task_tokens(prompt_tokens: int) -> float:
+    """The output of a scoring run grows with the prompt it runs, within fixed bounds (the
+    formula and its evidence are at TASK_MIN_TOKENS)."""
+    grown = TASK_MIN_TOKENS + TASK_GROWTH * (prompt_tokens - TASK_FROM_PROMPT_TOKENS)
+    return min(TASK_MAX_TOKENS, max(TASK_MIN_TOKENS, grown))
+
+
 def judge_seconds(scenarios: int) -> float:
     """One judge call over the outputs of `scenarios` scenarios."""
     return call_seconds(JUDGE_TOKENS_PER_CHECK * JUDGED_CHECKS_PER_SCENARIO * scenarios)
@@ -152,19 +169,18 @@ def stage_a(rewrites: int, synthesis: int, workers: int, prompt_tokens: int) -> 
     return Stage(name, calls, wave_seconds(calls, workers, slowest))
 
 
-def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, ...]:
+def scoring_stages(
+    rewrites: int, scenarios: int, workers: int, prompt_tokens: int
+) -> tuple[Stage, ...]:
     """Stages B, C and D for the original, run twice, and `rewrites` rewrites on `scenarios`
     scenarios; stage C is two pairwise calls (both orders) per rewrite and for the original's two
     runs, and one contract check of every rewrite (ADR-012)."""
     runs = rewrites + 2
     judging = max(pair_seconds(scenarios), contract_seconds(rewrites))
     calls = 2 * (rewrites + 1) + 1
+    task = call_seconds(task_tokens(prompt_tokens))
     return (
-        Stage(
-            "B: task runs",
-            runs * scenarios,
-            wave_seconds(runs * scenarios, workers, call_seconds(TASK_OUT_TOKENS)),
-        ),
+        Stage("B: task runs", runs * scenarios, wave_seconds(runs * scenarios, workers, task)),
         Stage(
             "C: pairwise judge and contract checks",
             calls,
@@ -193,7 +209,7 @@ def second_stages(
         Stage(
             "B2: task runs of the second generation",
             runs,
-            wave_seconds(runs, workers, call_seconds(TASK_OUT_TOKENS)),
+            wave_seconds(runs, workers, call_seconds(task_tokens(prompt_tokens))),
         ),
         Stage(
             "C2: pairwise judge and contract checks of the second generation",
@@ -203,10 +219,10 @@ def second_stages(
     )
 
 
-def holdout_stage(holdout: int, workers: int) -> Stage:
+def holdout_stage(holdout: int, workers: int, prompt_tokens: int) -> Stage:
     """Stage E: the winner and the original on `holdout` held-out scenarios on the target model,
     a wave of task runs, then a judge call each."""
-    seconds = wave_seconds(2 * holdout, workers, call_seconds(TASK_OUT_TOKENS))
+    seconds = wave_seconds(2 * holdout, workers, call_seconds(task_tokens(prompt_tokens)))
     seconds += wave_seconds(2, workers, judge_seconds(holdout))
     return Stage("E: held-out check on the target model", 2 * holdout + 2, seconds)
 
@@ -240,9 +256,9 @@ def fast_plan(time_s: int, workers: int, prompt_tokens: int, have_examples: bool
     for rewrites in range(MAX_REWRITES[tier], 0, -1):
         for scenarios in range(MAX_SCENARIOS, MIN_SCENARIOS - 1, -1):
             synthesis = 0 if have_examples else scenarios + holdout
-            *scoring, pick = scoring_stages(rewrites, scenarios, workers)
+            *scoring, pick = scoring_stages(rewrites, scenarios, workers, prompt_tokens)
             first = (stage_a(rewrites, synthesis, workers, prompt_tokens), *scoring)
-            last = (pick, *((holdout_stage(holdout, workers),) if holdout else ()))
+            last = (pick, *tail(0, 0, holdout, workers, prompt_tokens))
             shape = (tier, time_s, workers, rewrites, scenarios, holdout)
             one.append(_plan(*shape, (*first, *last)))
             for rewrites2 in second:
@@ -280,10 +296,22 @@ def _plan(
 # --- what is left at run time ---------------------------------------------------------------------
 
 
-def tail(rewrites: int, scenarios: int, holdout: int, workers: int) -> tuple[Stage, ...]:
-    """The stages after stage A for a shape: B to D (none for 0 rewrites), then E for a holdout."""
-    stages = scoring_stages(rewrites, scenarios, workers) if rewrites else ()
-    return (*stages, *((holdout_stage(holdout, workers),) if holdout else ()))
+def tail(
+    rewrites: int, scenarios: int, holdout: int, workers: int, prompt_tokens: int
+) -> tuple[Stage, ...]:
+    """The stages after stage A for a shape of a prompt of `prompt_tokens` tokens: B to D (none
+    for 0 rewrites), then E for a holdout."""
+    stages = scoring_stages(rewrites, scenarios, workers, prompt_tokens) if rewrites else ()
+    held = (holdout_stage(holdout, workers, prompt_tokens),) if holdout else ()
+    return (*stages, *held)
+
+
+def last_chance(holdout: int, workers: int, prompt_tokens: int) -> tuple[Stage, ...]:
+    """What a stage B that ended late still needs to decide (SPEC R25): stage C's calls for one
+    rewrite on one scenario, in the time of one pairwise call, then E for a holdout."""
+    judging = scoring_stages(1, 1, workers, prompt_tokens)[1]
+    held = tail(0, 0, holdout, workers, prompt_tokens)
+    return (judging._replace(seconds=pair_seconds(1)), *held)
 
 
 def misfit(stages: Sequence[Stage], seconds_left: float, calls_left: int) -> StopCause | None:
