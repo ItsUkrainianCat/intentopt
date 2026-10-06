@@ -3,9 +3,15 @@ and after, labelled holdout or search score, noise and the bar a result had to c
 ratio, calls used, why the search ended, whether the result is verified, the reason in plain
 language, what changed and the word diff, the intent contract with its checks, and the run
 folder; SPEC R3, R5, R7, R11, R12, R13, R14a, R17, R23), `outcome_object` its `--json` object,
-`plan_text` and `plan_object` the plan of `--dry` (SPEC R4), `error_object` the object of a
-failed run. `Emitter` is the only writer to stdout: at most one result per run, so `--json`
-gives exactly one object whatever fails after it, and notices stay on stderr.
+`error_object` the object of a failed run. `Emitter` is the only writer to stdout: at most one
+result per run, so `--json` gives exactly one object whatever fails after it, and notices stay on
+stderr; the plan of `--dry` (SPEC R4) it prints is built in `cli_plan.py`.
+
+The time tiers (SPEC R25): a report names its tier and the seconds of the run's clock; a quick or
+fast result says, in its verified line, its meaning, its notices and its JSON, that it is not
+verified on held-out scenarios, and its scores are labelled as taken on the scenarios it was
+picked on, never as holdout scores; nothing of the GEPA search is said of a run that did not
+search.
 
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
@@ -16,20 +22,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from difflib import SequenceMatcher
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
-from autoimprover.runner import MIN_THRESHOLD, FixedCosts
-from autoimprover.types import (
-    BUDGET_CEILING,
-    LENGTH_CAP,
-    LENGTH_FLOOR_TOKENS,
-    SEARCH_CLOCK_SHARE,
-    Contract,
-    Outcome,
-    Plan,
-)
+from autoimprover.runner import MIN_THRESHOLD
+from autoimprover.types import Contract, Outcome, Plan
+
+# The tiers that run the fast pipeline, not the GEPA search (SPEC R25); quick and fast are never
+# verified on held-out scenarios, checked is.
+FAST_TIERS = ("quick", "fast", "checked")
+_UNHELD = ("quick", "fast")
 
 # What each reason code means for the user, and what to do about it (SPEC R2, R3, R11, R13).
 REASON_LINES = {
@@ -58,6 +61,30 @@ _STOPS = {
     "clock": "the clock ended it, at its share of the wall clock",
     None: "no search ran",
 }
+# The same for the fast pipeline, which has stages, not a search (SPEC R25).
+FAST_REASON_LINES = {
+    "no_reliable_improvement": "no rewrite kept the contract and beat the original clearly "
+    "enough on the scenarios, so the original is kept; this is the normal result for a prompt "
+    "that already works",
+    "no_holdout": "the checked tier holds out the examples after the ones it picks on, and none "
+    "were left, so the original is kept; give more examples, or a shorter --time",
+    "unconfirmed_out_of_budget": "the clock or the calls ran out before a rewrite passed every "
+    "gate, so the original is kept; a longer --time leaves more room",
+}
+_FAST_VERIFIED = (
+    "a rewrite beat the original on held-out scenarios, on the target model; no noise was "
+    "measured, so a small margin is a weak signal"
+)
+_FAST_UNVERIFIED = (
+    "a rewrite kept the intent contract and passed the free gates in a short run; it is not "
+    "verified on held-out scenarios and no noise was measured, so read it before you use it"
+)
+_FAST_STOPS = {
+    None: "every stage ran as planned",
+    "clock": "the clock cut a stage short or shrank it",
+    "budget": "the call limit cut a stage short or shrank it",
+}
+_FAST_CUT_SHORT = "notice: the clock cut the run short; the result comes from what it scored"
 
 # A terminal escape sequence: CSI (ESC [ or the one-byte CSI, parameters, a final byte), OSC
 # (ESC ] up to BEL or ESC \), or ESC and one more character. Every part is linear: the ranges
@@ -101,30 +128,38 @@ def word_diff(before: str, after: str) -> str:
 # --- the outcome ---------------------------------------------------------------------------------
 
 
-def render(outcome: Outcome, original: str, contract: Contract | None, plan: Plan) -> str:
+def render(
+    outcome: Outcome,
+    original: str,
+    contract: Contract | None,
+    plan: Plan,
+    elapsed_s: float | None = None,
+) -> str:
     """The human report of `outcome` (stderr), one fact per line; `original` is the user's prompt,
-    `contract` the run's intent contract when one was extracted."""
+    `contract` the run's intent contract when one was extracted, `elapsed_s` the seconds on the
+    run's clock, shown beside the tier when the outcome has one (SPEC R25)."""
     improved = outcome.status == "improved"
+    fast = outcome.mode in FAST_TIERS
     head = "improved" if improved else "unchanged, the original prompt is returned"
-    unverified = improved and not outcome.verified
     lines = [
         f"result: {head} ({outcome.reason_code})",
         f"reason: {one_line(outcome.reason)}",
-        f"meaning: {_UNVERIFIED_MEANING if unverified else REASON_LINES[outcome.reason_code]}",
+        f"meaning: {_meaning(outcome)}",
     ]
     if improved:
-        lines.append(
-            f"verified: yes, on the holdout, on the target model {plan.models.target}"
-            if outcome.verified
-            else f"verified: no. {_UNVERIFIED}"
-        )
+        lines.append(_verified(outcome, plan))
+    if outcome.mode is not None:
+        lines.append(f"mode: {outcome.mode} ({elapsed_s or 0.0:.0f} s)")
     lines += _scores(outcome, plan)
     if improved and outcome.length_ratio is not None:
         lines.append(f"length: {outcome.length_ratio:.2f}x the original's tokens")
     lines.append(f"calls used: {outcome.calls_used} of {plan.budget}")
-    lines.append(f"search ended: {_STOPS[outcome.stop]}")
+    if fast:
+        lines.append(f"stages: {_FAST_STOPS[outcome.stop]}")
+    else:
+        lines.append(f"search ended: {_STOPS[outcome.stop]}")
     if outcome.stop == "clock":
-        lines.append(_CUT_SHORT)
+        lines.append(_FAST_CUT_SHORT if fast else _CUT_SHORT)
     if improved:
         if outcome.changes:
             lines.append("what changed and why:")
@@ -137,7 +172,7 @@ def render(outcome: Outcome, original: str, contract: Contract | None, plan: Pla
                 "note: a task prompt runs single-turn without tools here, so tool use is not "
                 "exercised"
             )
-    if outcome.stop is not None:
+    if outcome.stop is not None and not fast:
         lines.append(
             f"note: {plan.budget} calls is a very low budget for GEPA (the paper's runs used 400 "
             "to 7,000 rollouts); the first few reflective updates carry most of the gain"
@@ -153,10 +188,37 @@ _UNVERIFIED = (
 _CUT_SHORT = "notice: the search was cut short by the clock; the result comes from what it scored"
 
 
+def _meaning(outcome: Outcome) -> str:
+    """What the outcome means for the user, in the words of its tier."""
+    if outcome.mode in FAST_TIERS:
+        if outcome.status == "improved":
+            return _FAST_VERIFIED if outcome.verified else _FAST_UNVERIFIED
+        return FAST_REASON_LINES.get(outcome.reason_code, REASON_LINES[outcome.reason_code])
+    if outcome.status == "improved" and not outcome.verified:
+        return _UNVERIFIED_MEANING
+    return REASON_LINES[outcome.reason_code]
+
+
+def _verified(outcome: Outcome, plan: Plan) -> str:
+    """Whether an improved result is verified; a quick or fast one is not, in its own label."""
+    if outcome.verified:
+        return f"verified: yes, on the holdout, on the target model {plan.models.target}"
+    if outcome.mode in FAST_TIERS:
+        return f"verified: no. NOT VERIFIED ({one_line(outcome.reason)})"
+    return f"verified: no. {_UNVERIFIED}"
+
+
 def _scores(outcome: Outcome, plan: Plan) -> list[str]:
     lines = []
+    picked = (
+        f"score on the scenarios it was picked on (task model {plan.models.task}, not held out)"
+    )
     if outcome.score_before is not None:
-        where = f"holdout score (target model {plan.models.target})"
+        where = (
+            picked
+            if outcome.mode in _UNHELD
+            else f"holdout score (target model {plan.models.target})"
+        )
         lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
     if outcome.noise is not None:
         bar = max(MIN_THRESHOLD, 2 * outcome.noise)
@@ -166,10 +228,22 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
         else:
             lines.append(f"{said}a result had to gain more than {bar:.2f}")
     if outcome.search_score_before is not None:
-        where = f"search score (valset, search model {plan.models.task})"
+        where = (
+            picked
+            if outcome.mode in FAST_TIERS
+            else f"search score (valset, search model {plan.models.task})"
+        )
         lines.append(
             f"{where}: {_before_after(outcome.search_score_before, outcome.search_score_after)}"
         )
+    before, after, margin = outcome.score_before, outcome.score_after, outcome.margin
+    if outcome.mode in FAST_TIERS and before is not None and after is not None:
+        if margin is not None:  # a fast-pipeline win: its margin over the least gain (fast.py)
+            held = "held-out scenarios" if outcome.verified else "scenarios it was picked on"
+            lines.append(
+                f"margin: {margin:.2f} above the least gain of {after - before - margin:.2f} on "
+                f"the {held} (no noise measured)"
+            )
     return lines
 
 
@@ -208,9 +282,11 @@ def _folder(run_dir: str) -> list[str]:
 def notices(outcome: Outcome) -> list[str]:
     """The lines that go to stderr with `--json` too: a clock stop, an unverified result, the run
     folder (SPEC R2, R11, R23)."""
-    lines = [_CUT_SHORT] if outcome.stop == "clock" else []
+    fast = outcome.mode in FAST_TIERS
+    lines = [_FAST_CUT_SHORT if fast else _CUT_SHORT] if outcome.stop == "clock" else []
     if outcome.status == "improved" and not outcome.verified:
-        lines.append(f"notice: {_UNVERIFIED}")
+        unverified = f"NOT VERIFIED ({one_line(outcome.reason)})" if fast else _UNVERIFIED
+        lines.append(f"notice: {unverified}")
     return lines + _folder(outcome.run_dir)
 
 
@@ -236,6 +312,7 @@ def outcome_object(outcome: Outcome, original: str, contract: Contract | None) -
         "length_ratio": outcome.length_ratio,
         "calls_used": outcome.calls_used,
         "run_dir": outcome.run_dir,
+        "mode": outcome.mode,
     }
 
 
@@ -244,100 +321,13 @@ def error_object(code: int, message: str, run_dir: str) -> dict[str, Any]:
     return {"status": "error", "code": code, "error": message, "run_dir": run_dir}
 
 
-# --- the plan (SPEC R4, R17) ---------------------------------------------------------------------
+class Shown(Protocol):
+    """A plan as `--dry` shows it (SPEC R4; built in `cli_plan.py` for every tier): its lines
+    (`text`) and its `--json` object (`object`)."""
 
+    def text(self) -> str: ...
 
-@dataclass(frozen=True)
-class PlanView:
-    """What `--dry` shows, and a real run before its first call: the plan, the scenario count and
-    whether they are synthesised, the fixed costs, why a real run would refuse, and why it would
-    keep the original without a call (no holdout)."""
-
-    plan: Plan
-    scenarios: int
-    synthesised: bool
-    costs: FixedCosts
-    refusal: str | None = None
-    keeps_original: str | None = None
-
-    @property
-    def dataset(self) -> int:
-        """Below 8 scenarios every scenario is in the dataset too (SPEC R15)."""
-        if not self.costs.holdout:
-            return self.scenarios
-        return self.scenarios - self.costs.holdout - self.costs.valset
-
-    @property
-    def search_clock_s(self) -> int:
-        return round(SEARCH_CLOCK_SHARE * self.plan.wall_clock_s)
-
-
-def plan_text(view: PlanView) -> str:
-    plan, costs, models = view.plan, view.costs, view.plan.models
-    source = "synthesised by one call" if view.synthesised else "from --examples"
-    split = (
-        f"holdout {costs.holdout}, valset {costs.valset}, dataset {view.dataset}"
-        if costs.holdout
-        else "no holdout (fewer than 8): every scenario is both dataset and valset"
-    )
-    cap = (
-        "no length cap (--allow-growth)"
-        if plan.allow_growth
-        else f"length cap {LENGTH_CAP[plan.strictness]}x the original's tokens (at least the "
-        f"original plus {LENGTH_FLOOR_TOKENS})"
-    )
-    final_s = plan.wall_clock_s - view.search_clock_s
-    lines = [
-        f"models: task {models.task}, judge {models.judge}, reflection {models.reflect}, "
-        f"target {models.target}",
-        f"strictness: {plan.strictness}, {cap}" + ("; GEPA merge on" if plan.merge else ""),
-        f"budget: {plan.budget} calls (ceiling {BUDGET_CEILING}); fixed costs: {costs.pre} before "
-        f"the search, {costs.final} after it, {max(0, costs.search_calls)} left for the search",
-        f"scenarios: {view.scenarios}, {source}; {split}",
-        f"iterations: about {costs.iterations} GEPA iterations (worst case, {costs.iter_cost} "
-        f"calls each) to {costs.iterations_best} (best case); an estimate: the clock may end the "
-        "search sooner (live calls take 5 to 45 s)",
-        f"clock: {_duration(plan.wall_clock_s)}; the search may use "
-        f"{_duration(view.search_clock_s)}, the final steps keep {_duration(final_s)}",
-    ]
-    if view.refusal is not None:
-        lines.append(f"a real run would refuse: {one_line(view.refusal)}")
-    if view.keeps_original is not None:
-        lines.append(
-            "a real run would keep the original without a model call: "
-            f"{one_line(view.keeps_original)}"
-        )
-    return "".join(f"{line}\n" for line in lines)
-
-
-def plan_object(view: PlanView) -> dict[str, Any]:
-    costs = view.costs
-    return {
-        "status": "dry",
-        "plan": asdict(view.plan),
-        "scenarios": view.scenarios,
-        "synthesised": view.synthesised,
-        "holdout": costs.holdout,
-        "valset": costs.valset,
-        "dataset": view.dataset,
-        "calls_before_search": costs.pre,
-        "calls_after_search": costs.final,
-        "search_calls": costs.search_calls,
-        "iteration_cost": costs.iter_cost,
-        "iterations": costs.iterations,
-        "iterations_best": costs.iterations_best,
-        "search_clock_s": view.search_clock_s,
-        "final_clock_s": view.plan.wall_clock_s - view.search_clock_s,
-        "refusal": view.refusal,
-        "keeps_original": view.keeps_original,
-    }
-
-
-def _duration(seconds: int) -> str:
-    minutes, rest = divmod(seconds, 60)
-    if not rest:
-        return f"{minutes} min"
-    return f"{minutes} min {rest} s" if minutes else f"{rest} s"
+    def object(self) -> dict[str, Any]: ...
 
 
 # --- the one writer (SPEC R2) --------------------------------------------------------------------
@@ -360,7 +350,12 @@ class Emitter:
         self._err.flush()
 
     def outcome(
-        self, outcome: Outcome, original: str, contract: Contract | None, plan: Plan
+        self,
+        outcome: Outcome,
+        original: str,
+        contract: Contract | None,
+        plan: Plan,
+        elapsed_s: float | None = None,
     ) -> None:
         """A finished run: without `--json` the report to stderr and the prompt to stdout, cleaned
         when a model wrote it; with it the object, and the notices to stderr."""
@@ -368,18 +363,18 @@ class Emitter:
             self._result(_dumps(outcome_object(outcome, original, contract)))
             self.notice("\n".join(notices(outcome)))
             return
-        self.notice(render(outcome, original, contract, plan))
+        self.notice(render(outcome, original, contract, plan, elapsed_s))
         prompt = outcome.prompt if outcome.status == "unchanged" else clean_text(outcome.prompt)
         self._result(prompt if prompt.endswith("\n") else f"{prompt}\n")
 
-    def plan(self, view: PlanView, *, dry: bool) -> None:
+    def plan(self, view: Shown, *, dry: bool) -> None:
         """The plan: the result of `--dry` (stdout), or a notice before a real run (stderr)."""
         if not dry:
-            self.notice(plan_text(view))
+            self.notice(view.text())
         elif self.json_mode:
-            self._result(_dumps(plan_object(view)))
+            self._result(_dumps(view.object()))
         else:
-            self._result(f"dry run: no model call made, nothing written\n{plan_text(view)}")
+            self._result(f"dry run: no model call made, nothing written\n{view.text()}")
 
     def cleaned(self, removed: int, skipped: int, root: str) -> None:
         self.notice(f"removed {removed} run folder{'s' * (removed != 1)} from {root}")

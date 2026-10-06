@@ -61,6 +61,9 @@ class BudgetedBackend:
     Threads (SPEC R25): the checks and the count are one step under a lock, so `used` never
     passes `limit`; the raw call runs outside it. `on_call` runs outside it too, one at a time,
     with the total and the time read at that moment, so the saved progress never goes back.
+
+    `cancel()` (SPEC R2 exit 130, R21 cancel) refuses every later call, before the other checks
+    and uncounted, as a "clock" stop; a raw call already running is not undone here.
     """
 
     def __init__(
@@ -78,6 +81,7 @@ class BudgetedBackend:
         self._clock = clock
         self._deadline = deadline
         self._on_call = on_call
+        self._cancelled = False
         self._lock = threading.Lock()
         self._report_lock = threading.Lock()
 
@@ -102,8 +106,15 @@ class BudgetedBackend:
             self._limit = limit
             self._deadline = deadline
 
+    def cancel(self) -> None:
+        """Refuse every call from now on: the run is being stopped."""
+        with self._lock:
+            self._cancelled = True
+
     def complete(self, call: Call) -> Reply:
         with self._lock:
+            if self._cancelled:
+                raise BudgetExhausted("the run was cancelled", cause="clock")
             elapsed = self._clock.elapsed()
             if elapsed >= self._deadline:
                 raise BudgetExhausted(

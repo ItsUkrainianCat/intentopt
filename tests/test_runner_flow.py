@@ -143,7 +143,8 @@ def improve(
         outcome = runner.improve(
             prompt,
             plan,
-            backend=CachedBackend(ResilientBackend(budgeted), store),
+            backend=(cache := CachedBackend(ResilientBackend(budgeted), store)),
+            cache=cache,
             budgeted=budgeted,
             clock=clock,
             store=store,

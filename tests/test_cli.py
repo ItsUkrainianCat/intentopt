@@ -20,6 +20,14 @@ PROMPT = "Answer the user's request."
 RUN_ID = "20261004-120000-abcdef12"
 
 
+# Written for the GEPA search with a 45-minute clock, the default before the time tiers; SPEC R25
+# makes that `--time 45m`, which `deep` puts before a new run's flags (not --resume, clean, help).
+def deep(argv) -> list[str]:
+    if set(argv) & {"--time", "--deep", "--resume", "--help", "clean"}:
+        return list(argv)
+    return ["--time", "45m", *argv]
+
+
 @dataclass
 class Run:
     code: int
@@ -36,7 +44,7 @@ class Run:
 
 def run(capsys: pytest.CaptureFixture[str], *argv: str) -> Run:
     backend = happy_backend(PROMPT)
-    code = cli.main(list(argv), backend=backend, now=FakeClock().now)
+    code = cli.main(deep(argv), backend=backend, now=FakeClock().now)
     out, err = capsys.readouterr()
     return Run(code, out, err, backend)
 
