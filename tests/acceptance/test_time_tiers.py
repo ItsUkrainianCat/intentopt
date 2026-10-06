@@ -22,7 +22,7 @@ from autoimprover.types import Call
 ORIGINAL = "Summarise the meeting notes for the team in five bullet points."
 IMPROVED = f"{ORIGINAL} {MARKER} Keep each bullet short."
 PLAIN = f"{ORIGINAL} Keep each bullet short."  # a rewrite that runs no better
-FAST_LABEL = "not verified on held-out scenarios, no noise measured"
+FAST_LABEL = "not verified on held-out scenarios"
 
 
 @pytest.fixture
@@ -161,7 +161,7 @@ def test_the_quick_tier_labels_its_result_as_a_quick_check(run_bare, override):
     argv = ["--json", "--time", "15s", ORIGINAL]
     obj = json.loads(run_bare(argv, model(override, run_bare, IMPROVED, "--time", "15s"))[1])
     assert (obj["status"], obj["mode"], obj["verified"]) == ("improved", "quick", False)
-    assert "quick check" in obj["reason"]
+    assert "quick check" in obj["reason"] and "no noise measured" in obj["reason"]
 
 
 @pytest.mark.parametrize("wins_on_target", [True, False], ids=["verified", "twin-loses"])

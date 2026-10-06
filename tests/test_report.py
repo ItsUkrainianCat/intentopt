@@ -222,6 +222,10 @@ JSON_KEYS = {
     "calls_used",
     "run_dir",
     "mode",
+    "elapsed_s",
+    "meaning",
+    "verified_text",
+    "margin_text",
 }
 
 

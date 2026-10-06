@@ -1,6 +1,8 @@
-"""Stage D's pick (SPEC R25): a rewrite is returned only when it beats the original's mean judged
-score by at least 0.1 AND wins on more scenarios than it loses, compared on the scenarios both
-completed; the highest gain wins and a tie goes to the shorter rewrite, then to the earlier one.
+"""Stage D's pick (SPEC R25): a rewrite is returned only when it beats the baseline (the mean of the
+original's two runs) by MORE than max(0.1, 2 x noise) AND wins on more scenarios than it loses,
+compared on the scenarios both completed; the highest gain wins and a tie goes to the shorter
+rewrite, then to the earlier one. The original's two runs agree here (no noise); the noise cases
+are in test_fast_noise.py.
 
 The judge passes the first n of the 10 judged checks of a scenario (8 from the contract, 2 from the
 example's criteria), n read from a table by prompt and scenario, so every score is a tenth.
@@ -38,8 +40,8 @@ EXAMPLES = [
     Scenario(id=f"e{n}", input=f"example {n}", criteria=("criterion one", "criterion two"))
     for n in (1, 2, 3)
 ]
-A = "Answer the user's request. [A]"
-B = "Answer the user's request. [B]"
+A = "Answer the user's request now. [A]"  # "now": a rewrite needs a new meaning word
+B = "Answer the user's request here. [B]"
 LONG_B = "Answer the user's request carefully. [B]"
 SHORT_C = "Answer the request. [C]"
 
@@ -80,10 +82,11 @@ def pick(tmp_path, passed, fplan: FastPlan = K1M2_EXAMPLES, fails=()):
 @pytest.mark.parametrize(
     ("rewrite", "returned"),
     [
-        ((6, 6), True),  # +0.1 exactly (0.6 - 0.5 is 0.0999... in floating point), wins 2
+        ((6, 6), False),  # +0.1: not MORE than the margin (0.6 - 0.5 is 0.0999... in floats)
+        ((7, 6), True),  # +0.15, wins 2
         ((6, 5), False),  # +0.05: below the margin, though it wins 1 and loses none
-        ((7, 5), True),  # +0.1, wins 1, loses none: a tie counts for neither side
-        ((9, 3), False),  # +0.1, but wins 1 and loses 1
+        ((8, 5), True),  # +0.15, wins 1, loses none: a tie counts for neither side
+        ((10, 3), False),  # +0.15, but wins 1 and loses 1
     ],
 )
 def test_the_margin_and_the_win_count_at_their_boundaries(tmp_path, rewrite, returned):
@@ -102,20 +105,20 @@ THREE = dataclasses.replace(K1M2_EXAMPLES, scenarios=3)
 
 
 @pytest.mark.parametrize(
-    ("rewrite", "returned"),
+    ("original", "rewrite", "returned"),
     [
-        ((7, 7, 4), True),  # +0.1, wins 2, loses 1
-        ((10, 4, 4), False),  # +0.1, wins 1, loses 2
-        ((5, 5, 8), True),  # +0.1, wins 1, two ties
+        ((5, 5, 5), (8, 7, 4), True),  # +0.13, wins 2, loses 1
+        ((4, 5, 5), (10, 4, 4), False),  # +0.13, wins 1, loses 2
+        ((5, 5, 5), (5, 5, 9), True),  # +0.13, wins 1, two ties
     ],
 )
-def test_more_wins_than_losses_over_three_scenarios(tmp_path, rewrite, returned):
-    outcome = pick(tmp_path, {"O": (5, 5, 5), "A": rewrite}, THREE)
+def test_more_wins_than_losses_over_three_scenarios(tmp_path, original, rewrite, returned):
+    outcome = pick(tmp_path, {"O": original, "A": rewrite}, THREE)
     assert (outcome.prompt == A) is returned
 
 
 def test_the_highest_gain_wins_even_when_longer(tmp_path):
-    passed = {"O": (5, 5), "A": (7, 5), "B": (10, 10), "C": (6, 6)}
+    passed = {"O": (5, 5), "A": (8, 7), "B": (10, 10), "C": (7, 6)}
     assert pick(tmp_path, passed, K3M2_EXAMPLES).prompt == LONG_B
 
 
@@ -161,16 +164,17 @@ def test_an_invalid_judge_reply_is_asked_again_as_a_new_sample(tmp_path):
     retried = InvalidFirstReplies(**vars(world({"O": (5, 5), "A": (7, 7)})))
     result = run(tmp_path, retried, K1M2_EXAMPLES, examples=EXAMPLES)
     judges = result.calls("judge")
-    assert [c.sample for c in judges] == [0, 1, 0, 0, 1000] and result.outcome.prompt == A
+    # the contract check twice, the original's two runs, the rewrite's judge call twice
+    assert [c.sample for c in judges] == [0, 1, 0, 1, 0, 1000] and result.outcome.prompt == A
     assert (judges[1].user, judges[1].system) == (judges[0].user, judges[0].system)
-    assert (judges[4].user, judges[4].system) == (judges[3].user, judges[3].system)
+    assert (judges[5].user, judges[5].system) == (judges[4].user, judges[4].system)
 
 
 def test_no_judge_call_that_grades_outputs_is_shown_a_prompt(tmp_path):
     """ADR-002: only the contract check, a veto, sees the original and the rewrite."""
     result = run(tmp_path, world({"O": (5, 5), "A": (7, 7)}), K1M2_EXAMPLES, examples=EXAMPLES)
     grading = scoring_judges(result)
-    assert len(grading) == 2 and not any(t in c.user for c in grading for t in (PROMPT, A))
+    assert len(grading) == 3 and not any(t in c.user for c in grading for t in (PROMPT, A))
 
 
 @pytest.mark.parametrize(("passed", "returned"), [(1, False), (2, True)])

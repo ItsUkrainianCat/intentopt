@@ -10,8 +10,9 @@ stderr; the plan of `--dry` (SPEC R4) it prints is built in `cli_plan.py`.
 The time tiers (SPEC R25): a report names its tier and the seconds of the run's clock; a quick or
 fast result says, in its verified line, its meaning, its notices and its JSON, that it is not
 verified on held-out scenarios, and its scores are labelled as taken on the scenarios it was
-picked on, never as holdout scores; nothing of the GEPA search is said of a run that did not
-search.
+picked on, never as holdout scores; a fast result's noise is that of the original's two runs on
+those scenarios, and its bar max(0.1, 2 x noise) (`fast_stages`); nothing of the GEPA search is
+said of a run that did not search.
 
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
@@ -26,6 +27,7 @@ from dataclasses import asdict
 from difflib import SequenceMatcher
 from typing import Any, Protocol, TextIO
 
+from autoimprover.fast_stages import FAST_MARGIN
 from autoimprover.runner import MIN_THRESHOLD
 from autoimprover.types import Contract, Outcome, Plan
 
@@ -78,6 +80,11 @@ _FAST_VERIFIED = (
 _FAST_UNVERIFIED = (
     "a rewrite kept the intent contract and passed the free gates in a short run; it is not "
     "verified on held-out scenarios and no noise was measured, so read it before you use it"
+)
+_FAST_UNVERIFIED_NOISE = (
+    "a rewrite kept the intent contract, passed the free gates and beat the original by more "
+    "than the noise of two runs of the original on the few scenarios it was picked on; it is not "
+    "verified on held-out scenarios, so read it before you use it"
 )
 _FAST_STOPS = {
     None: "every stage ran as planned",
@@ -191,18 +198,21 @@ _CUT_SHORT = "notice: the search was cut short by the clock; the result comes fr
 def _meaning(outcome: Outcome) -> str:
     """What the outcome means for the user, in the words of its tier."""
     if outcome.mode in FAST_TIERS:
+        if outcome.status == "improved" and outcome.verified:
+            return _FAST_VERIFIED
         if outcome.status == "improved":
-            return _FAST_VERIFIED if outcome.verified else _FAST_UNVERIFIED
+            return _FAST_UNVERIFIED if outcome.noise is None else _FAST_UNVERIFIED_NOISE
         return FAST_REASON_LINES.get(outcome.reason_code, REASON_LINES[outcome.reason_code])
     if outcome.status == "improved" and not outcome.verified:
         return _UNVERIFIED_MEANING
     return REASON_LINES[outcome.reason_code]
 
 
-def _verified(outcome: Outcome, plan: Plan) -> str:
+def _verified(outcome: Outcome, plan: Plan | None) -> str:
     """Whether an improved result is verified; a quick or fast one is not, in its own label."""
     if outcome.verified:
-        return f"verified: yes, on the holdout, on the target model {plan.models.target}"
+        target = f" {plan.models.target}" if plan is not None else ""
+        return f"verified: yes, on the holdout, on the target model{target}"
     if outcome.mode in FAST_TIERS:
         return f"verified: no. NOT VERIFIED ({one_line(outcome.reason)})"
     return f"verified: no. {_UNVERIFIED}"
@@ -220,13 +230,16 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
             else f"holdout score (target model {plan.models.target})"
         )
         lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
+    fast = outcome.mode in FAST_TIERS
+    margin = _margin_text(outcome)
     if outcome.noise is not None:
-        bar = max(MIN_THRESHOLD, 2 * outcome.noise)
-        said = f"noise: {outcome.noise:.2f} between the original's two holdout runs; "
-        if outcome.margin is not None:
-            lines.append(f"{said}the result cleared the bar of {bar:.2f} by {outcome.margin:.2f}")
-        else:
-            lines.append(f"{said}a result had to gain more than {bar:.2f}")
+        bar = max(FAST_MARGIN if fast else MIN_THRESHOLD, 2 * outcome.noise)
+        runs = "two runs on the scenarios it was picked on" if fast else "two holdout runs"
+        said = f"noise: {outcome.noise:.2f} between the original's {runs}"
+        if margin is None:
+            lines.append(f"{said}; a result had to gain more than {bar:.2f}")
+        else:  # a fast result says its margin on a line of its own
+            lines.append(said if fast else f"{said}; {margin}")
     if outcome.search_score_before is not None:
         where = (
             picked
@@ -236,15 +249,39 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
         lines.append(
             f"{where}: {_before_after(outcome.search_score_before, outcome.search_score_after)}"
         )
-    before, after, margin = outcome.score_before, outcome.score_after, outcome.margin
-    if outcome.mode in FAST_TIERS and before is not None and after is not None:
-        if margin is not None:  # a fast-pipeline win: its margin over the least gain (fast.py)
-            held = "held-out scenarios" if outcome.verified else "scenarios it was picked on"
-            lines.append(
-                f"margin: {margin:.2f} above the least gain of {after - before - margin:.2f} on "
-                f"the {held} (no noise measured)"
-            )
+    if fast and margin is not None:
+        lines.append(f"margin: {margin}")
     return lines
+
+
+def _margin_text(outcome: Outcome) -> str | None:
+    """How far a returned result cleared what it had to: a fast result with noise as its gain
+    against the gain required, max(0.1, 2 x noise); a fast or checked result without noise as
+    its margin over the least gain; a deep result as the bar of its noise. None without a
+    margin."""
+    before, after, margin, noise = (
+        outcome.score_before,
+        outcome.score_after,
+        outcome.margin,
+        outcome.noise,
+    )
+    if margin is None:
+        return None
+    if outcome.mode not in FAST_TIERS:
+        if noise is None:
+            return None
+        return f"the result cleared the bar of {max(MIN_THRESHOLD, 2 * noise):.2f} by {margin:.2f}"
+    if before is None or after is None:
+        return None
+    if noise is not None:
+        required = max(FAST_MARGIN, 2 * noise)
+        picked = "on the scenarios it was picked on"
+        return f"gain {after - before:.2f} vs required {required:.2f} {picked}"
+    held = "held-out scenarios" if outcome.verified else "scenarios it was picked on"
+    return (
+        f"{margin:.2f} above the least gain of {after - before - margin:.2f} on the {held} (no "
+        "noise measured)"
+    )
 
 
 def _before_after(before: float, after: float | None) -> str:
@@ -290,8 +327,17 @@ def notices(outcome: Outcome) -> list[str]:
     return lines + _folder(outcome.run_dir)
 
 
-def outcome_object(outcome: Outcome, original: str, contract: Contract | None) -> dict[str, Any]:
-    """The `--json` object of a finished run (SPEC R2; ARCHITECTURE section 8)."""
+def outcome_object(
+    outcome: Outcome,
+    original: str,
+    contract: Contract | None,
+    plan: Plan | None = None,
+    elapsed_s: float | None = None,
+) -> dict[str, Any]:
+    """The `--json` object of a finished run (SPEC R2; ARCHITECTURE section 8). After `mode` it
+    carries the seconds of the run's clock and the human report's own words, each its line
+    without the label: `meaning`, `verified_text` (None when the report prints no verified line)
+    and `margin_text` (None without a margin), so a reader shows what the command line says."""
     improved = outcome.status == "improved"
     return {
         "status": outcome.status,
@@ -313,6 +359,10 @@ def outcome_object(outcome: Outcome, original: str, contract: Contract | None) -
         "calls_used": outcome.calls_used,
         "run_dir": outcome.run_dir,
         "mode": outcome.mode,
+        "elapsed_s": elapsed_s,
+        "meaning": _meaning(outcome),
+        "verified_text": _verified(outcome, plan).removeprefix("verified: ") if improved else None,
+        "margin_text": _margin_text(outcome),
     }
 
 
@@ -360,7 +410,7 @@ class Emitter:
         """A finished run: without `--json` the report to stderr and the prompt to stdout, cleaned
         when a model wrote it; with it the object, and the notices to stderr."""
         if self.json_mode:
-            self._result(_dumps(outcome_object(outcome, original, contract)))
+            self._result(_dumps(outcome_object(outcome, original, contract, plan, elapsed_s)))
             self.notice("\n".join(notices(outcome)))
             return
         self.notice(render(outcome, original, contract, plan, elapsed_s))
