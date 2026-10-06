@@ -39,3 +39,7 @@ mod-check:
     claude plugin validate .claude-plugin/marketplace.json --strict
     claude plugin validate .claude-plugin/plugin.json
     claude plugin test .
+
+# measure the tool on bench/prompts.jsonl (spends real calls; `just bench --dry` shows how many)
+bench *args:
+    uv run --frozen autoimprover bench {{ args }}
