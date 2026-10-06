@@ -83,11 +83,12 @@ describe('a finished run', () => {
     expect(renderText(view)).toContain(`improved prompt:\n${IMPROVED.prompt}`)
   })
 
-  test('an unverified (--trust-search) result says so on its button and in its meaning', () => {
+  test('an unverified (--trust-search) result says so in its button, lines and meaning', () => {
     const view = viewOf(end({ ...IMPROVED, verified: false, noise: null, margin: null }))
     expect(view.useLabel).toBe('Use it (not verified)')
     expect(view.title).toContain('NOT verified')
-    expect(view.meaning).toContain('NOT verified on a holdout')
+    expect(view.verifiedLine).toContain('NOT verified on a holdout')
+    expect(view.meaning).toContain('not verified')
     expect(view.margin).toBeNull()
   })
 
@@ -105,7 +106,7 @@ describe('a finished run', () => {
     expect(view.improved).toBe(prompt)
     expect(view.shown?.length).toBeLessThan(10000)
     expect(view.shown).toContain('3000 more characters')
-    const code = (full: boolean) => rowsOf(view, full).find((row) => row.kind === 'code')?.text
+    const code = (full: boolean) => rowsOf(view, full).head.find((row) => row.kind === 'code')?.text
     expect(code(true)).toBe(prompt)
     expect(code(false)).toBe(view.shown)
   })
