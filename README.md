@@ -22,6 +22,15 @@ tested with a fake `claude` script that prints the format of real `claude -p` ou
 the user's `just smoke` or a first `/improve`; until it passes, nothing here claims that a live
 run, the `/improve` command or the acceptance measure of SPEC section 5 works.
 
+Time tiers (SPEC R25, ADR-011): `--time` picks how a run works, and the default is the 30-second
+**fast** tier, not the GEPA search. quick (15 to 24 s) checks one rewrite against the intent
+contract; fast (25 to 59 s) runs a few rewrites and the original on a few scenarios in parallel
+stages and returns the best one, labelled "fast check: not verified on held-out scenarios, no
+noise measured"; checked (1 to 9 minutes) adds a held-out check on the target model; deep (10
+minutes and up, `--deep` is `--time 20m`) is the GEPA search that "How a run works" and "Budget
+and clock" below describe. Only checked and deep results are verified. The timings are estimates
+from one timing probe; live runs are not yet measured.
+
 ## Install and run
 
 Needs Python 3.12 or newer and `uv`; live runs will also need the `claude` CLI logged in to your
@@ -47,16 +56,25 @@ once the arguments parse, so it works in this build:
 ```
 $ uv run --frozen autoimprover --dry --file prompt.txt
 dry run: no model call made, nothing written
-models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-opus-5-5, target claude-sonnet-5-5
+tier: fast (--time 30 s), 6 calls at a time
+models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
+effort: task low, judge low, reflection low
 strictness: conservative, length cap 1.25x the original's tokens (at least the original plus 40)
-budget: 100 calls (ceiling 300); fixed costs: 16 before the search, 18 after it, 66 left for the search
-scenarios: 12, synthesised by one call; holdout 4, valset 3, dataset 5
-iterations: about 5 GEPA iterations (worst case, 13 calls each) to 7 (best case); an estimate: the clock may end the search sooner (live calls take 5 to 45 s)
-clock: 45 min; the search may use 33 min 45 s, the final steps keep 11 min 15 s
+rewrites: 3; scenarios: 3, synthesised by one call (3 to pick on, 0 held out)
+stages:
+  A: intake, synthesis and rewrites: 5 calls, about 7.8 s
+  B: task runs: 12 calls, about 10.5 s
+  C: judge and contract checks: 5 calls, about 5.6 s
+  D: free gates and pick: 0 calls, about 0.0 s
+estimate: 22 calls in about 24 s of 30 s; budget: 66 calls (ceiling 300)
+evidence: a fast check: scored on the scenarios it is picked on, not verified on held-out scenarios, no noise measured
 ```
 
-With `--budget 30` it adds `a real run would refuse: the fixed costs (16 calls before the search
-and 18 after it) exceed the budget of 30; use --budget 86 or more` and still exits 0. With
+The stage times come from the latency model of ADR-011 (about 2.4 s per call plus its output
+tokens at 70 per second, one slowest call per wave of `--workers` calls). With `--workers 1` it
+adds `a real run would refuse: the fast plan needs about 58 s, more than --time 30 s; give a longer
+--time, or more --workers (now 1)` and still exits 0. With `--deep` it prints the plan of the GEPA
+search instead: its budget, fixed costs, split, estimated iterations and clock share; with
 `--target-model opus` the judge becomes `claude-sonnet-5-5` (never the task or target model).
 
 ## How a run works
@@ -85,22 +103,32 @@ and 18 after it) exceed the budget of 30; use --budget 86 or more` and still exi
 | `--file PATH` | read the prompt from this UTF-8 file |
 | `--examples PATH` | test scenarios, JSON Lines (below); without it one call writes 12 |
 | `--kind KIND` | `template` or `task`; default: guessed by the contract call |
-| `--budget N` | model calls, 1 to 300; default 100 |
+| `--time DURATION` | the run's wall clock and its tier, a whole number with `s`, `m` or `h`: quick from `15s`, fast from `25s`, checked from `1m`, deep from `10m`; default `30s`, at most `3h`; below `15s` exit 2 |
+| `--deep` | the GEPA search: the same as `--time 20m` (not together with `--time`) |
+| `--workers N` | calls a stage runs at a time, 1 to 16; default 6 |
+| `--budget N` | model calls, 1 to 300; default: three times the plan's estimate in the quick, fast and checked tiers, and in deep one call per 12 s of `--time`, from 20 to 100 |
 | `--strictness LEVEL` | `conservative` (default), `balanced` or `bold`: length cap 1.25x, 1.5x or 2.5x the original's tokens (at least the original plus 40) |
 | `--allow-growth` | no length cap |
-| `--task-model MODEL` | runs candidates during the search; default `claude-haiku-4-5-20251001` |
+| `--task-model MODEL` | runs the prompts on the scenarios; default `claude-haiku-4-5-20251001` |
 | `--judge-model MODEL` | checks the outputs; default `claude-opus-5-5`, or `claude-sonnet-5-5` when the target is Opus |
-| `--reflect-model MODEL` | proposes rewrites, writes the contract and scenarios; default `claude-opus-5-5` |
-| `--target-model MODEL` | the model you will use the prompt with; the final comparison runs on it; default `claude-sonnet-5-5` |
-| `--merge` | let GEPA merge candidates (with this tool's valset of at most 4 it does not merge; see ARCHITECTURE section 11) |
-| `--trust-search` | below 8 scenarios, return a rewrite that beat the original on the search's own valset, marked not verified |
-| `--force-low-budget` | run although the budget affords fewer than 4 search iterations |
+| `--reflect-model MODEL` | writes the rewrites, the contract and the scenarios; default `claude-sonnet-5-5`, in deep `claude-opus-5-5` |
+| `--target-model MODEL` | the model you will use the prompt with; the held-out comparison (checked, deep) runs on it; default `claude-sonnet-5-5` |
+| `--effort LEVEL` | `claude --effort` of every role: `low`, `medium`, `high`, `xhigh`, `max` or `default` (the model's own); default `low`, in deep `default` |
+| `--task-effort LEVEL` | the task role's effort, over `--effort` |
+| `--judge-effort LEVEL` | the judge role's effort, over `--effort` |
+| `--reflect-effort LEVEL` | the effort of the contract, scenario and rewrite calls, over `--effort` |
+| `--merge` | deep only: let GEPA merge candidates (with this tool's valset of at most 4 it does not merge; see ARCHITECTURE section 11) |
+| `--trust-search` | deep only: below 8 scenarios, return a rewrite that beat the original on the search's own valset, marked not verified |
+| `--force-low-budget` | deep only: run although the budget affords fewer than 4 search iterations |
 | `--dry` | print the plan; no model call, nothing written |
 | `--json` | print one JSON object on stdout |
 | `--resume ID` | continue the run with this id |
 
 Model names may be full ids or the aliases `haiku`, `sonnet`, `opus`. A judge equal to the task or
-target model is refused (exit 2, naming the flag). The 45-minute wall clock has no flag.
+target model is refused (exit 2, naming the flag). A flag given always wins over the tier's
+default; `--merge`, `--trust-search` and `--force-low-budget` with a tier other than deep are
+exit 2. A quick, fast or checked plan whose estimate is longer than `--time` is refused (exit 2;
+`--dry` says so).
 
 ## Examples file
 
@@ -135,10 +163,10 @@ on stderr. GEPA's own progress goes to `gepa.log` in the run folder, never to st
 |---|---|
 | 0 | done, also when the original is returned ("no reliable improvement" and the other unchanged reasons) |
 | 1 | internal error (a bug); stderr names the run folder and the resume line when there is one |
-| 2 | bad input or usage, or a refusal before any paid call (budget, judge model, state folder) |
+| 2 | bad input or usage, or a refusal before any paid call (budget, judge model, state folder, a plan longer than `--time`) |
 | 3 | backend failure: a failed call outside the search, or three failed calls in a row of one kind to one model |
 | 4 | the `claude` session was not locked down (it reported tools, MCP servers, skills, slash commands, extra agents or a non-default output style) |
-| 130 | interrupted (Ctrl-C) |
+| 130 | interrupted: Ctrl-C, or SIGTERM (what `/improve cancel` sends); no call starts after it and the running `claude` children are killed |
 
 Every non-zero exit writes `error: <what, and the flag or folder to change>` to stderr and nothing
 to stdout (with `--json`, only the error object). Exits 3 and 130 also print `run folder: <path>`
@@ -149,8 +177,8 @@ folder is not the default).
 
 The keys of the object on stdout, in order:
 
-- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`
-- dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`
+- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`
+- dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`, `tier`, `workers`, `efforts`, `rewrites`, `stages`, `est_calls`, `est_seconds`
 - dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`, `tier`, `workers`, `efforts`
 - error: `status`, `code`, `error`, `run_dir`
 - clean: `status`, `removed`, `skipped`
@@ -158,7 +186,14 @@ The keys of the object on stdout, in order:
 `status` is `improved` or `unchanged` for a finished run, else `dry`, `error`, `cleaned` or `help`.
 `reason_code` is one of `improved`, `no_reliable_improvement`, `already_strong`, `no_holdout`,
 `no_candidate_beat_seed`, `unconfirmed_out_of_budget`; `stop` is `budget`, `clock` or null (no
-search ran). Scores are shares of checks passed, from 0 to 1, or null when not measured.
+search ran, or every stage ran as planned). `mode` is the tier, `quick`, `fast`, `checked` or
+`deep`; `verified` is true only for a checked or deep result confirmed on held-out scenarios. In a
+quick or fast result `score_before` and `score_after` are taken on the scenarios the rewrite was
+picked on, not held out; in a checked result the `search_score_*` keys are. Scores are shares of
+checks passed, from 0 to 1, or null when not measured. A dry run's keys are the same in every
+tier, null where they do not apply: the search's numbers (`valset` to `final_clock_s`) in the
+quick, fast and checked tiers, `rewrites`, `stages`, `est_calls` and `est_seconds` in deep; each
+stage is `name`, `calls` and `seconds`.
 
 ## Budget and clock
 

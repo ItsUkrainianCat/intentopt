@@ -32,6 +32,14 @@ BETTER = f"Answer the user's request {MARKER}."
 WORSE = f"{PROMPT} Be brief."
 
 
+# Written for the GEPA search with a 45-minute clock, the default before the time tiers; SPEC R25
+# makes that `--time 45m`, which `deep` puts before a new run's flags (not --resume, clean, help).
+def deep(argv) -> list[str]:
+    if set(argv) & {"--time", "--deep", "--resume", "--help", "clean"}:
+        return list(argv)
+    return ["--time", "45m", *argv]
+
+
 @pytest.fixture(autouse=True)
 def _no_disk_flush(monkeypatch: pytest.MonkeyPatch):
     """Writes stay atomic but are not flushed: a run writes hundreds of cache entries, and
@@ -52,7 +60,7 @@ class Run:
 
 
 def run(capsys: pytest.CaptureFixture[str], backend, *argv: str) -> Run:
-    code = cli.main(list(argv), backend=backend, now=FakeClock().now)
+    code = cli.main(deep(argv), backend=backend, now=FakeClock().now)
     out, err = capsys.readouterr()
     return Run(code, out, err)
 
@@ -259,7 +267,7 @@ def test_the_run_gets_the_search_share_and_a_resume_its_saved_count_and_clock(mo
     model = happy_backend(BETTER)
     timed = ScriptedBackend(lambda call: model.complete(call).text, duration_s=7.0, clock=fake)
     with pytest.raises(Cut):
-        cli.main([PROMPT], backend=Cutting(5, timed), now=fake.now)
+        cli.main(deep([PROMPT]), backend=Cutting(5, timed), now=fake.now)
     [folder] = runs()
     run(capsys, happy_backend(BETTER), "--resume", folder.name)
     final = runner.fixed_costs(Plan(models=DEFAULT_MODELS), SYNTH_COUNT, True).final
@@ -278,7 +286,9 @@ def test_a_kind_given_on_the_command_line_is_the_contracts_kind(capsys):
 def test_a_resumed_run_keeps_its_kind_and_trust_search_and_examples(tmp_path, capsys):
     argv = ["--json", "--kind", "template", "--trust-search", "--examples"]
     with pytest.raises(Cut):
-        cli.main([*argv, examples(tmp_path, 7), PROMPT], backend=Cutting(1), now=FakeClock().now)
+        cli.main(
+            deep([*argv, examples(tmp_path, 7), PROMPT]), backend=Cutting(1), now=FakeClock().now
+        )
     [folder] = runs()
     obj = run(capsys, happy_backend(BETTER), "--json", "--resume", folder.name).obj()
     assert (obj["contract"]["kind"], obj["status"], obj["verified"]) == (
@@ -319,7 +329,7 @@ def test_a_run_cut_at_any_point_resumes_to_the_same_outcome_and_continues_the_co
             cli.main(["clean", folder.name])
         cut = Cutting(at)
         with pytest.raises(Cut):
-            cli.main(["--json", PROMPT], backend=cut, now=FakeClock().now)
+            cli.main(deep(["--json", PROMPT]), backend=cut, now=FakeClock().now)
         capsys.readouterr()
         [folder] = runs()
         model = happy_backend(BETTER)
@@ -345,7 +355,7 @@ def test_a_resumed_run_with_examples_keeps_them_even_when_cut_before_they_were_u
     reference = run(capsys, happy_backend(BETTER), *argv).obj()
     cli.main(["clean"])
     with pytest.raises(Cut):
-        cli.main(list(argv), backend=Cutting(1), now=FakeClock().now)
+        cli.main(deep(list(argv)), backend=Cutting(1), now=FakeClock().now)
     [folder] = runs()
     model = happy_backend(BETTER)
     resumed = run(capsys, model, "--json", "--resume", folder.name).obj()
@@ -383,7 +393,7 @@ def test_a_resume_ignores_a_new_prompt_and_flags_with_one_notice(tmp_path, capsy
     reference = run(capsys, happy_backend(BETTER), "--json", PROMPT).obj()
     cli.main(["clean"])
     with pytest.raises(Cut):
-        cli.main([PROMPT], backend=Cutting(1), now=FakeClock().now)
+        cli.main(deep([PROMPT]), backend=Cutting(1), now=FakeClock().now)
     [folder] = runs()
     model = happy_backend(BETTER)
     ignored = [*IGNORED, "--examples", examples(tmp_path, 9), "Another prompt."]
@@ -400,7 +410,7 @@ def test_a_resume_ignores_a_new_prompt_and_flags_with_one_notice(tmp_path, capsy
 
 def test_a_resume_with_nothing_to_ignore_prints_no_notice(capsys):
     with pytest.raises(Cut):
-        cli.main([PROMPT], backend=Cutting(1), now=FakeClock().now)
+        cli.main(deep([PROMPT]), backend=Cutting(1), now=FakeClock().now)
     [folder] = runs()
     resumed = run(capsys, happy_backend(BETTER), "--json", "--resume", folder.name)
     assert resumed.obj()["status"] == "improved" and "ignoring" not in resumed.err
@@ -409,7 +419,7 @@ def test_a_resume_with_nothing_to_ignore_prints_no_notice(capsys):
 @pytest.mark.parametrize("damage", [{"kind": "essay"}, {"trust_search": "yes"}])
 def test_a_manifest_with_damaged_saved_flags_refuses_the_resume(capsys, damage):
     with pytest.raises(Cut):
-        cli.main([PROMPT], backend=Cutting(1), now=FakeClock().now)
+        cli.main(deep([PROMPT]), backend=Cutting(1), now=FakeClock().now)
     [folder] = runs()
     manifest = json.loads((folder / "manifest.json").read_text())
     manifest["opts"] |= damage
@@ -422,7 +432,7 @@ def test_a_manifest_with_damaged_saved_flags_refuses_the_resume(capsys, damage):
 
 def test_resume_shows_the_saved_run_before_it_continues(capsys):
     with pytest.raises(Cut):
-        cli.main([PROMPT], backend=Cutting(5), now=FakeClock().now)
+        cli.main(deep([PROMPT]), backend=Cutting(5), now=FakeClock().now)
     capsys.readouterr()
     [folder] = runs()
     resumed = run(capsys, happy_backend(BETTER), "--resume", folder.name)

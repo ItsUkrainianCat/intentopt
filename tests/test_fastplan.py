@@ -26,7 +26,7 @@ SHORT, LONG = 20, 500  # prompt tokens: a one-line prompt and a long system prom
 @pytest.mark.parametrize(
     ("time_s", "tier"),
     [(15, "quick"), (24, "quick"), (25, "fast"), (30, "fast"), (59, "fast")]
-    + [(60, "checked"), (299, "checked"), (300, "deep"), (1200, "deep")],
+    + [(60, "checked"), (300, "checked"), (599, "checked"), (600, "deep"), (1200, "deep")],
 )
 def test_the_time_picks_the_tier(time_s, tier):
     assert tier_for(time_s) == tier
@@ -152,7 +152,7 @@ def test_a_long_prompt_makes_the_rewrites_the_slowest_calls_of_stage_a():
 @pytest.mark.parametrize("tokens", [0, SHORT, LONG, 5000])
 @pytest.mark.parametrize("examples", [False, True])
 def test_more_time_never_gives_a_smaller_plan(workers, tokens, examples):
-    for start, end in ((25, 60), (60, 300)):
+    for start, end in ((25, 60), (60, 600)):
         shapes = [
             (plan.rewrites, plan.scenarios)
             for plan in (fast_plan(t, workers, tokens, examples) for t in range(start, end))
@@ -160,7 +160,7 @@ def test_more_time_never_gives_a_smaller_plan(workers, tokens, examples):
         assert shapes == sorted(shapes)
 
 
-@pytest.mark.parametrize("time_s", [25, 30, 45, 59, 60, 120, 299])
+@pytest.mark.parametrize("time_s", [25, 30, 45, 59, 60, 120, 299, 599])
 @pytest.mark.parametrize("workers", [1, 4, 8])
 def test_a_plan_fits_85_percent_of_the_time_unless_it_is_the_smallest(time_s, workers):
     plan = fast_plan(time_s, workers, SHORT, False)
@@ -173,8 +173,9 @@ def test_the_plan_is_the_same_for_the_same_inputs():
 
 
 def test_the_deep_tier_is_not_a_fast_plan():
+    assert fast_plan(599, 4, SHORT, False).tier == "checked"
     with pytest.raises(ValueError, match="deep"):
-        fast_plan(300, 4, SHORT, False)
+        fast_plan(600, 4, SHORT, False)
 
 
 @pytest.mark.parametrize(("workers", "tokens"), [(0, SHORT), (-1, SHORT), (4, -1)])

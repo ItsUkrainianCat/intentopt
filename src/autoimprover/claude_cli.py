@@ -23,7 +23,9 @@ deadline)` and no call starts once the deadline has passed (SPEC R17); on expiry
 this call started is killed, by its exact pid.
 
 Calls may run on several threads at once (SPEC R25): the backend holds only what it was built
-with, and each call makes its own child, pipes, feeder thread and timer.
+with and the set of its live children, and each call makes its own child, pipes, feeder thread
+and timer. `terminate()` (a cancelled run: SPEC R2 exit 130, R21 cancel) kills every live child by
+its own Popen object, never by a name or a pid search, and every later call fails without a child.
 """
 
 from __future__ import annotations
@@ -125,8 +127,15 @@ class ClaudeCliBackend:
         self._cwd = cwd
         self._deadline = deadline
         self._timeout_s = timeout_s
+        self._children = _Children()
+
+    def terminate(self) -> None:
+        """Kill every child this backend started that still runs; later calls start none."""
+        self._children.close()
 
     def complete(self, call: Call) -> Reply:
+        if self._children.closed:
+            raise CallError("the run is being cancelled; claude was not started")
         env = _environment(os.environ)
         binary = shutil.which("claude", path=env.get("PATH", os.defpath))
         if binary is None:
@@ -138,7 +147,8 @@ class ClaudeCliBackend:
         timeout = min(self._timeout_s, self._deadline() - start)
         if timeout <= 0:
             raise CallError("no time left before the deadline; claude was not started (SPEC R17)")
-        done = _run(_argv(binary, call), env, self._cwd, call.user.encode(), timeout)
+        argv = _argv(binary, call)
+        done = _run(argv, env, self._cwd, call.user.encode(), timeout, self._children)
         text, usage = _reply(done, call)
         return Reply(
             text=text,
@@ -177,10 +187,45 @@ class _Done:
     input_error: OSError | None
 
 
-def _run(argv: list[str], env: dict[str, str], cwd: Path, data: bytes, timeout: float) -> _Done:
+class _Children:
+    """The children of one backend that still run, so `close` can kill each by its own Popen
+    object; once closed, a child that is added is refused (its caller kills it)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._live: set[subprocess.Popen[bytes]] = set()
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def add(self, child: subprocess.Popen[bytes]) -> bool:
+        with self._lock:
+            if not self._closed:
+                self._live.add(child)
+            return not self._closed
+
+    def discard(self, child: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._live.discard(child)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            live = list(self._live)
+        for child in live:
+            child.kill()  # Popen signals only its own child, and only while it has not been reaped
+
+
+def _run(
+    argv: list[str], env: dict[str, str], cwd: Path, data: bytes, timeout: float, live: _Children
+) -> _Done:
     """Start the child with `data` on its stdin and wait for it to end; after `timeout` seconds
     kill it, this child only. A thread feeds stdin, so a large input and a large reply cannot
-    block each other, and a child that stops reading its input is noticed."""
+    block each other, and a child that stops reading its input is noticed. The child is in
+    `live` while it runs; one started after `live` was closed is killed at once."""
     read_end, write_end = os.pipe()
     try:
         child = subprocess.Popen(
@@ -191,6 +236,8 @@ def _run(argv: list[str], env: dict[str, str], cwd: Path, data: bytes, timeout: 
         raise CallError(f"claude could not be started: {error}") from error
     finally:
         os.close(read_end)
+    if not live.add(child):
+        child.kill()
     expired = threading.Event()
 
     def expire() -> None:
@@ -211,6 +258,7 @@ def _run(argv: list[str], env: dict[str, str], cwd: Path, data: bytes, timeout: 
             child.kill()
             child.wait()
         feeder.join()
+        live.discard(child)
     return _Done(child.returncode, out, err, timeout, expired.is_set(), next(iter(failed), None))
 
 
