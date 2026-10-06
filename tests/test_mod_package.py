@@ -59,7 +59,8 @@ CALLS = {
 ENV_READS = {"HOME", "TMPDIR", "XDG_CACHE_HOME"}
 # Flags of the CLI the mod never forwards: its own help, the JSON mode it always sets, and
 # `--resume`, which it handles as a subcommand.
-NOT_FORWARDED = {"--help", "--json", "--resume"}
+# --ungated is a measuring aid of the command line and the bench; the mod refuses it as unknown.
+NOT_FORWARDED = {"--help", "--json", "--resume", "--ungated"}
 
 
 def manifest(name: str) -> dict:

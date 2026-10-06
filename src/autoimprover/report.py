@@ -13,6 +13,9 @@ verified on held-out scenarios; its two numbers are the shares of the scenarios 
 that the pairwise judge gave to the original and to the rewrite (a preference, never a score or a
 holdout score), its noise the share where the original's two runs had a winner, and its bar that
 noise (`fast_stages`, ADR-012); nothing of the GEPA search is said of a run that did not search.
+An `--ungated` result (fast or checked) has its own reason code and label, is never verified, and
+shows the same two shares as a preference on the scenarios it was picked on, with its lead, which
+it did not need.
 
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
@@ -50,7 +53,11 @@ REASON_LINES = {
     "(--trust-search, no holdout), so the original is kept",
     "unconfirmed_out_of_budget": "the calls or the clock ran out before a rewrite was confirmed "
     "on the holdout, so the original is kept; a larger --budget leaves more for the final steps",
+    "ungated_best_candidate": "with --ungated the best-ranked rewrite that kept the intent "
+    "contract and passed the free gates is returned whether or not it beat the original; no win "
+    "over the original was shown, so it is not verified and may be worse (a measuring aid)",
 }
+_UNGATED = "ungated_best_candidate"
 
 # An improved result that no holdout checked (--trust-search, SPEC R11) says only what was done.
 _UNVERIFIED_MEANING = (
@@ -198,6 +205,8 @@ _CUT_SHORT = "notice: the search was cut short by the clock; the result comes fr
 
 def _meaning(outcome: Outcome) -> str:
     """What the outcome means for the user, in the words of its tier."""
+    if outcome.reason_code == _UNGATED:
+        return REASON_LINES[_UNGATED]
     if outcome.mode in FAST_TIERS:
         if outcome.status == "improved" and outcome.verified:
             return _FAST_VERIFIED
@@ -257,7 +266,8 @@ def _margin_text(outcome: Outcome) -> str | None:
     """How far a returned result cleared what it had to: a fast result with noise as its lead
     (the share of the scenarios it won minus the share it lost) against that noise; a fast or
     checked result without noise as its margin over the least gain; a deep result as the bar of
-    its noise. None without a margin."""
+    its noise; an ungated result as its lead on the scenarios it was picked on, which it did not
+    need. None without a margin."""
     before, after, margin, noise = (
         outcome.score_before,
         outcome.score_after,
@@ -266,6 +276,12 @@ def _margin_text(outcome: Outcome) -> str | None:
     )
     if margin is None:
         return None
+    if outcome.reason_code == _UNGATED:
+        before, after = outcome.search_score_before, outcome.search_score_after
+        if before is None or after is None:
+            return None
+        against = "" if noise is None else f" vs noise {noise:.2f}"
+        return f"lead {after - before:.2f}{against} on {_PICKED}; ungated, so no lead was required"
     if outcome.mode not in FAST_TIERS:
         if noise is None:
             return None

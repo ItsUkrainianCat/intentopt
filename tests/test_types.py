@@ -287,8 +287,13 @@ def test_outcome_reason_codes_are_fixed_and_agree_with_the_status():
         Outcome(status="unchanged", prompt="p", reason="r", reason_code="improved")
     with pytest.raises(ValueError, match="improved"):
         Outcome(status="improved", prompt="p", reason="r", reason_code="no_reliable_improvement")
+    # `--ungated`'s best-ranked candidate is an improved result, and only that (SPEC R25)
+    ungated = "ungated_best_candidate"
+    assert Outcome(status="improved", prompt="p", reason="r", reason_code=ungated)
+    with pytest.raises(ValueError, match="improved"):
+        Outcome(status="unchanged", prompt="p", reason="r", reason_code=ungated)
     for code in REASON_CODES:
-        if code != "improved":
+        if code not in ("improved", ungated):
             assert Outcome(status="unchanged", prompt="p", reason="r", reason_code=code)
 
 
