@@ -8,16 +8,21 @@ beside the intake, so it carries no contract; the reply holds exactly `count` sc
 as `scenarios.synthesize` checks its own.
 """
 
+import dataclasses
 import json
 
 import pytest
+from fakes import ScriptedBackend
 
 from autoimprover.contract import literals
+from autoimprover.evaluator import Evaluator
 from autoimprover.fast_prompts import (
+    FAST_TASK_SUFFIX,
     REFLECT_NOTES,
     REFLECT_VARIANTS,
     REWRITE_VARIANTS,
     STRATEGY_NOTES,
+    FastEvaluator,
     parse_rewrite,
     parse_synth,
     reflect_call,
@@ -324,3 +329,22 @@ def test_a_reflection_carries_the_adr_006_rules_and_the_token_cap(rule):
 def test_a_negative_reflection_variant_is_refused():
     with pytest.raises(ValueError, match="variant"):
         reflection(-1)
+
+
+SITUATION = Scenario(id="s1", input="notes of a short meeting")
+
+
+@pytest.mark.parametrize("kind", ["template", "task"])
+def test_a_fast_task_run_asks_for_at_most_120_words_at_the_end_of_its_user_text(kind):
+    """SPEC R25: every scoring run of the fast tiers carries the same fixed suffix, after the
+    scenario input (template) or after the candidate (task); the system prompt, the candidate and
+    the deep tier's task call are unchanged, and the suffix is part of the cache key."""
+    contract = Contract(goal="summarise notes", kind=kind)
+    backend = ScriptedBackend(lambda _call: "unused")
+    deep = Evaluator(backend, contract, "haiku", "", 1)._task_call(PROMPT, SITUATION)
+    fast = FastEvaluator(backend, contract, "haiku", "", 1)._task_call(PROMPT, SITUATION)
+    assert FAST_TASK_SUFFIX == "\n\n(Answer in at most 120 words.)"
+    user = {"template": SITUATION.input, "task": f"{SITUATION.input}\n\n{PROMPT}"}[kind]
+    assert (deep.user, fast.user) == (user, user + FAST_TASK_SUFFIX)
+    assert fast == dataclasses.replace(deep, user=user + FAST_TASK_SUFFIX)
+    assert cache_key(fast) != cache_key(deep)

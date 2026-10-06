@@ -17,6 +17,7 @@ from fakes import MARKER, FakeClock, ScriptedBackend, intake_reply, judge_reply,
 from autoimprover import fastplan
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
 from autoimprover.fast import improve_fast
+from autoimprover.fast_prompts import FAST_TASK_SUFFIX
 from autoimprover.fastplan import FastPlan, fast_plan
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
@@ -65,9 +66,9 @@ K3M2_EXAMPLES = mechanics_plan(30, 6, SHORT, True)
 K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)  # the smallest
 CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
 # Two generations (from 45 s): the first, then K2=2 reflections. At 2.4 s per call the second
-# costs Rs + T + J2 = 3.257 + 5.257 + 4.543 = 13.057 s on 4 or more workers.
-TWO_K1 = mechanics_plan(45, 4, SHORT, False)  # K=1, M=2: 22.886 + 13.057 <= 38.25
-TWO_K3 = mechanics_plan(45, 6, SHORT, False)  # K=3, M=2: 23.957 + 13.057 <= 38.25
+# costs Rs + T + J2 = 3.257 + 4.543 + 4.543 = 12.343 s on 4 or more workers (T: 150 tokens).
+TWO_K1 = mechanics_plan(45, 4, SHORT, False)  # K=1, M=2: 21.457 + 12.343 <= 38.25
+TWO_K3 = mechanics_plan(45, 6, SHORT, False)  # K=3, M=2: 22.529 + 12.343 <= 38.25
 
 
 class Verbatim(str):
@@ -141,8 +142,9 @@ class Result:
 
 
 def prompt_of(call: Call) -> str:
-    """The prompt a task call ran: what follows the situation (kind task) or the system prompt."""
-    return call.system or call.user.split("\n\n", 1)[1]
+    """The prompt a task call ran: what follows the situation (kind task) or the system prompt,
+    without the suffix every scoring run carries (`test_fast_suffix.py`)."""
+    return call.system or call.user.removesuffix(FAST_TASK_SUFFIX).split("\n\n", 1)[1]
 
 
 def runs_of(result: Result) -> list[tuple[str, int]]:
@@ -151,7 +153,8 @@ def runs_of(result: Result) -> list[tuple[str, int]]:
 
 
 def scenario_of(call: Call) -> str:
-    return call.user if call.system else call.user.split("\n\n", 1)[0]
+    user = call.user.removesuffix(FAST_TASK_SUFFIX)
+    return user if call.system else user.split("\n\n", 1)[0]
 
 
 def judged_scenarios(call: Call) -> list[str]:

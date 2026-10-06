@@ -34,8 +34,8 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     tagged,
 )
 
-from autoimprover.evaluator import _JUDGE_SYSTEM, Evaluator
-from autoimprover.fast_prompts import STRATEGY_NOTES
+from autoimprover.evaluator import _JUDGE_SYSTEM
+from autoimprover.fast_prompts import FAST_TASK_SUFFIX, STRATEGY_NOTES, FastEvaluator
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import BackendError, Call, CallError, Scenario
@@ -313,7 +313,9 @@ def test_the_kind_given_replaces_the_guess(tmp_path):
     """The intake guesses `task`; `--kind template` makes the prompt the system prompt."""
     tasks = run(tmp_path, World(), K1M2, kind="template").calls("task")
     assert [(c.system, c.user) for c in tasks] == [
-        (text, f"situation {i}") for text in (PROMPT, PROMPT, BETTER) for i in (1, 2)
+        (text, f"situation {i}{FAST_TASK_SUFFIX}")
+        for text in (PROMPT, PROMPT, BETTER)
+        for i in (1, 2)
     ]
 
 
@@ -340,7 +342,8 @@ def test_programmatic_checks_alone_need_no_judge_call_for_the_original(tmp_path)
 
 
 def test_stage_b_asks_the_very_task_calls_of_the_evaluator(tmp_path):
-    """The same calls, so the same cache keys, as `Evaluator` makes for these prompts (R22)."""
+    """The same calls, so the same cache keys, as the fast tiers' `FastEvaluator` (the evaluator's
+    own task call with the 120-word suffix) makes for these prompts (R22, R25)."""
     result = run(tmp_path, World(), K1M2)
     store = RunStore.resume(tmp_path, result.run_id)
     try:
@@ -350,7 +353,7 @@ def test_stage_b_asks_the_very_task_calls_of_the_evaluator(tmp_path):
     assert contract is not None
     model = ScriptedBackend(World())
     for text, sample in ((PROMPT, 0), (PROMPT, 1), (BETTER, 0)):
-        Evaluator(model, contract, MODELS.task, MODELS.judge, sample)(text, scenarios[:2])
+        FastEvaluator(model, contract, MODELS.task, MODELS.judge, sample)(text, scenarios[:2])
     assert result.calls("task") == [c for c in model.calls if c.role == "task"]
 
 

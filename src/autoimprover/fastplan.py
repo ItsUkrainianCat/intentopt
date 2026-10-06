@@ -47,7 +47,7 @@ SYNTH_TOKENS_PER_SCENARIO = 45
 REWRITE_MIN_TOKENS = 60
 REWRITE_GROWTH = 1.2
 REWRITE_MAX_TOKENS = 600
-TASK_TOKENS = 200
+TASK_OUT_TOKENS = 150  # a scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX)
 JUDGE_TOKENS_PER_CHECK = 25  # a pass/fail and a quote of at most 8 words
 JUDGED_CHECKS_PER_SCENARIO = 3
 CONTRACT_CHECKS = 3  # the contract check's three fixed questions (contract.check)
@@ -154,7 +154,7 @@ def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, 
         Stage(
             "B: task runs",
             runs * scenarios,
-            wave_seconds(runs * scenarios, workers, call_seconds(TASK_TOKENS)),
+            wave_seconds(runs * scenarios, workers, call_seconds(TASK_OUT_TOKENS)),
         ),
         Stage("C: judge and contract checks", runs + 1, wave_seconds(runs + 1, workers, judging)),
         Stage("D: free gates and pick", 0, 0.0),
@@ -178,7 +178,7 @@ def second_stages(
         Stage(
             "B2: task runs of the second generation",
             runs,
-            wave_seconds(runs, workers, call_seconds(TASK_TOKENS)),
+            wave_seconds(runs, workers, call_seconds(TASK_OUT_TOKENS)),
         ),
         Stage(
             "C2: judge and contract checks of the second generation",
@@ -191,7 +191,7 @@ def second_stages(
 def holdout_stage(holdout: int, workers: int) -> Stage:
     """Stage E: the winner and the original on `holdout` held-out scenarios on the target model,
     a wave of task runs, then a judge call each."""
-    seconds = wave_seconds(2 * holdout, workers, call_seconds(TASK_TOKENS))
+    seconds = wave_seconds(2 * holdout, workers, call_seconds(TASK_OUT_TOKENS))
     seconds += wave_seconds(2, workers, judge_seconds(holdout))
     return Stage("E: held-out check on the target model", 2 * holdout + 2, seconds)
 
