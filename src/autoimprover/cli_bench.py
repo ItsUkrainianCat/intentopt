@@ -15,10 +15,7 @@ is not locked down ends the bench with exit 4 (`cli.main`). Ctrl-C is exit 130 a
 (stdout empty, or the error object with `--json`): the `error:` line, then the partial summary of
 the prompts measured on stderr, and its object saved as `<state>/bench/<id>/summary.json`.
 
-DEBT, private names used here until their owners add public seams: `cli_options._Parser`,
-`report.Emitter._result` (the one result of a bench is neither an outcome nor a plan),
-`runstore._make_dirs` and `runstore._write_json` (the 0700 folder and the atomic 0600 file of the
-partial summary).
+DEBT, a private name used here until its owner adds a public seam: `cli_options._Parser`.
 """
 
 from __future__ import annotations
@@ -50,7 +47,7 @@ from autoimprover.cli_options import Options, Settings, UsageError, _Parser, bud
 from autoimprover.fastplan import fast_plan
 from autoimprover.report import Emitter
 from autoimprover.runner import count_tokens
-from autoimprover.runstore import RunStore, RunStoreError, _make_dirs, _write_json, runs_root
+from autoimprover.runstore import RunStore, RunStoreError, make_dirs, runs_root, write_json
 from autoimprover.types import (
     EXIT_INTERRUPTED,
     EXIT_OK,
@@ -191,7 +188,7 @@ def bench_command(
     if measured.interrupted:
         return _interrupted(emit, summary, folder)
     found: Any = summary.object()
-    emit._result(json.dumps(found, allow_nan=False) + "\n" if emit.json_mode else summary.text())
+    emit.result(json.dumps(found, allow_nan=False) + "\n" if emit.json_mode else summary.text())
     return EXIT_OK
 
 
@@ -202,8 +199,8 @@ def _interrupted(emit: Emitter, summary: Summary, folder: Path) -> int:
     said in the error line."""
     path = folder / SUMMARY_FILE
     try:
-        _make_dirs(folder)
-        _write_json(path, summary.object())
+        make_dirs(folder)
+        write_json(path, summary.object())
         saved = f"the partial summary is in {path}"
     except OSError as error:
         saved = f"the partial summary could not be saved to {path}: {error.strerror or error}"

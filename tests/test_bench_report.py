@@ -4,6 +4,7 @@ baseline's, contract violations, median and 90th percentile seconds, total calls
 and the plan of `--dry` (prompts, calls, seconds). Both hold ids, codes and numbers, never a
 prompt."""
 
+import io
 import json
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from autoimprover.bench import Measured, Row
 from autoimprover.bench_judge import Comparison
 from autoimprover.bench_report import DryRow, DryView, Summary, percentile
+from autoimprover.report import Emitter
 from autoimprover.types import Models
 
 MODELS = Models(
@@ -206,3 +208,17 @@ def test_the_dry_text_says_the_calls_the_time_and_a_refusal():
     assert "2 prompts" in text and "65 calls" in text and "about 2 min (116 s)" in text
     assert "baseline: naive" in text and MODELS.judge in text and MODELS.target in text
     assert "a real bench would refuse: the state folder is not writable" in text
+
+
+# --- the one result on stdout (SPEC R2) ----------------------------------------------------------
+
+
+def test_the_emitter_writes_a_bench_result_once_as_is():
+    out, err = io.StringIO(), io.StringIO()
+    emit = Emitter(out, err, json_mode=True)
+    emit.result('{"status": "bench"}\n')
+    assert (out.getvalue(), err.getvalue()) == ('{"status": "bench"}\n', "")
+    with pytest.raises(RuntimeError):
+        emit.result("a second result")
+    emit.error(2, "late failure")  # after the result, an error goes to stderr only
+    assert out.getvalue() == '{"status": "bench"}\n' and "error: late failure" in err.getvalue()

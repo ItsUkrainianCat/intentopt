@@ -452,6 +452,11 @@ class Emitter:
             self._result(_dumps(error_object(code, message, run_dir)))
         return code
 
+    def result(self, text: str) -> None:
+        """`text` as the one result on stdout, as it is (the summary of `autoimprover bench`,
+        SPEC R26); a second result raises RuntimeError."""
+        self._result(text)
+
     def _result(self, text: str) -> None:
         if self._done:
             raise RuntimeError("a second result for stdout")
