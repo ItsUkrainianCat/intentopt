@@ -1,0 +1,18 @@
+{"input": "I bought headphones 10 days ago for $59 and the left earbud is dead.", "expected": "approve"}
+{"input": "I ordered a laptop for $1,200 two weeks ago and the screen flickers.", "expected": "escalate"}
+{"input": "I bought an ebook yesterday and downloaded it, but I changed my mind.", "expected": "deny"}
+{"input": "My package never arrived. I ordered $45 shoes 3 weeks ago.", "expected": "approve"}
+{"input": "I want my money back for a jacket I bought 45 days ago, the zipper broke.", "expected": "deny"}
+{"input": "The blender I bought 5 days ago for $70 arrived cracked.", "expected": "approve"}
+{"input": "I never received the $350 monitor I ordered 20 days ago.", "expected": "escalate"}
+{"input": "I bought a $90 video course bundle yesterday and watched the first lesson, it is not for me.", "expected": "deny"}
+{"input": "My $25 phone case, bought 31 days ago, cracked after a week.", "expected": "deny"}
+{"input": "The $40 lamp I ordered 29 days ago arrived broken.", "expected": "approve"}
+{"input": "I bought a $120 jacket 8 days ago and it arrived with a ripped sleeve.", "expected": "approve"}
+{"input": "My $15 USB cable, bought 10 days ago, stopped working.", "expected": "approve"}
+{"input": "I bought an online photo-editing plugin for $60 and downloaded it, it does not suit me.", "expected": "deny"}
+{"input": "I ordered $230 boots two weeks ago and they never showed up.", "expected": "escalate"}
+{"input": "A $60 mug I bought 60 days ago arrived chipped, I only just opened the box.", "expected": "deny"}
+{"input": "The $499 tablet I bought 3 days ago will not turn on.", "expected": "escalate"}
+{"input": "I bought a $9 digital template pack and downloaded it, but the colours are wrong.", "expected": "deny"}
+{"input": "The $35 book I ordered 12 days ago never arrived.", "expected": "approve"}

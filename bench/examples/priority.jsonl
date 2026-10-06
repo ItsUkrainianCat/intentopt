@@ -1,0 +1,18 @@
+{"input": "Checkout page returns a 500 error for every customer since 09:10. Orders are failing.", "expected": "P1"}
+{"input": "Our whole team in Berlin lost all dashboards after the update, nothing loads for 40 users.", "expected": "P1"}
+{"input": "I deleted a project by accident and need it restored, it holds a year of my data.", "expected": "P2"}
+{"input": "I cannot log in at all since this morning and password reset emails never arrive. I have a client demo in an hour.", "expected": "P2"}
+{"input": "The CSV export fails but the PDF export works, so I will use that for now.", "expected": "P3"}
+{"input": "Chart colours are hard to read in dark mode.", "expected": "P4"}
+{"input": "Can you add a Slack integration?", "expected": "P4"}
+{"input": "Invoices from March show the wrong VAT for our account, I can fix it by hand each month.", "expected": "P3"}
+{"input": "Since the migration last night several customers report that their saved reports are gone.", "expected": "P1"}
+{"input": "The mobile app crashes on startup for me, the website works fine though.", "expected": "P3"}
+{"input": "Payment API timeouts for all merchants in the EU region, ongoing for 20 minutes.", "expected": "P1"}
+{"input": "One of our users cannot open any project since yesterday's release, there is no workaround, the rest of the team is fine.", "expected": "P2"}
+{"input": "Tooltip text is cut off on small screens.", "expected": "P4"}
+{"input": "Sorting by date descending is broken, I can scroll to the bottom instead.", "expected": "P3"}
+{"input": "Is there documentation for the webhook retries?", "expected": "P4"}
+{"input": "All customers in our tenant report that emails are no longer sent.", "expected": "P1"}
+{"input": "Our billing admin cannot download invoices at all and the audit is tomorrow.", "expected": "P2"}
+{"input": "The settings page loads slowly (10 seconds) but works.", "expected": "P3"}
