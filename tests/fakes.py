@@ -166,7 +166,9 @@ def happy_backend(improved_prompt: str, kind: str = "task", n: int = 12) -> Scri
         if call.role == "judge":
             return judge_reply(
                 call,
-                lambda scenario, _c, output: scenario.startswith("contract") or output.startswith("GOOD"),
+                lambda scenario, _c, output: (
+                    scenario.startswith("contract") or output.startswith("GOOD")
+                ),
             )
         return reflection_reply(improved_prompt)
 
