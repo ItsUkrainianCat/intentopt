@@ -49,14 +49,15 @@ def test_stage_a_runs_the_intake_the_synthesis_and_the_rewrites_in_one_wave(tmp_
 
 
 def test_stage_b_runs_every_prompt_on_every_scenario_in_one_wave(tmp_path):
-    """4 prompts on 3 scenarios: 12 task calls in flight at once, not prompt after prompt."""
-    result = run(tmp_path, barrier_world({"task"}, 12), K3M3, workers=12)
+    """The original twice and 3 rewrites on 3 scenarios: 15 task calls in flight at once, not
+    run after run."""
+    result = run(tmp_path, barrier_world({"task"}, 15), K3M3, workers=15)
     assert result.outcome.prompt == BETTER
 
 
 def test_stage_c_runs_the_judge_calls_and_the_contract_check_in_one_wave(tmp_path):
-    """4 prompts: 4 judge calls and 1 contract check, K + 2 calls at once."""
-    result = run(tmp_path, barrier_world({"judge"}, 5), K3M3, workers=5)
+    """5 runs (the original twice): 5 judge calls and 1 contract check, K + 3 calls at once."""
+    result = run(tmp_path, barrier_world({"judge"}, 6), K3M3, workers=6)
     assert result.outcome.prompt == BETTER
 
 

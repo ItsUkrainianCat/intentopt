@@ -24,9 +24,12 @@ run, the `/improve` command or the acceptance measure of SPEC section 5 works.
 
 Time tiers (SPEC R25, ADR-011): `--time` picks how a run works, and the default is the 30-second
 **fast** tier, not the GEPA search. quick (15 to 24 s) checks one rewrite against the intent
-contract; fast (25 to 59 s) runs a few rewrites and the original on a few scenarios in parallel
-stages and returns the best one, labelled "fast check: not verified on held-out scenarios, no
-noise measured"; checked (1 to 9 minutes) adds a held-out check on the target model; deep (10
+contract; fast (25 to 59 s) runs a few rewrites, and the original twice, on a few scenarios in
+parallel stages and returns the best rewrite only when it beats the original by more than
+max(0.1, twice the difference of the original's two runs), labelled "fast check: scored on the
+same few scenarios it was picked on, noise measured from two runs of the original on those
+scenarios, not verified on held-out scenarios"; checked (1 to 9 minutes) adds a held-out check on
+the target model; deep (10
 minutes and up, `--deep` is `--time 20m`) is the GEPA search that "How a run works" and "Budget
 and clock" below describe. Only checked and deep results are verified. The timings are estimates
 from one timing probe; live runs are not yet measured.
@@ -60,20 +63,20 @@ tier: fast (--time 30 s), 6 calls at a time
 models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
 effort: task low, judge low, reflection low
 strictness: conservative, length cap 1.25x the original's tokens (at least the original plus 40)
-rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
+rewrites: 1; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
 stages:
-  A: intake, synthesis and rewrites: 4 calls, about 8.8 s
+  A: intake, synthesis and rewrite: 3 calls, about 8.8 s
   B: task runs: 6 calls, about 6.3 s
   C: judge and contract checks: 4 calls, about 5.5 s
   D: free gates and pick: 0 calls, about 0.0 s
-estimate: 14 calls in about 21 s of 30 s; budget: 42 calls (ceiling 300)
-evidence: a fast check: scored on the scenarios it is picked on, not verified on held-out scenarios, no noise measured
+estimate: 13 calls in about 21 s of 30 s; budget: 39 calls (ceiling 300)
+evidence: a fast check: scored on the scenarios it is picked on, noise measured from two runs of the original, not verified on held-out scenarios
 ```
 
 The stage times come from the latency model of ADR-011 (about 3.4 s per call, the start-up
 measured with the trims of ADR-009, plus its output tokens at 70 per second, one slowest call per
 wave of `--workers` calls). With `--workers 1` it adds `a real run would refuse: the fast plan
-needs about 68 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
+needs about 86 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
 still exits 0. With `--deep` it prints the plan of the GEPA
 search instead: its budget, fixed costs, split, estimated iterations and clock share; with
 `--target-model opus` the judge becomes `claude-sonnet-5-5` (never the task or target model).
@@ -178,7 +181,7 @@ folder is not the default).
 
 The keys of the object on stdout, in order:
 
-- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`
+- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`, `elapsed_s`, `meaning`, `verified_text`, `margin_text`
 - dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`, `tier`, `workers`, `efforts`, `rewrites`, `stages`, `est_calls`, `est_seconds`
 - dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`, `tier`, `workers`, `efforts`
 - error: `status`, `code`, `error`, `run_dir`
@@ -190,8 +193,12 @@ The keys of the object on stdout, in order:
 search ran, or every stage ran as planned). `mode` is the tier, `quick`, `fast`, `checked` or
 `deep`; `verified` is true only for a checked or deep result confirmed on held-out scenarios. In a
 quick or fast result `score_before` and `score_after` are taken on the scenarios the rewrite was
-picked on, not held out; in a checked result the `search_score_*` keys are. Scores are shares of
-checks passed, from 0 to 1, or null when not measured. A dry run's keys are the same in every
+picked on, not held out; in a checked result the `search_score_*` keys are. In a fast result
+`noise` is the difference between the original's two runs on those scenarios, and a rewrite had
+to gain more than max(0.1, 2 x noise). Scores are shares of checks passed, from 0 to 1, or null
+when not measured. `elapsed_s` is the run's clock in seconds; `meaning`, `verified_text` and
+`margin_text` are the report's lines of those names without their labels, null when it prints
+none. A dry run's keys are the same in every
 tier, null where they do not apply: the search's numbers (`valset` to `final_clock_s`) in the
 quick, fast and checked tiers, `rewrites`, `stages`, `est_calls` and `est_seconds` in deep; each
 stage is `name`, `calls` and `seconds`.
