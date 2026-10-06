@@ -212,20 +212,57 @@ def test_the_text_summary_names_ids_and_numbers_never_a_prompt(capsys, tmp_path)
     assert ORIGINAL not in err and OTHER not in err
 
 
-def test_ctrl_c_prints_the_summary_of_the_prompts_measured(capsys, tmp_path):
+def interrupted_at_the_second_prompt(call: Call) -> str | Exception:
+    if OTHER in call.user:
+        raise KeyboardInterrupt
+    return BenchWorld()(call)
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_ctrl_c_is_exit_130_with_the_partial_summary_on_stderr_and_in_a_file(
+    capsys, tmp_path, json_mode
+):
     path = prompt_set(tmp_path, ("trip", ORIGINAL), ("note", OTHER))
-    world = BenchWorld()
+    argv = ["--json"] * json_mode + ["--prompts", path]
+    code, out, err, _raw = main(capsys, argv, ScriptedBackend(interrupted_at_the_second_prompt))
+    assert code == 130
+    # SPEC R2: nothing on stdout but, with --json, the one error object
+    if json_mode:
+        assert one_object(out) | {"error": ""} == {
+            "status": "error",
+            "code": 130,
+            "error": "",
+            "run_dir": one_object(out)["run_dir"],
+        }
+    else:
+        assert out == ""
+    (bench_dir,) = (state() / "bench").iterdir()
+    lines = err.splitlines()
+    error = next(n for n, line in enumerate(lines) if line.startswith("error: interrupted"))
+    summary = next(n for n, line in enumerate(lines) if line.startswith("bench: 1 of 2 prompts"))
+    assert error < summary and str(bench_dir / "summary.json") in err
+    saved = json.loads((bench_dir / "summary.json").read_text())
+    assert saved["status"] == "bench" and saved["interrupted"] is True and saved["prompts"] == 2
+    assert [row["id"] for row in saved["rows"]] == ["trip"]
+    assert oct((bench_dir / "summary.json").stat().st_mode & 0o777) == oct(0o600)
 
-    def script(call: Call) -> str | Exception:
-        if OTHER in call.user:
-            raise KeyboardInterrupt
-        return world(call)
 
-    code, out, err, _raw = main(capsys, ["--json", "--prompts", path], ScriptedBackend(script))
-    found = one_object(out)
-    assert code == 0 and found["interrupted"] is True
-    assert [row["id"] for row in found["rows"]] == ["trip"] and found["prompts"] == 2
-    assert "interrupted" in err
+def test_ctrl_c_in_the_first_prompt_still_saves_an_empty_summary(capsys, tmp_path):
+    path = prompt_set(tmp_path, ("note", OTHER))
+    code, out, err, _raw = main(
+        capsys, ["--prompts", path], ScriptedBackend(interrupted_at_the_second_prompt)
+    )
+    (bench_dir,) = (state() / "bench").iterdir()
+    saved = json.loads((bench_dir / "summary.json").read_text())
+    assert (code, out, saved["rows"], saved["interrupted"]) == (130, "", [], True)
+    assert "error: interrupted" in err
+
+
+def test_a_bench_that_ends_writes_no_summary_file(capsys, tmp_path):
+    path = prompt_set(tmp_path, ("trip", ORIGINAL))
+    code, _out, _err, _raw = main(capsys, ["--prompts", path], ScriptedBackend(BenchWorld()))
+    (bench_dir,) = (state() / "bench").iterdir()
+    assert code == 0 and not (bench_dir / "summary.json").exists()
 
 
 def test_a_failed_prompt_is_an_error_and_the_bench_goes_on(capsys, tmp_path):

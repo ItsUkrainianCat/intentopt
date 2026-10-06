@@ -4,7 +4,8 @@ calls and the time; each prompt runs the ordinary pipeline and a returned rewrit
 the original by a blind pairwise judge in both orders, so a judge that always prefers the first
 position yields ties, never wins, while one that prefers the better answer yields wins (twins); an
 unchanged prompt is a tie with no comparison call; `--baseline naive` reports the naive rewrite's
-win/tie/loss; `--json` is one object; Ctrl-C prints the summary of the prompts measured; the bench
+win/tie/loss; `--json` is one object; Ctrl-C is exit 130 (SPEC R2) with the summary of the prompts
+measured after the `error:` line and in `bench/<id>/summary.json` (the lead's decision); the bench
 exits 0 even when the tool loses, writes under the state folder (`bench/<id>/`) and never prints a
 prompt it did not write.
 
@@ -272,16 +273,24 @@ def test_json_is_one_object_with_the_measure(bench, prompts):
         assert key in found, key
 
 
-def test_ctrl_c_prints_the_summary_of_the_prompts_measured(bench, prompts):
+def test_ctrl_c_is_exit_130_and_saves_the_summary_of_the_prompts_measured(bench, prompts):
     def hook(call: Call) -> None:
         if NOTE in call.user:
             raise KeyboardInterrupt
 
-    code, out, _err, _backend = bench(
+    code, out, err, _backend = bench(
         ["--json", "--prompts", prompts(("trip", TRIP), ("note", NOTE))], model(hook=hook)
     )
-    found = one_object(out)
-    assert code == 0 and found["interrupted"] is True
+    # SPEC R2: exit 130, stdout only the error object, the `error:` line first on stderr
+    error = one_object(out)
+    assert code == 130 and (error["status"], error["code"]) == ("error", 130)
+    lines = err.splitlines()
+    error_line = next(n for n, line in enumerate(lines) if line.startswith("error: interrupted"))
+    row_line = next(n for n, line in enumerate(lines) if line.split()[:2] == ["trip", "improved"])
+    assert error_line < row_line  # the partial summary follows the error line
+    (folder,) = (state() / "autoimprover" / "bench").iterdir()
+    found = json.loads((folder / "summary.json").read_text())
+    assert found["interrupted"] is True
     assert [row["id"] for row in found["rows"]] == ["trip"]
 
 
