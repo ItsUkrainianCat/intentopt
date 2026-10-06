@@ -6,10 +6,11 @@ at TOKENS_PER_S, and a stage of parallel calls costs one slowest call per wave o
 Stages of the quick tier: the intake and one rewrite side by side, then the contract check (no
 scoring). Stages of the fast and checked tiers: A one wave of the intake, the synthesis of the
 scenarios (none when the user gives examples) and the K rewrites; B the original twice (its two
-runs measure the noise) and every rewrite on the M scenarios, (K + 2) M task runs; C one judge
-call per run, which sees outputs only (ADR-002), and one contract check of every rewrite, K + 3
-calls; from 45 s, when the whole plan fits, a second generation: R the reflection model writes K2
-rewrites from the first generation's outputs and failed checks, B2 and C2 run and judge them;
+runs measure the noise) and every rewrite on the M scenarios, (K + 2) M task runs; C two
+pairwise judge calls (both orders) per rewrite and for the original's two runs, each over the M
+scenarios and seeing answers only (ADR-002, ADR-012), and one contract check of every rewrite,
+2 K + 3 calls; from 45 s, when the whole plan fits, a second generation: R the reflection model
+writes K2 rewrites from the judge's reasons on the first, B2 and C2 run and judge them;
 D the free gates and the pick over every candidate; E (checked only) the winner against the
 original on the held-out scenarios, on the target model.
 
@@ -50,6 +51,7 @@ REWRITE_MAX_TOKENS = 600
 TASK_OUT_TOKENS = 150  # a scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX)
 JUDGE_TOKENS_PER_CHECK = 25  # a pass/fail and a quote of at most 8 words
 JUDGED_CHECKS_PER_SCENARIO = 3
+PAIRWISE_TOKENS_PER_SCENARIO = 40  # a winner and one short reason (ADR-012)
 CONTRACT_CHECKS = 3  # the contract check's three fixed questions (contract.check)
 
 # The shapes a tier may take: rewrites from the most down to 1, scenarios from the most down to
@@ -126,6 +128,11 @@ def judge_seconds(scenarios: int) -> float:
     return call_seconds(JUDGE_TOKENS_PER_CHECK * JUDGED_CHECKS_PER_SCENARIO * scenarios)
 
 
+def pair_seconds(scenarios: int) -> float:
+    """One pairwise judge call over the two answers on each of `scenarios` scenarios."""
+    return call_seconds(PAIRWISE_TOKENS_PER_SCENARIO * scenarios)
+
+
 def contract_seconds(candidates: int) -> float:
     """One contract check of `candidates` rewrites (`contract.check_many`)."""
     return call_seconds(JUDGE_TOKENS_PER_CHECK * CONTRACT_CHECKS * candidates)
@@ -147,16 +154,22 @@ def stage_a(rewrites: int, synthesis: int, workers: int, prompt_tokens: int) -> 
 
 def scoring_stages(rewrites: int, scenarios: int, workers: int) -> tuple[Stage, ...]:
     """Stages B, C and D for the original, run twice, and `rewrites` rewrites on `scenarios`
-    scenarios; stage C is a judge call per run and one contract check of every rewrite."""
+    scenarios; stage C is two pairwise calls (both orders) per rewrite and for the original's two
+    runs, and one contract check of every rewrite (ADR-012)."""
     runs = rewrites + 2
-    judging = max(judge_seconds(scenarios), contract_seconds(rewrites))
+    judging = max(pair_seconds(scenarios), contract_seconds(rewrites))
+    calls = 2 * (rewrites + 1) + 1
     return (
         Stage(
             "B: task runs",
             runs * scenarios,
             wave_seconds(runs * scenarios, workers, call_seconds(TASK_OUT_TOKENS)),
         ),
-        Stage("C: judge and contract checks", runs + 1, wave_seconds(runs + 1, workers, judging)),
+        Stage(
+            "C: pairwise judge and contract checks",
+            calls,
+            wave_seconds(calls, workers, judging),
+        ),
         Stage("D: free gates and pick", 0, 0.0),
     )
 
@@ -165,10 +178,12 @@ def second_stages(
     rewrites2: int, scenarios: int, workers: int, prompt_tokens: int
 ) -> tuple[Stage, ...]:
     """The second generation: `rewrites2` reflections (each a rewrite's length), their task runs
-    on the `scenarios` scenarios, then a judge call each and one contract check of all."""
+    on the `scenarios` scenarios, then two pairwise calls each against the original's answers and
+    one contract check of all."""
     reflection = call_seconds(rewrite_tokens(prompt_tokens))
-    judging = max(judge_seconds(scenarios), contract_seconds(rewrites2))
+    judging = max(pair_seconds(scenarios), contract_seconds(rewrites2))
     runs = rewrites2 * scenarios
+    calls = 2 * rewrites2 + 1
     return (
         Stage(
             "R: reflection on the first generation",
@@ -181,9 +196,9 @@ def second_stages(
             wave_seconds(runs, workers, call_seconds(TASK_OUT_TOKENS)),
         ),
         Stage(
-            "C2: judge and contract checks of the second generation",
-            rewrites2 + 1,
-            wave_seconds(rewrites2 + 1, workers, judging),
+            "C2: pairwise judge and contract checks of the second generation",
+            calls,
+            wave_seconds(calls, workers, judging),
         ),
     )
 

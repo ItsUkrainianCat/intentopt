@@ -14,9 +14,10 @@ import json
 from collections.abc import Callable
 
 import pytest
-from fakes import MARKER, FakeClock, ScriptedBackend, happy_backend, judge_reply
+from fakes import MARKER, FakeClock, ScriptedBackend, happy_backend, judge_reply, pairwise_reply
 
 from autoimprover import cli
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import Call
 
 ORIGINAL = "Summarise the meeting notes for the team in five bullet points."
@@ -51,6 +52,8 @@ def model(override, run_bare, proposal: str, *argv: str) -> ScriptedBackend:
     n = dry_plan(run_bare, *argv)["scenarios"] or 1
 
     def judge(call: Call) -> str:
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         return judge_reply(
             call,
             lambda scenario, _c, output: (

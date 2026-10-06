@@ -1,47 +1,55 @@
-"""Stages B, C and D of the fast pipeline and its second generation (SPEC R10, R16, R17, R24, R25,
-with the noise rule of R12; ADR-002, ADR-006, ADR-011), with the state and the helpers every stage
-of a fast run shares; `fast.py` adds stage A, stage E, the quick tier and the endings.
+"""Stages B, C and D of the fast pipeline and its second generation (SPEC R10, R16, R17, R24, R25;
+ADR-002, ADR-006, ADR-011, ADR-012), with the state and the helpers every stage of a fast run
+shares; `fast.py` adds stage A, stage E, the quick tier and the endings.
 
 The free gates drop a rewrite that changes no meaning word of the original or of an earlier
 rewrite (`meaning_words`), one over the length cap, one that lost a literal (SPEC R7, R9). Stage B
 runs the original twice (samples 0 and 1: two calls, never one cached reply) and every rewrite on
-the M scenarios, all in one wave; stage C asks the evaluator's judge call for each run, which sees
-outputs only (ADR-002), and one contract check of every rewrite (`contract.check_many`), in one
-wave. The two runs of the original measure the noise: the difference of their mean scores on the
-scenarios both completed; their mean per scenario is the baseline. A rewrite wins when it kept the
-contract and beats the baseline by MORE than max(FAST_MARGIN, 2 x noise) on the scenarios it
-shares with the baseline, winning on more of them than it loses.
+the M scenarios, all in one wave. Stage C decides by pairwise preference (SPEC R25; ADR-012), in
+one wave: one contract check of every rewrite (`contract.check_many`), the original's run 0
+against its run 1 in both orders, the noise, and each rewrite's answers against the original's run
+0 in both orders, each call holding every scenario of its pair (`fast_pairwise`). A rewrite wins
+when it kept the contract and won more scenarios than it lost by more scenarios than the noise.
 
 A plan with two generations then reflects (stage R): the reflection model reads the best one or
-two first-generation rewrites that gained on the baseline, or the original when none did, with
-their outputs and failed checks and the judge's quotes, and writes K2 rewrites under distinct
-notes; they pass the same gates, run and are judged as above (stages B2 and C2, one contract check
-for all of them) against the same baseline and bar. Stage D picks over every winner of both
-generations: the highest gain, a tie to the shorter rewrite, then the earlier. When the second
-generation does not fit the time left or is cut, the first generation's result stands.
+two first-generation rewrites that kept the contract, by their lead in scenarios, or the original
+when none did, with the judge's reasons for each scenario they lost or tied, and writes K2
+rewrites under distinct notes; they pass the same gates, run (stage B2) and are judged against the
+same answers of the original with the same noise (stage C2, no new noise pair, one contract check
+for all of them). Stage D picks over every winner of both generations: the largest lead, a tie to
+the shorter rewrite, then the earlier. When the second generation does not fit the time left or
+is cut, the first generation's result stands.
 
 Before each stage the time and calls left are compared with its estimate (`fastplan`): what does
 not fit is shrunk, scenarios first, and a deadline or call limit reached inside a stage ends it
-(`ended`). A failed rewrite, reflection, task or judge call drops what it was for; an original run
-left with no scored scenario, or a failed contract check, ends the run as BackendError (SPEC R24).
+(`ended`). A failed rewrite, reflection, task or pairwise call drops what it was for (a pairwise
+order that failed makes its scenarios ties); an original run left with no answer, a noise pair with
+no scenario both runs answered or that the judge could not compare, or a failed contract check,
+ends the run as BackendError (SPEC R24).
 """
 
 from __future__ import annotations
 
-import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TextIO, cast
 
 from autoimprover.backend import BudgetedBackend, Clock
-from autoimprover.contract import Violation, check_many, literals_preserved
-from autoimprover.evaluator import Answers, Evaluator
+from autoimprover.bench_judge import parse_pairwise_batch
+from autoimprover.contract import Violation, _ask, check_many, literals_preserved
+from autoimprover.fast_pairwise import (
+    Preference,
+    noise_count,
+    pair_calls,
+    pair_items,
+    preference,
+    prefers,
+)
 from autoimprover.fast_prompts import (
     REFLECT_NOTES,
     STRATEGY_NOTES,
     FastEvaluator,
-    gathered,
     parse_rewrite,
     reflect_call,
     reflect_strategy,
@@ -71,14 +79,10 @@ from autoimprover.types import (
     StopCause,
 )
 
-# The least a rewrite must gain on the baseline when the noise is smaller than half of it (R25).
-FAST_MARGIN = 0.1
-# Scores are shares of checks, so a gain equal to the bar may differ from it in the last bits.
-_EPS = 1e-9
 # A word that carries meaning: a run of letters or digits. Single letters and articles do not.
 _WORD = re.compile(r"[^\W_]+")
 _ARTICLES = frozenset({"an", "the"})
-# The first-generation rewrites that gained, best first, a reflection reads (or the original).
+# The first-generation rewrites that kept the contract, best first, a reflection reads.
 _PARENTS = 2
 
 
@@ -100,7 +104,8 @@ class Dropped(NamedTuple):
 
 
 class Win(NamedTuple):
-    """A rewrite's win: the baseline's and its mean on their common scenarios, its gain, the bar."""
+    """A rewrite's win, as shares of the M scenarios it was picked on: those the original won
+    (`before`) and those it won (`after`), its lead (`gain`) and the noise (`bar`)."""
 
     rewrite: Rewrite
     before: float
@@ -109,24 +114,20 @@ class Win(NamedTuple):
     bar: float
 
 
-class Graded(NamedTuple):
-    """A run after stage C: its score and side info per scenario it completed, the judge's quote
-    per scenario and (check id, check text), and whether it kept the contract."""
+class Judged(NamedTuple):
+    """A rewrite after stage C: its preference against the original and whether it kept the
+    contract."""
 
-    found: dict[str, tuple[float, dict[str, Any]]]
-    quotes: dict[str, dict[tuple[str, str], str]]
+    rewrite: Rewrite
+    found: Preference
     keep: bool
-
-    @property
-    def scores(self) -> dict[str, float]:
-        return {sid: score for sid, (score, _info) in self.found.items()}
 
 
 @dataclass
 class Stages:
     """One fast run: its inputs, the free gates, stages B to D and the second generation, and what
     every ending reports: `stop`, the first cause that shrank or cut a stage, and in `measured`
-    the original's scores and noise once known. `ended` is set when a stage was cut short, after
+    the noise once known. `ended` is set when a stage was cut short, after
     which no stage runs."""
 
     prompt: str
@@ -197,27 +198,19 @@ class Stages:
 
         if (shape := self.shrunk(len(alive), len(pick), judging)) is None:
             return None
-        chosen, pick = [0, 1, *alive[: shape[0]]], pick[: shape[1]]
-        graded = self.stage_c(
-            contract, [runs[n] for n in chosen], [outputs[n] for n in chosen], pick, 2
+        alive, pick = alive[: shape[0]], pick[: shape[1]]
+        chosen = [rewrites[n - 2] for n in alive]
+        found = self.stage_c(
+            contract, chosen, [outputs[n] for n in alive], outputs[0], pick, outputs[1]
         )
-        if (found := baseline(graded[0].scores, graded[1].scores)) is None:
-            if self.ended:
-                return None
-            raise BackendError("the original's two runs left no scenario both of them scored")
-        base, noise = found
-        bar = max(FAST_MARGIN, 2 * noise)
-        before = math.fsum(base.values()) / len(base)
-        if holdout:  # the checked tier's score fields are its held-out scores
-            self.measured["search_score_before"] = before
-        else:
-            self.measured |= {"score_before": before, "noise": noise}
-        first = [(rewrites[n - 2], g) for n, g in zip(chosen[2:], graded[2:], strict=True)]
-        wins = [
-            win for r, g in first if g.keep and (win := beats(r, base, g.scores, bar)) is not None
-        ]
+        if found is None:
+            return None
+        first, noise = found
+        if not holdout:  # the checked tier's noise field is that of its held-out check
+            self.measured["noise"] = noise / len(pick)
+        wins = [win for j in first if (win := won(j, noise, len(pick))) is not None]
         if self.fplan.generations > 1 and not self.ended:
-            wins += self.second(contract, pick, base, bar, graded[0], first, holdout)
+            wins += self.second(contract, pick, outputs[0], noise, first, holdout)
         if not wins:
             return None
         return min(wins, key=lambda w: (-round(w.gain, 9), count_tokens(w.rewrite.text)))
@@ -226,10 +219,9 @@ class Stages:
         self,
         contract: Contract,
         pick: list[Scenario],
-        base: Mapping[str, float],
-        bar: float,
-        original: Graded,
-        first: list[tuple[Rewrite, Graded]],
+        original: dict[str, str | CallFailed],
+        noise: int,
+        first: list[Judged],
         holdout: int,
     ) -> list[Win]:
         """The second generation's winners (stages R, B2, C2), or none when it does not fit the
@@ -241,12 +233,12 @@ class Stages:
         )
         if not self.fits(later):
             return []
-        gained = [(gain(base, g.scores), r, g) for r, g in first if g.keep]
-        best = sorted(
-            (x for x in gained if x[0] > 0), key=lambda x: (-x[0], count_tokens(x[1].text))
+        kept = sorted(
+            (j for j in first if j.keep),
+            key=lambda j: (j.found.losses - j.found.wins, count_tokens(j.rewrite.text)),
         )
-        parents = [evidence(r.text, pick, g) for _, r, g in best[:_PARENTS]]
-        parents = parents or [evidence(self.prompt, pick, original)]
+        parents = [evidence(j.rewrite.text, pick, j.found) for j in kept[:_PARENTS]]
+        parents = parents or [{"prompt": self.prompt, "scenarios": []}]
         self.note(f"stage R: {k2} reflection(s) on {len(parents)} candidate(s)")
         calls = [
             reflect_call(
@@ -263,21 +255,17 @@ class Stages:
         drafts = parallel_map(lambda call: self.parsed(self.ask(call)), calls, w)
         self.absorb([(f"reflection {v}", draft) for v, draft in enumerate(drafts)])
         texts = [(v, d) for v, d in enumerate(drafts) if isinstance(d, str)]
-        rewrites = self.gates(texts, [r for r, _ in first], second=True)
+        rewrites = self.gates(texts, [j.rewrite for j in first], second=True)
         if self.ended or not rewrites or not self.fits(later[1:]):
             return []
         runs = [(r.text, 0) for r in rewrites]
         self.note(f"stage B2: {len(rewrites)} reflection(s) on {len(pick)} scenarios")
         if (outputs := self.stage_b(contract, runs, pick)) is None:
             return []
-        graded = self.stage_c(contract, runs, outputs, pick, 0)
-        if self.ended:
+        found = self.stage_c(contract, rewrites, outputs, original, pick, None)
+        if found is None or self.ended:
             return []
-        return [
-            win
-            for r, g in zip(rewrites, graded, strict=True)
-            if g.keep and (win := beats(r, base, g.scores, bar)) is not None
-        ]
+        return [win for j in found[0] if (win := won(j, noise, len(pick))) is not None]
 
     def stage_b(
         self, contract: Contract, runs: list[tuple[str, int]], pick: list[Scenario]
@@ -301,59 +289,73 @@ class Stages:
     def stage_c(
         self,
         contract: Contract,
-        runs: list[tuple[str, int]],
-        outputs: list[dict[str, str | CallFailed]],
+        rewrites: list[Rewrite],
+        answers: list[dict[str, str | CallFailed]],
+        original: dict[str, str | CallFailed],
         pick: list[Scenario],
-        first_rewrite: int,
-    ) -> list[Graded]:
-        """Stage C, one wave: the contract check of the runs from `first_rewrite` on, the
-        rewrites (first, the longest call), and the evaluator's judge call for each run, which
-        sees outputs only (ADR-002); each run graded. A failed contract check ends the run (SPEC
-        R24)."""
-        judge_model = self.plan.models.judge
-        judge = {n: Evaluator(self.backend, contract, "", judge_model, n) for n in (0, 1)}
-        judged = {s.id: judge[0]._judged(s) for s in pick}
-        rewrites = [text for text, _ in runs[first_rewrite:]]
-        stage = "C" if first_rewrite else "C2"  # the second generation runs no original
-        self.note(f"stage {stage}: a contract check and {len(runs)} judge calls")
+        noise_run: dict[str, str | CallFailed] | None,
+    ) -> tuple[list[Judged], int] | None:
+        """Stage C, or C2 without `noise_run`, one wave: the contract check of the rewrites (the
+        longest call, first), the noise pair (the original's run 0 against `noise_run`) and each
+        rewrite's `answers` against the original's run 0, each pair in two orders (SPEC R25;
+        ADR-012). Each rewrite judged, and the noise (0 in stage C2, where the caller keeps stage
+        C's); None when the clock or the call limit cut the noise pair. A rewrite whose order was
+        cut has ties there, and a cut contract check vetoes every rewrite, so what was judged in
+        time may still win (SPEC R25)."""
+        model = self.plan.models.judge
+        pairs = [pair_items(pick, original, mine) for mine in answers]
+        if noise_run is not None:
+            pairs.insert(0, items := pair_items(pick, original, noise_run))
+            if not items:
+                raise BackendError("the original's two runs left no scenario both answered")
+        stage = "C" if noise_run is not None else "C2"
+        self.note(f"stage {stage}: a contract check and {2 * len(pairs)} pairwise judge calls")
+        texts = [r.text for r in rewrites]
+        asks = [
+            (n, call)
+            for n, items in enumerate(pairs)
+            if items
+            for call in pair_calls(self.prompt, items, model)
+        ]
 
-        def job(n: int) -> list[Violation | None] | Answers | Dropped:
+        def job(index: int) -> object:
             try:
-                if n < 0:
-                    return check_many(self.backend, judge_model, contract, self.prompt, rewrites)
-                ok = {sid: out for sid, out in outputs[n].items() if isinstance(out, str)}
-                pending = [s for s in pick if s.id in ok and judged[s.id]]
-                if not pending:
-                    return {}
-                asked = {s.id: {sent for sent, _ in judged[s.id]} for s in pending}
-                evaluator = judge[runs[n][1]]
-                return evaluator._ask_judge(evaluator._judge_call(pending, ok, judged), asked)
+                if index < 0:
+                    return check_many(self.backend, model, contract, self.prompt, texts)
+                n, call = asks[index]
+                names = [item[0] for item in pairs[n]]
+                return _ask(self.backend, call, lambda text: parse_pairwise_batch(text, names))
             except CallFailed as error:
-                if n < 0:
+                if index < 0:
                     raise
                 return dropped(error)
             except BudgetExhausted as error:
                 return dropped(error)
 
-        verdicts, *answers = parallel_map(job, range(-1, len(runs)), self.workers)
-        self.absorb([("contract", verdicts), *((f"judge {n}", a) for n, a in enumerate(answers))])
+        verdicts, *said = parallel_map(job, range(-1, len(asks)), self.workers)
+        self.absorb(
+            [("contract", verdicts), *((f"pairwise judge {i}", r) for i, r in enumerate(said))]
+        )
+        replies: dict[int, list[Any]] = {}
+        for (n, _call), reply in zip(asks, said, strict=True):
+            replies.setdefault(n, []).append(None if isinstance(reply, Dropped) else reply)
+        orders = [replies.get(n, [None, None]) for n in range(len(pairs))]
+        noise = 0
+        if noise_run is not None:
+            if None in orders[0]:
+                if self.ended:
+                    return None
+                raise BackendError("the judge could not compare the original's two runs")
+            noise = noise_count(pairs[0], *orders.pop(0))
+            pairs.pop(0)
         vetoes = verdicts if isinstance(verdicts, list) else [verdicts] * len(rewrites)
-        graded = []
-        for n, ((text, _), got) in enumerate(zip(runs, answers, strict=True)):
-            found = gathered(contract, text, pick, outputs[n], cast(Any, failed(got)))
-            said: Mapping[str, Mapping[str, tuple[bool, str]]] = (
-                got if isinstance(got, dict) else {}
+        judged = [
+            Judged(r, preference(items, *order), veto is None)
+            for r, items, order, veto in zip(
+                rewrites, pairs, orders, cast(list[Violation | None], vetoes), strict=True
             )
-            quotes = {
-                sid: {
-                    (check.id, check.text): said.get(sid, {}).get(sent, (False, ""))[1]
-                    for sent, check in judged[sid]
-                }
-                for sid in found
-            }
-            keep = n < first_rewrite or vetoes[n - first_rewrite] is None
-            graded.append(Graded(found, quotes, keep))
-        return graded
+        ]
+        return judged, noise
 
     def parsed(self, reply: str | Dropped) -> str | Dropped:
         """A rewrite's or a reflection's new prompt, or why there is none."""
@@ -423,59 +425,26 @@ def meaning_words(text: str) -> tuple[str, ...]:
     return tuple(w for w in words if not (len(w) == 1 and w.isalpha()) and w not in _ARTICLES)
 
 
-def baseline(
-    run0: Mapping[str, float], run1: Mapping[str, float]
-) -> tuple[dict[str, float], float] | None:
-    """The baseline (the two runs' mean per scenario both scored) and the noise (the difference
-    of their mean scores there), or None when they scored no scenario in common."""
-    both = [sid for sid in run0 if sid in run1]
-    if not both:
+def won(judged: Judged, noise: int, m: int) -> Win | None:
+    """A judged rewrite's win over the original on `m` scenarios with `noise` of them noisy, or
+    None: it kept the contract and won more scenarios than it lost by more than the noise."""
+    found = judged.found
+    if not judged.keep or not prefers(found, noise):
         return None
-    noise = abs(math.fsum(run0[sid] for sid in both) - math.fsum(run1[sid] for sid in both))
-    return {sid: (run0[sid] + run1[sid]) / 2 for sid in both}, noise / len(both)
+    return Win(
+        judged.rewrite, found.losses / m, found.wins / m, (found.wins - found.losses) / m, noise / m
+    )
 
 
-def gain(base: Mapping[str, float], scores: Mapping[str, float]) -> float:
-    """How much `scores` gain on the baseline on the scenarios both have; 0 with none."""
-    common = [sid for sid in base if sid in scores]
-    if not common:
-        return 0.0
-    return math.fsum(scores[sid] - base[sid] for sid in common) / len(common)
-
-
-def evidence(text: str, pick: Sequence[Scenario], graded: Graded) -> dict[str, Any]:
-    """What a reflection reads of a candidate: its prompt and, per scenario it completed, the
-    situation, an excerpt of its output and its failed checks with the judge's quote (the
-    evaluator's side info and the judge's reply, nothing asked anew; SPEC R16)."""
+def evidence(text: str, pick: Sequence[Scenario], found: Preference) -> dict[str, Any]:
+    """What a reflection reads of a candidate: its prompt and, per scenario it lost or tied, the
+    situation, the verdict and the judge's reasons (stage C's replies, nothing asked anew; SPEC
+    R16, R25)."""
     scenarios = []
     for scenario in pick:
-        if scenario.id not in graded.found:
-            continue
-        _score, info = graded.found[scenario.id]
-        quotes = graded.quotes.get(scenario.id, {})
-        failures = []
-        for check in info.get("failed", []):
-            item = {"check": check["text"]}
-            if quote := quotes.get((check["id"], check["text"])):
-                item["judge_quote"] = quote
-            failures.append(item)
-        output = info.get("output_excerpt", "")
-        scenarios.append({"input": scenario.input, "output": output, "failed": failures})
+        if scenario.id in found.feedback:
+            verdict, reasons = found.feedback[scenario.id]
+            scenarios.append(
+                {"input": scenario.input, "verdict": verdict, "reasons": list(reasons)}
+            )
     return {"prompt": text, "scenarios": scenarios}
-
-
-def beats(
-    rewrite: Rewrite, base: Mapping[str, float], scores: Mapping[str, float], bar: float
-) -> Win | None:
-    """The rewrite's win over the baseline on the scenarios both have, or None: it gains MORE than
-    `bar` on the mean and wins on more scenarios than it loses (SPEC R25)."""
-    common = [sid for sid in base if sid in scores]
-    if not common:
-        return None
-    before = math.fsum(base[sid] for sid in common) / len(common)
-    after = math.fsum(scores[sid] for sid in common) / len(common)
-    wins = sum(scores[sid] > base[sid] for sid in common)
-    losses = sum(scores[sid] < base[sid] for sid in common)
-    if after - before - bar <= _EPS or wins <= losses:
-        return None
-    return Win(rewrite, before, after, after - before, bar)

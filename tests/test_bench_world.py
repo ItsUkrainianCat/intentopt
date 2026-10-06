@@ -7,8 +7,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from fakes import MARKER, intake_reply, judge_reply, synth_reply
+from fakes import MARKER, intake_reply, judge_reply, pairwise_reply, synth_reply
 
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, Call
 
 ORIGINAL = "Plan a weekend trip to the mountains for two people."
@@ -17,8 +18,9 @@ NAIVE = "Plan a relaxing weekend trip to the mountains for two people."
 
 
 def is_pairwise(call: Call) -> bool:
-    """A call of the bench's pairwise judge (its schema asks for a winner)."""
-    return call.role == "judge" and '"winner"' in (call.json_schema or "")
+    """A call of the bench's pairwise judge (one scenario; not the fast tiers' batched call)."""
+    batched = call.system == PAIRWISE_BATCH_SYSTEM
+    return call.role == "judge" and '"winner"' in (call.json_schema or "") and not batched
 
 
 def answers(call: Call) -> tuple[str, str]:
@@ -70,6 +72,8 @@ class BenchWorld:
             return self.task(call)
         if is_pairwise(call):
             return self.pairwise(call)
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         return judge_reply(
             call,
             lambda scenario, _c, output: (

@@ -16,6 +16,7 @@ from fakes import MARKER, FakeClock, ScriptedBackend, intake_reply, judge_reply,
 
 from autoimprover import fastplan
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
+from autoimprover.bench_judge import PAIRWISE_BATCH_SYSTEM
 from autoimprover.fast import improve_fast
 from autoimprover.fast_prompts import FAST_TASK_SUFFIX
 from autoimprover.fastplan import FastPlan, fast_plan
@@ -56,19 +57,40 @@ def mechanics_plan(time_s: int, workers: int, prompt_tokens: int, examples: bool
         return fast_plan(time_s, workers, prompt_tokens, examples)
 
 
-# Plans by shape: K rewrites, M scenarios, H held out (at MECHANICS_OVERHEAD_S; stage B runs the
-# original twice: (K + 2) M task runs, stage C K + 3 calls).
+def two_generations(time_s: int, workers: int, rewrites: int, scenarios: int) -> FastPlan:
+    """A fast plan of `rewrites` on `scenarios`, then 2 reflections, built from the planner's own
+    stages: the planner never picks this shape for a prompt of SHORT tokens (at every time a plan
+    with more rewrites or scenarios fits first; `test_fastplan.py` pins its choices), and the
+    runner reads only the shape."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(fastplan, "OVERHEAD_S", MECHANICS_OVERHEAD_S)
+        b, c, d = fastplan.scoring_stages(rewrites, scenarios, workers)
+        stages = (
+            fastplan.stage_a(rewrites, scenarios, workers, SHORT),
+            b,
+            c,
+            *fastplan.second_stages(2, scenarios, workers, SHORT),
+            d,
+        )
+    seconds, calls = sum(s.seconds for s in stages), sum(s.calls for s in stages)
+    return FastPlan("fast", time_s, workers, rewrites, scenarios, 0, stages, seconds, calls, 2, 2)
+
+
+# Plans by shape: K rewrites, M scenarios, H held out, at MECHANICS_OVERHEAD_S: intake I = 7.829,
+# task T = 4.543, rewrite Rs = 3.257, pairwise judge P(n) = 2.4 + 40 n/70 (P2 3.543), contract
+# check J(n) = 2.4 + 75 n/70 (J1 3.471, J2 4.543, J3 5.614); stage B (K + 2) M task runs, stage C
+# 2 K + 3 calls of max(P(M), J(K)).
 QUICK = mechanics_plan(15, 4, SHORT, False)  # K=1
 K1M2 = mechanics_plan(25, 4, SHORT, False)  # the smallest: synthesises 2
 K2M2 = mechanics_plan(25, 8, SHORT, False)  # synthesises 2
-K3M3 = mechanics_plan(30, 8, SHORT, False)  # synthesises 3
-K3M2_EXAMPLES = mechanics_plan(30, 6, SHORT, True)
+K3M3 = mechanics_plan(30, 9, SHORT, False)  # I + 2 T + J3 = 22.529 <= 25.5: synthesises 3
+K3M2_EXAMPLES = mechanics_plan(34, 6, SHORT, True)  # I + 2 T + 2 J3 = 28.143 <= 28.9
 K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)  # the smallest
 CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
-# Two generations (from 45 s): the first, then K2=2 reflections. At 2.4 s per call the second
-# costs Rs + T + J2 = 3.257 + 4.543 + 4.543 = 12.343 s on 4 or more workers (T: 150 tokens).
-TWO_K1 = mechanics_plan(45, 4, SHORT, False)  # K=1, M=2: 21.457 + 12.343 <= 38.25
-TWO_K3 = mechanics_plan(45, 6, SHORT, False)  # K=3, M=2: 22.529 + 12.343 <= 38.25
+# Two generations (from 45 s): the first, then K2=2 reflections; on 6 workers the second costs
+# Rs + T + J2 = 3.257 + 4.543 + 4.543 = 12.343 s, on 4 Rs + T + 2 J2 = 16.886 s (C2: 5 calls).
+TWO_K1 = two_generations(45, 4, 1, 2)  # K=1, M=2: I + 2 T + 2 P2 = 24.0, 40.886 in all
+TWO_K3 = mechanics_plan(48, 6, SHORT, False)  # K=3, M=2: I + 2 T + 2 J3 + 12.343 <= 40.8
 
 
 class Verbatim(str):
@@ -77,6 +99,35 @@ class Verbatim(str):
 
 def good_by_marker(call: Call) -> str:
     return "GOOD answer" if MARKER in call.system + call.user else "BAD answer"
+
+
+def by_quality(call: Call) -> str:
+    """A pairwise judge that reads the answers: per scenario the one starting "GOOD" wins over one
+    that does not, else a tie; its reason names the side and the scenario."""
+    results = []
+    for item in json.loads(call.user)["scenarios"]:
+        a, b = (item[key].startswith("GOOD") for key in ("answer_A", "answer_B"))
+        winner = "A" if a and not b else "B" if b and not a else "tie"
+        results.append(
+            {
+                "scenario": item["scenario"],
+                "winner": winner,
+                "reason": f"{winner} for {item['scenario']}",
+            }
+        )
+    return json.dumps({"results": results})
+
+
+def position_a(call: Call) -> str:
+    """A pairwise judge that always prefers the first answer."""
+    names = [item["scenario"] for item in json.loads(call.user)["scenarios"]]
+    return json.dumps(
+        {"results": [{"scenario": n, "winner": "A", "reason": "first"} for n in names]}
+    )
+
+
+def is_pairwise(call: Call) -> bool:
+    return call.role == "judge" and call.system == PAIRWISE_BATCH_SYSTEM
 
 
 def tagged(call: Call) -> str:
@@ -90,9 +141,9 @@ class World:
     """The raw model. `rewrites[i]` is the new prompt of rewrite variant i (the last one repeats),
     an Exception to raise, or a Verbatim reply; `reflections[i]` the same for reflection i of a
     second generation (sample 100 + i; without them a reflection answers as a rewrite would); the
-    task output is `task(call)`; a scoring check passes when `passes(scenario, check id, output)`
-    and a contract check when `contract_ok(candidate)`; `hook(call)` runs first (barriers, clock
-    jumps)."""
+    task output is `task(call)`; a pairwise judge call is answered by `pairwise(call)`; a scoring
+    check passes when `passes(scenario, check id, output)` and a contract check when
+    `contract_ok(candidate)`; `hook(call)` runs first (barriers, clock jumps)."""
 
     rewrites: Sequence[str | Exception] = (BETTER,)
     reflections: Sequence[str | Exception] = ()
@@ -101,6 +152,7 @@ class World:
     passes: Callable[[str, str, str], bool] = lambda _s, _c, output: output.startswith("GOOD")
     contract_ok: Callable[[str], bool] = lambda _candidate: True
     hook: Callable[[Call], None] = lambda _call: None
+    pairwise: Callable[[Call], str | Exception] = by_quality
 
     def __call__(self, call: Call) -> str | Exception:
         self.hook(call)
@@ -120,6 +172,8 @@ class World:
             return f"{INSTRUCTION_BEGIN}\n{reply}\n{INSTRUCTION_END}"
         if call.role == "task":
             return self.task(call)
+        if is_pairwise(call):
+            return self.pairwise(call)
         return judge_reply(
             call,
             lambda scenario, check_id, output: (

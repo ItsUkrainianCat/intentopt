@@ -9,10 +9,10 @@ stderr; the plan of `--dry` (SPEC R4) it prints is built in `cli_plan.py`.
 
 The time tiers (SPEC R25): a report names its tier and the seconds of the run's clock; a quick or
 fast result says, in its verified line, its meaning, its notices and its JSON, that it is not
-verified on held-out scenarios, and its scores are labelled as taken on the scenarios it was
-picked on, never as holdout scores; a fast result's noise is that of the original's two runs on
-those scenarios, and its bar max(0.1, 2 x noise) (`fast_stages`); nothing of the GEPA search is
-said of a run that did not search.
+verified on held-out scenarios; its two numbers are the shares of the scenarios it was picked on
+that the pairwise judge gave to the original and to the rewrite (a preference, never a score or a
+holdout score), its noise the share where the original's two runs had a winner, and its bar that
+noise (`fast_stages`, ADR-012); nothing of the GEPA search is said of a run that did not search.
 
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
@@ -27,7 +27,6 @@ from dataclasses import asdict
 from difflib import SequenceMatcher
 from typing import Any, Protocol, TextIO
 
-from autoimprover.fast_stages import FAST_MARGIN
 from autoimprover.runner import MIN_THRESHOLD
 from autoimprover.types import Contract, Outcome, Plan
 
@@ -65,9 +64,9 @@ _STOPS = {
 }
 # The same for the fast pipeline, which has stages, not a search (SPEC R25).
 FAST_REASON_LINES = {
-    "no_reliable_improvement": "no rewrite kept the contract and beat the original clearly "
-    "enough on the scenarios, so the original is kept; this is the normal result for a prompt "
-    "that already works",
+    "no_reliable_improvement": "no rewrite kept the contract and was preferred over the original "
+    "clearly enough on the scenarios, so the original is kept; this is the normal result for a "
+    "prompt that already works",
     "no_holdout": "the checked tier holds out the examples after the ones it picks on, and none "
     "were left, so the original is kept; give more examples, or a shorter --time",
     "unconfirmed_out_of_budget": "the clock or the calls ran out before a rewrite passed every "
@@ -82,15 +81,17 @@ _FAST_UNVERIFIED = (
     "verified on held-out scenarios and no noise was measured, so read it before you use it"
 )
 _FAST_UNVERIFIED_NOISE = (
-    "a rewrite kept the intent contract, passed the free gates and beat the original by more "
-    "than the noise of two runs of the original on the few scenarios it was picked on; it is not "
-    "verified on held-out scenarios, so read it before you use it"
+    "a rewrite kept the intent contract, passed the free gates and was preferred over the "
+    "original by a judge on more of the few scenarios it was picked on than it lost, by more than "
+    "the noise of two runs of the original; it is not verified on held-out scenarios, so read it "
+    "before you use it"
 )
 _FAST_STOPS = {
     None: "every stage ran as planned",
     "clock": "the clock cut a stage short or shrank it",
     "budget": "the call limit cut a stage short or shrank it",
 }
+_PICKED = "the scenarios it was picked on"
 _FAST_CUT_SHORT = "notice: the clock cut the run short; the result comes from what it scored"
 
 # A terminal escape sequence: CSI (ESC [ or the one-byte CSI, parameters, a final byte), OSC
@@ -220,45 +221,43 @@ def _verified(outcome: Outcome, plan: Plan | None) -> str:
 
 def _scores(outcome: Outcome, plan: Plan) -> list[str]:
     lines = []
-    picked = (
-        f"score on the scenarios it was picked on (task model {plan.models.task}, not held out)"
-    )
-    if outcome.score_before is not None:
-        where = (
-            picked
-            if outcome.mode in _UNHELD
-            else f"holdout score (target model {plan.models.target})"
-        )
-        lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
     fast = outcome.mode in FAST_TIERS
+    picked = f"preference on {_PICKED} (judge {plan.models.judge}, not held out)"
+    if outcome.score_before is not None:
+        if outcome.mode in _UNHELD:
+            lines.append(f"{picked}: {_preference(outcome.score_before, outcome.score_after)}")
+        else:
+            where = f"holdout score (target model {plan.models.target})"
+            lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
     margin = _margin_text(outcome)
-    if outcome.noise is not None:
-        bar = max(FAST_MARGIN if fast else MIN_THRESHOLD, 2 * outcome.noise)
-        runs = "two runs on the scenarios it was picked on" if fast else "two holdout runs"
-        said = f"noise: {outcome.noise:.2f} between the original's {runs}"
-        if margin is None:
-            lines.append(f"{said}; a result had to gain more than {bar:.2f}")
-        else:  # a fast result says its margin on a line of its own
-            lines.append(said if fast else f"{said}; {margin}")
+    if outcome.noise is not None and fast:
+        said = (
+            f"noise: {outcome.noise:.2f} of {_PICKED} had a winner between the original's two runs"
+        )
+        bar = f"; a rewrite had to lead by more than {outcome.noise:.2f}"
+        lines.append(said if margin is not None else said + bar)
+    elif outcome.noise is not None:
+        bar = max(MIN_THRESHOLD, 2 * outcome.noise)
+        said = f"noise: {outcome.noise:.2f} between the original's two holdout runs"
+        lines.append(f"{said}; {margin or f'a result had to gain more than {bar:.2f}'}")
     if outcome.search_score_before is not None:
-        where = (
-            picked
-            if outcome.mode in FAST_TIERS
-            else f"search score (valset, search model {plan.models.task})"
-        )
-        lines.append(
-            f"{where}: {_before_after(outcome.search_score_before, outcome.search_score_after)}"
-        )
+        if fast:
+            preferred = _preference(outcome.search_score_before, outcome.search_score_after)
+            lines.append(f"{picked}: {preferred}")
+        else:
+            where = f"search score (valset, search model {plan.models.task})"
+            searched = _before_after(outcome.search_score_before, outcome.search_score_after)
+            lines.append(f"{where}: {searched}")
     if fast and margin is not None:
         lines.append(f"margin: {margin}")
     return lines
 
 
 def _margin_text(outcome: Outcome) -> str | None:
-    """How far a returned result cleared what it had to: a fast result with noise as its gain
-    against the gain required, max(0.1, 2 x noise); a fast or checked result without noise as
-    its margin over the least gain; a deep result as the bar of its noise. None without a
-    margin."""
+    """How far a returned result cleared what it had to: a fast result with noise as its lead
+    (the share of the scenarios it won minus the share it lost) against that noise; a fast or
+    checked result without noise as its margin over the least gain; a deep result as the bar of
+    its noise. None without a margin."""
     before, after, margin, noise = (
         outcome.score_before,
         outcome.score_after,
@@ -274,14 +273,19 @@ def _margin_text(outcome: Outcome) -> str | None:
     if before is None or after is None:
         return None
     if noise is not None:
-        required = max(FAST_MARGIN, 2 * noise)
-        picked = "on the scenarios it was picked on"
-        return f"gain {after - before:.2f} vs required {required:.2f} {picked}"
+        return f"lead {after - before:.2f} vs noise {noise:.2f} on {_PICKED}"
     held = "held-out scenarios" if outcome.verified else "scenarios it was picked on"
     return (
         f"{margin:.2f} above the least gain of {after - before - margin:.2f} on the {held} (no "
         "noise measured)"
     )
+
+
+def _preference(before: float, after: float | None) -> str:
+    """The shares of the scenarios the pairwise judge gave to the original and to the rewrite."""
+    if after is None:
+        return f"the original won {before:.2f}"
+    return f"the original won {before:.2f}, the rewrite {after:.2f}"
 
 
 def _before_after(before: float, after: float | None) -> str:
