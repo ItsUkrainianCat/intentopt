@@ -72,6 +72,16 @@ UNCHANGED = Outcome(
 def outcome_for(code: str) -> Outcome:
     if code == "improved":
         return IMPROVED
+    if code == "ungated_best_candidate":  # improved but never verified: `--ungated` (fast tiers)
+        return dataclasses.replace(
+            IMPROVED,
+            reason_code=code,
+            reason=f"the runner's text for {code}",
+            verified=False,
+            score_before=None,
+            score_after=None,
+            mode="fast",
+        )
     return dataclasses.replace(UNCHANGED, reason_code=code, reason=f"the runner's text for {code}")
 
 

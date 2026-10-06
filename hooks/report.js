@@ -15,6 +15,7 @@ export const REASON_CODES = [
   'no_holdout',
   'no_candidate_beat_seed',
   'unconfirmed_out_of_budget',
+  'ungated_best_candidate', // ungated: best-ranked candidate, no win shown (--ungated)
 ]
 
 const ERROR_TITLES = new Map([

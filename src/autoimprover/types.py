@@ -24,6 +24,7 @@ REASON_CODES = (
     "no_holdout",
     "no_candidate_beat_seed",
     "unconfirmed_out_of_budget",
+    "ungated_best_candidate",
 )
 # Delimiter lines the reflection reply puts around the new instruction (ADR-008). The instruction
 # may itself contain fenced code blocks (SPEC R9), so a fence cannot be the delimiter.
@@ -452,8 +453,13 @@ class Outcome:
             raise ValueError(f"unknown outcome status {self.status!r}")
         if self.reason_code not in REASON_CODES:
             raise ValueError(f"unknown reason code {self.reason_code!r}; allowed: {REASON_CODES}")
-        if (self.status == "improved") != (self.reason_code == "improved"):
-            raise ValueError("reason code `improved` goes with status improved, and only with it")
+        if (self.status == "improved") != (
+            self.reason_code in ("improved", "ungated_best_candidate")
+        ):
+            raise ValueError(
+                "reason codes `improved` and `ungated_best_candidate` go with status improved, "
+                "and only they do"
+            )
         if (
             self.status == "improved"
             and self.score_before is not None

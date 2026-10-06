@@ -17,8 +17,9 @@ when none did, with the judge's reasons for each scenario they lost or tied, and
 rewrites under distinct notes; they pass the same gates, run (stage B2) and are judged against the
 same answers of the original with the same noise (stage C2, no new noise pair, one contract check
 for all of them). Stage D picks over every winner of both generations: the largest lead, a tie to
-the shorter rewrite, then the earlier. When the second generation does not fit the time left or
-is cut, the first generation's result stands.
+the shorter rewrite, then the earlier; with `--ungated` and no winner, the best-ranked rewrite of
+both generations that kept the contract, whatever its lead (`fast_pairwise.best_ungated`). When
+the second generation does not fit the time left or is cut, the first generation's result stands.
 
 Before each stage the time and calls left are compared with its estimate (`fastplan`), by the
 latency model fitted to the run's replies once there is one (after stage A, again after stage B,
@@ -47,12 +48,15 @@ from autoimprover.bench_judge import parse_pairwise_batch
 from autoimprover.contract import Violation, _ask, check_many, literals_preserved
 from autoimprover.fast_calibrate import Timed, fit
 from autoimprover.fast_pairwise import (
-    Preference,
+    Judged,
+    Rewrite,
+    Win,
+    best_ungated,
     noise_count,
     pair_calls,
     pair_items,
     preference,
-    prefers,
+    won,
 )
 from autoimprover.fast_prompts import (
     REFLECT_NOTES,
@@ -97,41 +101,11 @@ _ARTICLES = frozenset({"an", "the"})
 _PARENTS = 2
 
 
-class Rewrite(NamedTuple):
-    """A rewrite that passed the free gates: its variant, its text, its length ratio and the line
-    that says what it changed (SPEC R2)."""
-
-    variant: int
-    text: str
-    ratio: float
-    note: str
-
-
 class Dropped(NamedTuple):
     """Why a call of a stage gave nothing, and the cause when the clock or the limit cut it."""
 
     why: str
     cut: StopCause | None = None
-
-
-class Win(NamedTuple):
-    """A rewrite's win, as shares of the M scenarios it was picked on: those the original won
-    (`before`) and those it won (`after`), its lead (`gain`) and the noise (`bar`)."""
-
-    rewrite: Rewrite
-    before: float
-    after: float
-    gain: float
-    bar: float
-
-
-class Judged(NamedTuple):
-    """A rewrite after stage C: its preference against the original and whether it kept the
-    contract."""
-
-    rewrite: Rewrite
-    found: Preference
-    keep: bool
 
 
 @dataclass
@@ -140,7 +114,9 @@ class Stages:
     every ending reports: `stop`, the first cause that shrank or cut a stage, and in `measured`
     the noise once known. `ended` is set when a stage was cut short, after which no stage runs.
     Every call goes through `timed`, and `latency` is the model fitted to its replies once there
-    is one (`calibrate`), which every later estimate uses (SPEC R25)."""
+    is one (`calibrate`), which every later estimate uses (SPEC R25). `ungated` is `--ungated`:
+    with no win, stage D picks the best-ranked rewrite that kept the contract
+    (`fast_pairwise.best_ungated`)."""
 
     prompt: str
     plan: Plan
@@ -151,6 +127,7 @@ class Stages:
     store: RunStore
     log: TextIO
     workers: int
+    ungated: bool = False
     stop: StopCause | None = None
     ended: bool = False
     measured: dict[str, Any] = field(default_factory=dict)
@@ -194,7 +171,8 @@ class Stages:
     def contest(
         self, contract: Contract, rewrites: list[Rewrite], pick: list[Scenario], holdout: int
     ) -> Win | None:
-        """Stages B, C, the second generation and D: the best rewrite by the pick rule, or None."""
+        """Stages B, C, the second generation and D: the best rewrite by the pick rule, else with
+        `ungated` the best-ranked one that kept the contract, or None."""
         w, p = self.workers, count_tokens(self.prompt)
         shape = self.shrunk(
             len(rewrites), len(pick), lambda k, m: tail(k, m, holdout, w, p, self.latency)
@@ -237,11 +215,12 @@ class Stages:
         first, noise = found
         if not holdout:  # the checked tier's noise field is that of its held-out check
             self.measured["noise"] = noise / len(pick)
-        wins = [win for j in first if (win := won(j, noise, len(pick))) is not None]
+        judged = list(first)
         if self.fplan.generations > 1 and not self.ended:
-            wins += self.second(contract, pick, outputs[0], noise, first, holdout)
+            judged += self.second(contract, pick, outputs[0], noise, first, holdout)
+        wins = [win for j in judged if (win := won(j, noise, len(pick))) is not None]
         if not wins:
-            return None
+            return best_ungated(judged, noise, len(pick)) if self.ungated else None
         return min(wins, key=lambda w: (-round(w.gain, 9), count_tokens(w.rewrite.text)))
 
     def second(
@@ -252,9 +231,9 @@ class Stages:
         noise: int,
         first: list[Judged],
         holdout: int,
-    ) -> list[Win]:
-        """The second generation's winners (stages R, B2, C2), or none when it does not fit the
-        time and calls left or is cut: then the first generation's result stands."""
+    ) -> list[Judged]:
+        """The second generation's rewrites as judged (stages R, B2, C2), or none when it does not
+        fit the time and calls left or is cut: then the first generation's result stands."""
         w, plan, k2, p = self.workers, self.plan, self.fplan.rewrites2, count_tokens(self.prompt)
         lat = self.latency
         later = (*second_stages(k2, len(pick), w, p, lat), *tail(0, 0, holdout, w, p, lat))
@@ -293,7 +272,7 @@ class Stages:
         found = self.stage_c(contract, rewrites, outputs, original, pick, None)
         if found is None or self.ended:
             return []
-        return [win for j in found[0] if (win := won(j, noise, len(pick))) is not None]
+        return found[0]
 
     def stage_b(
         self,
@@ -478,14 +457,3 @@ def meaning_words(text: str) -> tuple[str, ...]:
     meaning words differ only in case, punctuation, whitespace, single letters or articles."""
     words = _WORD.findall(text.lower())
     return tuple(w for w in words if not (len(w) == 1 and w.isalpha()) and w not in _ARTICLES)
-
-
-def won(judged: Judged, noise: int, m: int) -> Win | None:
-    """A judged rewrite's win over the original on `m` scenarios with `noise` of them noisy, or
-    None: it kept the contract and won more scenarios than it lost by more than the noise."""
-    found = judged.found
-    if not judged.keep or not prefers(found, noise):
-        return None
-    return Win(
-        judged.rewrite, found.losses / m, found.wins / m, (found.wins - found.losses) / m, noise / m
-    )

@@ -1,12 +1,15 @@
 """`autoimprover bench [--prompts FILE] [--time T] [--limit N] [--baseline naive|none]
 [--task-model M] [--judge-model M] [--reflect-model M] [--target-model M] [--effort L]
 [--task-effort L] [--judge-effort L] [--reflect-effort L] [--workers N] [--strictness S]
-[--seed S] [--json] [--dry]` on the command line (SPEC R26, with R2, R4, R14, R23, R25).
+[--ungated] [--seed S] [--json] [--dry]` on the command line (SPEC R26, with R2, R4, R14, R23,
+R25).
 
-The model, effort, worker and strictness flags are a run's (RUN_FLAGS): the run's own parser reads
-them (`cli_options.parse`) and the run's `cli_options.settings` checks them, so a bench takes them
-with a run's names, values and refusals (a judge equal to the task or target model, SPEC R14; an
-effort level, SPEC R25), and refuses any other flag of a run as unknown. They choose the tier's
+The model, effort, worker, strictness and `--ungated` flags are a run's (RUN_FLAGS): the run's own
+parser reads them (`cli_options.parse`) and the run's `cli_options.settings` checks them, so a
+bench takes them with a run's names, values and refusals (a judge equal to the task or target
+model, SPEC R14; an effort level, SPEC R25; `--ungated` outside the fast and checked tiers), and
+refuses any other flag of a run as unknown. With `--ungated` the plan and the summary say so
+(`bench_report`). They choose the tier's
 settings every run shares and go into every prompt's run, and the bench's own comparisons follow
 them (`bench`): the target model answers the fresh scenarios at the task role's effort, the judge
 model judges the answers at the judge role's effort, and the reflection model writes the scenarios
@@ -96,6 +99,7 @@ RUN_FLAGS = (
     "reflect_effort",
     "workers",
     "strictness",
+    "ungated",
 )
 
 
@@ -219,6 +223,7 @@ def bench_command(
         PAIRWISE_SCENARIOS,
         tuple(rows),
         refusal,
+        shared.ungated,
     )
     if opts.dry:
         emit.plan(view, dry=True)
@@ -250,7 +255,9 @@ def bench_command(
         raise BackendError(
             f"every prompt's run ended in a backend failure; the last: {done[-1].error}"
         )
-    summary = Summary(measured, len(prompts), chosen.tier, chosen.time_s, baseline, str(folder))
+    summary = Summary(
+        measured, len(prompts), chosen.tier, chosen.time_s, baseline, str(folder), shared.ungated
+    )
     if measured.interrupted:
         return _interrupted(emit, summary, folder)
     found: Any = summary.object()

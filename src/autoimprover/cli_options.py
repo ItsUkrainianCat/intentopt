@@ -2,8 +2,9 @@
 and `settings`, which turns the parsed flags of a new run into its tier, clock, workers, efforts
 and models. `--time` picks the tier (quick, fast, checked, deep) and is the run's wall clock,
 `--deep` is `--time 20m`; a flag given always wins over the tier's default (SPEC R25; ADR-011
-"Customisation"). `--budget`, `--kind` and `--strictness` are checked while parsing; the other
-values after it, as the model names are, and every error names its flag (exit 2)."""
+"Customisation"). `--ungated`, a measuring aid of the fast and checked tiers, is refused with any
+other tier. `--budget`, `--kind` and `--strictness` are checked while parsing; the other values
+after it, as the model names are, and every error names its flag (exit 2)."""
 
 from __future__ import annotations
 
@@ -45,6 +46,8 @@ FAST_BUDGET_FACTOR = 3
 _UNITS = {"s": 1, "m": 60, "h": 3600}
 _MODEL_FLAGS = {role: f"{role}_model" for role in ("task", "judge", "reflect", "target")}
 _DEEP_ONLY = ("merge", "trust_search", "force_low_budget")
+# The tiers whose pick `--ungated` changes (SPEC R25): those that decide by pairwise preference.
+_UNGATED_TIERS = ("fast", "checked")
 
 
 class UsageError(Exception):
@@ -82,6 +85,7 @@ class Options:
     task_effort: str | None = None
     judge_effort: str | None = None
     reflect_effort: str | None = None
+    ungated: bool = False
 
 
 class _Parser(argparse.ArgumentParser):
@@ -137,6 +141,12 @@ def _parser() -> _Parser:
         help="deep, below 8 scenarios: accept an unverified win",
     )
     flag("--force-low-budget", action="store_true", help="deep: run on fewer than 4 iterations")
+    flag(
+        "--ungated",
+        action="store_true",
+        help="fast and checked, to measure the ranking: with no win, return the best-ranked "
+        "rewrite that passed every gate anyway (never verified)",
+    )
     flag("--dry", action="store_true", help="print the plan; no model call, nothing written")
     flag("--json", action="store_true", help="print one JSON object on stdout")
     flag("--resume", metavar="ID", help="continue the run with this id")
@@ -182,8 +192,9 @@ class Settings:
 
 def settings(opts: Options) -> Settings:
     """The tier, clock, workers, efforts and models `opts` choose; UsageError naming the flag
-    for a bad value, for `--deep` beside `--time`, and for a flag of the deep tier only
-    (`--merge`, `--trust-search`, `--force-low-budget`) with another tier."""
+    for a bad value, for `--deep` beside `--time`, for a flag of the deep tier only
+    (`--merge`, `--trust-search`, `--force-low-budget`) with another tier, and for `--ungated`
+    with a tier other than fast and checked."""
     if opts.deep and opts.time is not None:
         raise UsageError("--deep is --time 20m; give --deep or --time, not both")
     time_s = DEEP_TIME_S if opts.deep else duration(opts.time or TIME_DEFAULT)
@@ -198,6 +209,12 @@ def settings(opts: Options) -> Settings:
         raise UsageError(
             f"{deep_only[0]} applies to the deep tier only (--deep, or --time 10m or more); "
             f"--time {opts.time or TIME_DEFAULT} is the {tier} tier"
+        )
+    if opts.ungated and tier not in _UNGATED_TIERS:
+        where = "--deep" if opts.deep else f"--time {opts.time or TIME_DEFAULT}"
+        raise UsageError(
+            "--ungated applies to the fast and checked tiers only (--time 25s up to 9m); "
+            f"{where} is the {tier} tier"
         )
     # The fast tiers default to balanced, so a rewrite may change meaning-bearing structure
     # (SPEC R25 "Quality of the rewrites"); the deep tier keeps conservative; a flag given wins.
