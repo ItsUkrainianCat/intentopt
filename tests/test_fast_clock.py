@@ -9,6 +9,8 @@ K + 3 calls of J(max(M, K)); stage E (4 held out) 8 T + 2 J4 = 49.7 s.
 """
 
 import dataclasses
+import json
+from collections.abc import Callable
 
 import pytest
 from fakes import FakeClock
@@ -25,6 +27,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     QUICK,
     World,
     is_contract_check,
+    is_pairwise,
     judged_scenarios,
     mechanics_latency_model,
     no_disk_flush,
@@ -52,12 +55,13 @@ def kept_unconfirmed(outcome, stop="clock"):
 
 
 def is_original_judge(call: Call) -> bool:
-    return call.role == "judge" and not is_contract_check(call) and "BAD answer" in call.user
+    """The noise pair's pairwise call: the original's answers (BAD) on both sides."""
+    return is_pairwise(call) and "GOOD" not in call.user
 
 
 def test_stage_b_that_does_not_fit_runs_on_fewer_scenarios(tmp_path):
-    """55 s left: 3 scenarios need 9 T + 4 J3 = 63.3 s for stages B and C, 2 need 6 T + 4 J2 =
-    45.4 s."""
+    """55 s left: 3 scenarios need 9 T + 5 P3 = 61.5 s for stages B and C, 2 need 6 T + 5 P2 =
+    45.0 s (one rewrite: the world's three are the same text)."""
     result = run(tmp_path, World(), K3M3, deadline=55)
     assert {scenario_of(c) for c in result.calls("task")} == {"situation 1", "situation 2"}
     outcome = result.outcome
@@ -65,8 +69,8 @@ def test_stage_b_that_does_not_fit_runs_on_fewer_scenarios(tmp_path):
 
 
 def test_fewer_rewrites_when_one_scenario_is_not_enough(tmp_path):
-    """50 s left: 3 rewrites on 1 scenario need 5 T + 6 J3 = 56.4 s, 2 rewrites 4 T + 5 J2 =
-    40.9 s."""
+    """50 s left: 3 rewrites on 1 scenario need 5 T + 9 J3 = 73.2 s, 2 rewrites 4 T + 7 J2 =
+    49.97 s."""
     result = run(tmp_path, World(rewrites=(BETTER, CLEAR, VERY_CLEAR)), K3M3, deadline=50)
     tasks = result.calls("task")
     assert [(prompt_of(c), scenario_of(c)) for c in tasks] == [
@@ -86,7 +90,7 @@ EXAMPLES = [Scenario(id=f"e{n}", input=f"example {n}") for n in (1, 2)]
     ],
 )
 def test_nothing_fits_keeps_the_original_unconfirmed(tmp_path, examples, roles):
-    """27 s left: even 1 rewrite on 1 scenario needs 3 T + 4 J1 = 27.5 s for stages B and C."""
+    """27 s left: even 1 rewrite on 1 scenario needs 3 T + 5 J1 = 31.0 s for stages B and C."""
     fplan = K3M3 if examples is None else K1M2_EXAMPLES
     result = run(tmp_path, World(), fplan, deadline=27, examples=examples)
     kept_unconfirmed(result.outcome)
@@ -132,8 +136,9 @@ def test_a_deadline_inside_stage_b_ends_it_and_keeps_the_original(tmp_path, cut)
 
 @pytest.mark.parametrize("cut", [False, True])
 def test_a_deadline_inside_stage_c_ends_it_and_keeps_the_original(tmp_path, cut):
-    """Stage C asks the contract check first, then the judge calls; once the original's first
-    run is judged, its second run's and the rewrite's are refused."""
+    """Stage C asks the contract check first, then the noise pair, then the rewrite's pair; once
+    the noise pair is judged (its two orders are one call: the original's runs answer alike), the
+    rewrite's calls are refused, so it has ties only."""
     clock = FakeClock()
     world = jump(clock, is_original_judge) if cut else World()
     result = run(tmp_path, world, K3M3, clock=clock, deadline=1000)
@@ -145,32 +150,48 @@ def test_a_deadline_inside_stage_c_ends_it_and_keeps_the_original(tmp_path, cut)
 
 
 def test_the_call_limit_shrinks_a_stage_like_the_clock(tmp_path):
-    """15 calls: 5 in stage A, then 3 scenarios need 9 + 4, 2 need 6 + 4."""
-    result = run(tmp_path, World(), K3M3, plan=dataclasses.replace(PLAN, budget=15))
+    """16 calls: 5 in stage A, then 3 scenarios need 9 + 5, 2 need 6 + 5. Stage C spends 4: the
+    noise pair's two orders are one call, the cache answers the second."""
+    result = run(tmp_path, World(), K3M3, plan=dataclasses.replace(PLAN, budget=16))
     assert {scenario_of(c) for c in result.calls("task")} == {"situation 1", "situation 2"}
     outcome = result.outcome
     assert (outcome.prompt, outcome.stop, outcome.calls_used) == (BETTER, "budget", 15)
 
 
+def answer_a(call: Call) -> str:
+    """The first answer A a pairwise call shows, "" for any other call."""
+    return json.loads(call.user)["scenarios"][0]["answer_A"] if is_pairwise(call) else ""
+
+
+def by_run(call: Call) -> str:
+    """As the world's default, with the run's sample in the answer, so the noise pair's two
+    orders are two calls."""
+    return f"{'GOOD' if BETTER == prompt_of(call) else 'BAD'} answer {call.sample}"
+
+
 @dataclasses.dataclass
-class InvalidFirstOriginalJudgeReply(World):
+class InvalidFirstNoiseReply(World):
+    task: Callable[[Call], str] = by_run
+
     def __call__(self, call: Call) -> str | Exception:
-        if is_original_judge(call) and call.sample == 0:
+        first_noise_order = is_original_judge(call) and answer_a(call) == "BAD answer 0"
+        if first_noise_order and call.sample == 0:
             return "not json"
         return super().__call__(call)
 
 
-@pytest.mark.parametrize(("budget", "returned"), [(18, False), (19, True)])
+@pytest.mark.parametrize(("budget", "returned"), [(19, False), (20, True)])
 def test_the_call_limit_reached_inside_stage_c_keeps_the_original(tmp_path, budget, returned):
-    """18 calls cover the plan (5 + 9 + 4), but the original's first judge reply is asked again,
-    so the rewrite's judge call finds the limit spent."""
+    """19 calls cover the plan (5 + 9 + 5), but the noise pair's first reply is asked again, so
+    the rewrite's second pairwise call finds the limit spent and the rewrite has ties only."""
     plan = dataclasses.replace(PLAN, budget=budget)
-    result = run(tmp_path, InvalidFirstOriginalJudgeReply(), K3M3, plan=plan)
+    result = run(tmp_path, InvalidFirstNoiseReply(), K3M3, plan=plan)
     if returned:
         assert result.outcome.prompt == BETTER
     else:
         kept_unconfirmed(result.outcome, stop="budget")
-        assert len(result.calls("judge")) == 4
+        # the contract check, the noise pair's first order twice and its second, the rewrite's first
+        assert len(result.calls("judge")) == 1 + 3 + 1
 
 
 @pytest.mark.parametrize(("deadline", "returned"), [(3, False), (4, True)])
@@ -204,13 +225,15 @@ def test_a_checked_run_without_time_for_stage_e_keeps_the_original(tmp_path, cut
 
 def test_a_rewrite_judged_before_the_deadline_may_win_when_a_later_one_is_cut(tmp_path):
     """The contract check passes both rewrites; the deadline passes during the first rewrite's
-    judge call and the second's is refused. The first passed every gate in time (SPEC R25)."""
+    second order and the second rewrite's calls are refused. The first passed every gate in time
+    (SPEC R25)."""
     clock = FakeClock()
-    world = jump(clock, lambda call: call.role == "judge" and f"answer {len(BETTER)}" in call.user)
+    world = jump(clock, lambda call: answer_a(call) == f"GOOD answer {len(BETTER)}")
     world.rewrites, world.task = (BETTER, CLEAR), tagged
     result = run(tmp_path, world, K2M2, clock=clock, deadline=1000)
     assert (result.outcome.prompt, result.outcome.stop) == (BETTER, "clock")
-    assert len(result.calls("judge")) == 4  # the contract check, the original's two, the first's
+    # the contract check, the noise pair (one call: the runs answer alike), the first's two orders
+    assert len(result.calls("judge")) == 4
 
 
 def test_a_deadline_that_refuses_every_run_of_the_original_is_no_backend_failure(tmp_path):
@@ -259,13 +282,13 @@ def test_a_checked_run_skips_stage_c_when_stage_e_would_not_fit_after_it(tmp_pat
 
 
 def test_stage_c_shrinks_to_the_time_stage_b_left(tmp_path):
-    """Stage B overruns and leaves 16 s: stage C's four calls on 2 scenarios need 4 J2 = 18.2 s,
-    on 1 scenario 4 J1 = 13.9 s."""
+    """Stage B overruns and leaves 17.5 s: stage C's five calls on 2 scenarios need 5 P2 = 17.71
+    s, on 1 scenario 5 J1 = 17.36 s (the contract check of one rewrite is its slowest call)."""
     clock = FakeClock()
 
     def hook(call: Call) -> None:
         if call.role == "task" and prompt_of(call) == BETTER and scenario_of(call) == "situation 2":
-            clock.advance(984)
+            clock.advance(982.5)
 
     result = run(tmp_path, World(hook=hook), K1M2, clock=clock, deadline=1000)
     assert [judged_scenarios(c) for c in scoring_judges(result)] == [["s1"]] * 3

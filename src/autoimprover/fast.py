@@ -1,26 +1,25 @@
-"""The pipeline of the quick, fast and checked tiers (SPEC R25; ADR-011) and the gates every
-rewrite it returns has passed (SPEC R6, R7, R9, R14a, R17, R24); the free gates, stages B to D
-and the second generation are in `fast_stages`.
+"""The pipeline of the quick, fast and checked tiers (SPEC R25; ADR-011) and the gates every rewrite
+it returns has passed (SPEC R6, R7, R9, R14a, R17, R24); the free gates, stages B to D and the
+second generation are in `fast_stages`.
 
-Stage A is one wave: the intake, the synthesis of the scenarios (the user's examples replace it)
-and the K rewrites (clarify, structure, tighten, specify, in that order), none of which needs
-another's reply. A rewrite that fails a free gate is dropped there, before it costs a call: one
-with no change in meaning words, one over the length cap, one that lost a literal. Stages B to D,
-with a second generation from 45 s when the plan has one, pick a rewrite against the noise of two
-runs of the original (`fast_stages`). Stage E (checked tier) runs the
-winner against the original once on the held-out scenarios on the target model, decided as
-`runner` decides with MIN_THRESHOLD as the margin (SPEC R14a); a second held-out run of the
-original would cost more calls than that, so the checked tier measures no held-out noise. The
-quick tier only checks its one rewrite's contract.
+Stage A is one wave: the intake, the synthesis of the scenarios (the user's examples replace it) and
+the K rewrites (clarify, structure, tighten, specify, in that order), none of which needs another's
+reply. A rewrite that fails a free gate is dropped there, before it costs a call: one with no change
+in meaning words, one over the length cap, one that lost a literal. Stages B to D, with a second
+generation from 45 s when the plan has one, pick a rewrite by pairwise preference against the noise
+of two runs of the original (`fast_stages`, `fast_pairwise`). Stage E (checked tier) runs the winner
+against the original once on the held-out scenarios on the target model, decided as `runner` decides
+with MIN_THRESHOLD as the margin (SPEC R14a); a second held-out run of the original would cost more
+calls than that, so the checked tier measures no held-out noise. The quick tier only checks its one
+rewrite's contract.
 
 Before stage E the time and calls left are compared with its estimate (`fastplan`); a rewrite
 that has not passed every gate is never returned (SPEC R17). A failed intake, synthesis, contract
 check or held-out run ends the run as BackendError (SPEC R24).
 
 DEBT, private names used here, in `fast_stages` and in `fast_prompts` until their owners add public
-seams: `evaluator.Evaluator._task_call`, `._judged`, `._judge_call`, `._ask_judge` (and `._run`,
-`._judge` overridden by `fast_prompts._Gathered`), `contract._ask`, `runner._token_cap`,
-`scenarios._loads`, `scenarios._text_problem`.
+seams: `evaluator.Evaluator._task_call` (overridden by `fast_prompts.FastEvaluator`),
+`contract._ask`, `runner._token_cap`, `scenarios._loads`, `scenarios._text_problem`.
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ from autoimprover.fast_prompts import (
     synth_call,
 )
 from autoimprover.fast_stages import (
-    FAST_MARGIN,
     Dropped,
     Rewrite,
     Stages,
@@ -61,16 +59,17 @@ from autoimprover.types import (
 )
 
 _FAST_LABEL = (
-    "fast check: scored on the same few scenarios it was picked on, noise measured from two runs "
-    "of the original on those scenarios, not verified on held-out scenarios"
+    "fast check: preferred over the original by a pairwise judge on the same few scenarios it was "
+    "picked on, noise measured by comparing the original with itself, not verified on held-out "
+    "scenarios"
 )
 _QUICK_LABEL = (
     "quick check: passed the contract check and the free gates, not scored on any scenario, not "
     "verified on held-out scenarios, no noise measured"
 )
 _NO_WIN = (
-    f"no rewrite kept the contract and beat the original by more than {FAST_MARGIN} or twice the "
-    "noise, on more scenarios than it lost"
+    "no rewrite kept the contract and was preferred over the original on more scenarios than it "
+    "lost, by more than the noise of the original's two runs"
 )
 _CUT = {
     "clock": "the clock ran out before a rewrite passed every gate",

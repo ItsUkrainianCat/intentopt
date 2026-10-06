@@ -26,11 +26,13 @@ from fakes import (
     ScriptedBackend,
     intake_reply,
     judge_reply,
+    pairwise_reply,
     reflection_reply,
     synth_reply,
 )
 
 from autoimprover import cli
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import Call
 
 TRIP = "Plan a weekend trip to the mountains for two people."
@@ -40,7 +42,9 @@ PLAIN = "Plan this, please, with care."  # a rewrite whose answers are no better
 
 
 def is_pairwise(call: Call) -> bool:
-    return call.role == "judge" and '"winner"' in (call.json_schema or "")
+    """The bench's own pairwise call (one scenario), not the fast tiers' batched one."""
+    batched = call.system == PAIRWISE_BATCH_SYSTEM
+    return call.role == "judge" and '"winner"' in (call.json_schema or "") and not batched
 
 
 def pair(call: Call) -> tuple[str, str]:
@@ -91,6 +95,8 @@ def model(
             return "GOOD answer" if MARKER in call.system + call.user else "BAD answer"
         if is_pairwise(call):
             return pairwise(call)
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         return judge_reply(
             call,
             lambda scenario, _c, out: scenario.startswith("contract") or out.startswith("GOOD"),

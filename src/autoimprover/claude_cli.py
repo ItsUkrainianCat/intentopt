@@ -1,13 +1,13 @@
-"""The raw model layer: one `claude -p` child process per call (ADR-004, ADR-009), and the only
-code that builds that command (SPEC R18). The flags are those of R18, including
-`--setting-sources ""` (no user, project or local settings file is read; ADR-009, amendment
-2026-10-06), plus `--effort <level>` after the model when the call asks for one (SPEC R25); the
-system prompt is the single argument `--system-prompt=<text>` and the reply schema follows
-`--json-schema`. The user text goes to the child's stdin only, never into an argument, and no
-shell is involved (SPEC R19). The child runs in the run's empty working folder with an
-allowlisted environment (no API key, nothing `ANTHROPIC_*` or `CLAUDE_CODE_*` from the parent),
-so it uses the subscription login and reads no project file; to that it adds exactly
-`DISABLE_TELEMETRY=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which cut a call's
+"""The raw model layer: one `claude -p` child process per call (ADR-004, ADR-009), and the only code
+that builds that command (SPEC R18). The flags are those of R18, including `--setting-sources ""`
+(no user, project or local settings file is read; ADR-009, amendment 2026-10-06), plus `--effort
+<level>` after the model when the call asks for one (SPEC R25); the system prompt is the single
+argument `--system-prompt=<text>`, TASK_SYSTEM for a task call that has none of its own (SPEC R10a;
+ADR-012), and the reply schema follows `--json-schema`. The user text goes to the child's stdin
+only, never into an argument, and no shell is involved (SPEC R19). The child runs in the run's empty
+working folder with an allowlisted environment (no API key, nothing `ANTHROPIC_*` or `CLAUDE_CODE_*`
+from the parent), so it uses the subscription login and reads no project file; to that it adds
+exactly `DISABLE_TELEMETRY=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which cut a call's
 start-up (ADR-009, amendment 2026-10-06; the child then sends no telemetry).
 
 Every call is checked for lockdown (ADR-009): each `init` line of the stream must report no tools,
@@ -47,6 +47,7 @@ from typing import Any
 from autoimprover.backend import Clock
 from autoimprover.types import (
     CALL_TIMEOUT_S,
+    TASK_SYSTEM,
     BackendError,
     Call,
     CallError,
@@ -174,13 +175,16 @@ def _environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 def _argv(binary: str, call: Call) -> list[str]:
     """The whole command; the user text is never part of it (SPEC R18, R19). A call that asks
-    for an effort level gets `--effort <level>` after its model (SPEC R25)."""
+    for an effort level gets `--effort <level>` after its model (SPEC R25). A task call without a
+    system prompt of its own runs under TASK_SYSTEM, so the model answers as a plain assistant
+    rather than as Claude Code's agent (SPEC R10a; ADR-012); no other call gets one."""
     argv = [binary, *_HEAD, "--model", call.model]
     if call.effort is not None:
         argv += ["--effort", call.effort]
     argv += _TAIL
-    if call.system:
-        argv.append(f"--system-prompt={call.system}")
+    system = call.system or (TASK_SYSTEM if call.role == "task" else "")
+    if system:
+        argv.append(f"--system-prompt={system}")
     if call.json_schema is not None:
         argv += ["--json-schema", call.json_schema]
     return argv

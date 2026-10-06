@@ -9,6 +9,7 @@ import pytest
 from test_claude_cli import (
     COMMAND,
     MODEL,
+    NEUTRAL,
     RESULT,
     SCHEMA,
     FakeClaude,
@@ -33,7 +34,8 @@ def fake(tmp_path, monkeypatch) -> FakeClaude:
 @pytest.mark.parametrize("level", EFFORT_LEVELS)
 def test_effort_follows_the_model_in_the_command(fake, tmp_path, level):
     ask(tmp_path, effort=level)
-    assert fake.argv()[1:] == [*COMMAND[:AFTER_MODEL], "--effort", level, *COMMAND[AFTER_MODEL:]]
+    after = [*COMMAND[AFTER_MODEL:], NEUTRAL]  # a task call without its own system prompt
+    assert fake.argv()[1:] == [*COMMAND[:AFTER_MODEL], "--effort", level, *after]
 
 
 @real
@@ -53,7 +55,7 @@ def test_effort_comes_before_the_system_prompt_and_the_schema(fake, tmp_path):
 @real
 def test_no_effort_no_flag(fake, tmp_path):
     ask(tmp_path)
-    assert fake.argv()[1:] == COMMAND and "--effort" not in fake.argv()
+    assert fake.argv()[1:] == [*COMMAND, NEUTRAL] and "--effort" not in fake.argv()
 
 
 @real
