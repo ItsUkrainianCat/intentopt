@@ -35,7 +35,7 @@ from autoimprover import runner
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
 from autoimprover.bench import Collected
 from autoimprover.cli_bench import bench_command
-from autoimprover.cli_fast import Progress, checked_keeps, fast_refusal, saved_fast_plan
+from autoimprover.cli_fast import Progress, checked_keeps, fast_refusal, plan_for, saved_fast_plan
 from autoimprover.cli_input import examples_of, prompt_of
 from autoimprover.cli_input import read_prompt as read_prompt  # cli.read_prompt (SPEC R1)
 from autoimprover.cli_options import (
@@ -52,9 +52,8 @@ from autoimprover.cli_options import (
 from autoimprover.cli_plan import FastView, PlanView
 from autoimprover.efforts import EffortBackend
 from autoimprover.fast import improve_fast
-from autoimprover.fastplan import FastPlan, fast_plan
+from autoimprover.fastplan import FastPlan
 from autoimprover.report import Emitter
-from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError, runs_root
 from autoimprover.scenarios import MIN_SCENARIOS_FOR_HOLDOUT
 from autoimprover.types import (
@@ -227,8 +226,7 @@ class _Session:
         examples = examples_of(opts.examples) if inline is None else inline
         if chosen.tier == "deep":
             return self.start_deep(opts, prompt, chosen, examples)
-        given = examples is not None
-        fplan = fast_plan(chosen.time_s, chosen.workers, count_tokens(prompt), given)
+        fplan = plan_for(chosen.time_s, chosen.workers, prompt, examples)
         refusal = _root_refusal() or fast_refusal(fplan)
         plan = _plan(opts, chosen, budget(opts, chosen.tier, chosen.time_s, fplan.est_calls))
         keeps = checked_keeps(fplan, examples)
