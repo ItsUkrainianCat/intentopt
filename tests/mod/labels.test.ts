@@ -83,9 +83,44 @@ describe('a quick or fast result', () => {
     )
     expect(view(FAST).meaning).toContain('not verified on held-out scenarios')
   })
+
+  test('a fast noise is between two runs of the original, with its required gain', () => {
+    const PICKED_NOISE = 'between two runs of the original on the scenarios it was picked on'
+    expect(view({ ...FAST, noise: 0.04 }).noise).toBe(
+      `noise: 0.04 ${PICKED_NOISE}; required gain 0.10`,
+    )
+    expect(view({ ...FAST, noise: 0.08 }).noise).toBe(
+      `noise: 0.08 ${PICKED_NOISE}; required gain 0.16`,
+    )
+    const noisy = view({ ...FAST, noise: 0.08 })
+    expect(noisy.margin).toBe(
+      'margin: 0.15 above the least gain of 0.10 on the scenarios it was picked on',
+    )
+    expect(all({ ...FAST, noise: 0.08 })).not.toMatch(/holdout/i)
+  })
+
+  test('a quick result without noise prints no noise line', () => {
+    expect(view({ ...FAST, mode: 'quick', noise: null }).noise).toBeNull()
+  })
+
+  test("the JSON's own verified and margin words win, cleaned", () => {
+    const shown = view({
+      ...FAST,
+      verified_text: 'NOT verified: fast check \u001b[1m(fast tier, 12 s)',
+      margin_text: 'margin: gain 0.25 vs required 0.10',
+    })
+    expect(shown.verifiedLine).toBe('NOT verified: fast check (fast tier, 12 s)')
+    expect(shown.margin).toBe('margin: gain 0.25 vs required 0.10')
+  })
 })
 
 describe('a checked or deep result', () => {
+  test("checked: a noise between the original's two holdout runs", () => {
+    expect(view({ ...CHECKED, noise: 0.03 }).noise).toBe(
+      "noise: 0.03 between the original's two holdout runs; required gain 0.10",
+    )
+  })
+
   test('checked: holdout score on the target model, picked-on search score', () => {
     const shown = view(CHECKED)
     expect(shown.verifiedLine).toBe('verified: yes, on held-out scenarios, on the target model')
