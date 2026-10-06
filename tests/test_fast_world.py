@@ -64,7 +64,7 @@ def two_generations(time_s: int, workers: int, rewrites: int, scenarios: int) ->
     runner reads only the shape."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(fastplan, "OVERHEAD_S", MECHANICS_OVERHEAD_S)
-        b, c, d = fastplan.scoring_stages(rewrites, scenarios, workers)
+        b, c, d = fastplan.scoring_stages(rewrites, scenarios, workers, SHORT)
         stages = (
             fastplan.stage_a(rewrites, scenarios, workers, SHORT),
             b,

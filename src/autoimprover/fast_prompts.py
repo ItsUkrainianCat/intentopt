@@ -92,6 +92,9 @@ REFLECT_SAMPLE = 100
 FAST_TASK_SUFFIX = "\n\n(Answer in at most 120 words.)"
 # GEPA's template tokens: a prompt holding one is refused everywhere (SPEC R1; ADR-006).
 _GEPA_TOKENS = ("<curr_param>", "<side_info>")
+# The delimiter lines a rewrite reply may use, whitespace removed: the asked ones and the bare ones.
+_BEGIN_MARKS = frozenset({INSTRUCTION_BEGIN, "<<<"})
+_END_MARKS = frozenset({INSTRUCTION_END, ">>>"})
 
 _RULES = """{strategy}
 
@@ -242,15 +245,17 @@ def _system(
 
 
 def parse_rewrite(text: str) -> str:
-    """The new prompt of a rewrite reply: the lines between the first line that holds only
-    INSTRUCTION_BEGIN and the last that holds only INSTRUCTION_END, without the blank space
-    around them, line endings made LF (ADR-008). ValueError when there are no such lines, the
-    prompt is empty, or it holds a GEPA template token or a NUL character, which no later call
-    could carry (SPEC R1; ADR-006)."""
+    """The new prompt of a rewrite reply: the lines between the first begin line and the last end
+    line, without the blank space around them, line endings made LF (ADR-008). A begin line holds
+    only INSTRUCTION_BEGIN or the bare `<<<`, an end line only INSTRUCTION_END or the bare `>>>`,
+    whitespace aside (the live bench of 2026-10-06 had a reply with bare delimiters). ValueError
+    when there are no such lines, the prompt is empty, or it holds a GEPA template token or a NUL
+    character, which no later call could carry (SPEC R1; ADR-006)."""
     lines = text.splitlines()
-    marks = [line.strip() for line in lines]
-    begin = marks.index(INSTRUCTION_BEGIN) if INSTRUCTION_BEGIN in marks else None
-    end = len(marks) - 1 - marks[::-1].index(INSTRUCTION_END) if INSTRUCTION_END in marks else None
+    marks = ["".join(line.split()) for line in lines]
+    begins = [n for n, mark in enumerate(marks) if mark in _BEGIN_MARKS]
+    ends = [n for n, mark in enumerate(marks) if mark in _END_MARKS]
+    begin, end = (begins[0], ends[-1]) if begins and ends else (None, None)
     if begin is None or end is None or end < begin:
         raise ValueError("the reply has no prompt between the delimiter lines")
     rewrite = "\n".join(lines[begin + 1 : end]).strip()
