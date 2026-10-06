@@ -11,7 +11,7 @@ The judge's reasons in the bench folder showed three things. (1) For prompts tha
 
 - `TASK_SYSTEM` (types.py): a fixed neutral system prompt, applied by `claude_cli` to every task call that has no system prompt of its own, so all paths (deep, fast, checked, bench) get the same harness. The report keeps saying that tool use is not exercised.
 - The fast, checked and deep picks use pairwise preference between answers (both orders, agreement or tie; original vs original gives the noise) without an absolute floor in the fast and checked picks (the contract check is the meaning floor; the absolute judge calls would add K+2 calls to a wave that must fit the clock); the judge's reasons feed the reflective generation. The bench's pairwise judge is the same component (`bench_judge`), so the bench measures what the pipeline decides on, plus a blind re-check on fresh scenarios.
-- A self-calibrating planner (observed per-call seconds from earlier runs) is the next item: under a loaded machine two of five 30 s runs were cut by the deadline.
+- A self-calibrating planner is done in-run (WP18, SPEC R25: the fit after stages A and B; learning across runs is still open), the item that was next: under a loaded machine two of five 30 s runs were cut by the deadline.
 
 ## Consequences
 
