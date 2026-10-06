@@ -64,6 +64,10 @@ K3M3 = mechanics_plan(30, 8, SHORT, False)  # synthesises 3
 K3M2_EXAMPLES = mechanics_plan(30, 6, SHORT, True)
 K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)  # the smallest
 CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
+# Two generations (from 45 s): the first, then K2=2 reflections. At 2.4 s per call the second
+# costs Rs + T + J2 = 3.257 + 5.257 + 4.543 = 13.057 s on 4 or more workers.
+TWO_K1 = mechanics_plan(45, 4, SHORT, False)  # K=1, M=2: 22.886 + 13.057 <= 38.25
+TWO_K3 = mechanics_plan(45, 6, SHORT, False)  # K=3, M=2: 23.957 + 13.057 <= 38.25
 
 
 class Verbatim(str):
@@ -83,11 +87,14 @@ def tagged(call: Call) -> str:
 @dataclass
 class World:
     """The raw model. `rewrites[i]` is the new prompt of rewrite variant i (the last one repeats),
-    an Exception to raise, or a Verbatim reply; the task output is `task(call)`; a scoring check
-    passes when `passes(scenario, check id, output)` and a contract check when
-    `contract_ok(candidate)`; `hook(call)` runs first (barriers, clock jumps)."""
+    an Exception to raise, or a Verbatim reply; `reflections[i]` the same for reflection i of a
+    second generation (sample 100 + i; without them a reflection answers as a rewrite would); the
+    task output is `task(call)`; a scoring check passes when `passes(scenario, check id, output)`
+    and a contract check when `contract_ok(candidate)`; `hook(call)` runs first (barriers, clock
+    jumps)."""
 
     rewrites: Sequence[str | Exception] = (BETTER,)
+    reflections: Sequence[str | Exception] = ()
     intake: str = field(default_factory=lambda: intake_reply("task"))
     task: Callable[[Call], str] = good_by_marker
     passes: Callable[[str, str, str], bool] = lambda _s, _c, output: output.startswith("GOOD")
@@ -100,6 +107,11 @@ class World:
             return self.intake
         if call.role == "synth":
             return synth_reply(json.loads(call.user)["count"])
+        if call.role == "reflect" and call.sample >= 100 and self.reflections:
+            reply = self.reflections[min(call.sample - 100, len(self.reflections) - 1)]
+            if isinstance(reply, Exception | Verbatim):
+                return reply
+            return f"{INSTRUCTION_BEGIN}\n{reply}\n{INSTRUCTION_END}"
         if call.role == "reflect":
             reply = self.rewrites[min(call.sample, len(self.rewrites) - 1)]
             if isinstance(reply, Exception | Verbatim):

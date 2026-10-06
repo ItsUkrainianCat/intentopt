@@ -38,6 +38,8 @@ WORKERS_MAX = 16
 # The deep tier's default budget: one call per 12 s of the clock, from 20 to 100 calls (SPEC R25).
 DEEP_SECONDS_PER_CALL = 12
 DEEP_BUDGET_MIN = 20
+# The quick, fast and checked tiers' strictness when `--strictness` is not given (SPEC R25).
+FAST_STRICTNESS: Strictness = "balanced"
 # The fast tiers' default budget: three times the plan's estimate, room for retries.
 FAST_BUDGET_FACTOR = 3
 _UNITS = {"s": 1, "m": 60, "h": 3600}
@@ -167,13 +169,14 @@ def json_requested(args: list[str]) -> bool:
 @dataclass(frozen=True)
 class Settings:
     """What the flags choose for a new run: its tier, its clock in seconds, the calls at a time,
-    the effort of each role and the models (SPEC R14, R25)."""
+    the effort of each role, the models and the strictness (SPEC R8, R14, R25)."""
 
     tier: Tier
     time_s: int
     workers: int
     efforts: Efforts
     models: Models
+    strictness: Strictness = "conservative"
 
 
 def settings(opts: Options) -> Settings:
@@ -195,7 +198,12 @@ def settings(opts: Options) -> Settings:
             f"{deep_only[0]} applies to the deep tier only (--deep, or --time 10m or more); "
             f"--time {opts.time or TIME_DEFAULT} is the {tier} tier"
         )
-    return Settings(tier, time_s, _workers(opts.workers), _efforts(opts, tier), models(opts, tier))
+    # The fast tiers default to balanced, so a rewrite may change meaning-bearing structure
+    # (SPEC R25 "Quality of the rewrites"); the deep tier keeps conservative; a flag given wins.
+    given = "strictness" in opts.given or tier == "deep"
+    strictness = opts.strictness if given else FAST_STRICTNESS
+    workers = _workers(opts.workers)
+    return Settings(tier, time_s, workers, _efforts(opts, tier), models(opts, tier), strictness)
 
 
 def duration(text: str) -> int:

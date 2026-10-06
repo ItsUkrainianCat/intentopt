@@ -1,13 +1,13 @@
 """The pipeline of the quick, fast and checked tiers (SPEC R25; ADR-011) and the gates every
-rewrite it returns has passed (SPEC R6, R7, R9, R14a, R17, R24); stages B to D are in
-`fast_stages`.
+rewrite it returns has passed (SPEC R6, R7, R9, R14a, R17, R24); the free gates, stages B to D
+and the second generation are in `fast_stages`.
 
 Stage A is one wave: the intake, the synthesis of the scenarios (the user's examples replace it)
-and the K rewrites, none of which needs another's reply. A rewrite that fails a free gate is
-dropped there, before it costs a call: one with no change in meaning words (`meaning_words`: case,
-punctuation, whitespace, single letters and articles aside, it is the original or an earlier
-rewrite again), one over the length cap, one that lost a literal. Stages B to D pick a rewrite
-against the noise of two runs of the original (`fast_stages`). Stage E (checked tier) runs the
+and the K rewrites (clarify, structure, tighten, specify, in that order), none of which needs
+another's reply. A rewrite that fails a free gate is dropped there, before it costs a call: one
+with no change in meaning words, one over the length cap, one that lost a literal. Stages B to D,
+with a second generation from 45 s when the plan has one, pick a rewrite against the noise of two
+runs of the original (`fast_stages`). Stage E (checked tier) runs the
 winner against the original once on the held-out scenarios on the target model, decided as
 `runner` decides with MIN_THRESHOLD as the margin (SPEC R14a); a second held-out run of the
 original would cost more calls than that, so the checked tier measures no held-out noise. The
@@ -29,14 +29,11 @@ from collections.abc import Sequence
 from typing import Any, TextIO, cast
 
 from autoimprover.backend import BudgetedBackend, Clock
-from autoimprover.contract import _ask, check, extract_contract, literals_preserved
+from autoimprover.contract import _ask, check, extract_contract
 from autoimprover.evaluator import Evaluator
 from autoimprover.fast_prompts import (
-    STRATEGY_NOTES,
-    parse_rewrite,
     parse_synth,
     rewrite_call,
-    strategy,
     synth_call,
 )
 from autoimprover.fast_stages import (
@@ -46,11 +43,10 @@ from autoimprover.fast_stages import (
     Stages,
     Win,
     dropped,
-    meaning_words,
 )
 from autoimprover.fastplan import FastPlan, contract_stage, tail
 from autoimprover.parallel import parallel_map
-from autoimprover.runner import MIN_THRESHOLD, length_ok, score_holdout
+from autoimprover.runner import MIN_THRESHOLD, score_holdout
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
     Backend,
@@ -182,34 +178,7 @@ class _Fast(Stages):
         call = rewrite_call(
             self.prompt, variant, plan.models.reflect, plan.strictness, plan.allow_growth
         )
-        reply = self.ask(call)
-        if isinstance(reply, Dropped):
-            return reply
-        try:
-            return parse_rewrite(reply)
-        except ValueError as error:
-            return Dropped(str(error))
-
-    def gates(self, drafts: list[tuple[int, str]]) -> list[Rewrite]:
-        """The rewrites that pass the free gates, in variant order: a change in meaning words
-        from the original and every earlier rewrite, the length cap, every literal kept (SPEC R7,
-        R9)."""
-        kept: list[Rewrite] = []
-        seen = {meaning_words(self.prompt): "no change in meaning words"}
-        for variant, text in drafts:
-            fits, ratio = length_ok(self.prompt, text, self.plan.strictness, self.plan.allow_growth)
-            if (words := meaning_words(text)) in seen:
-                why = seen[words]
-            elif not fits:
-                why = "it is longer than the length cap"
-            elif not literals_preserved(self.prompt, text):
-                why = "it loses a literal of the original"
-            else:
-                kept.append(Rewrite(variant, text, ratio))
-                seen[words] = f"the meaning words of rewrite {variant} again"
-                continue
-            self.note(f"rewrite {variant} dropped: {why}")
-        return kept
+        return self.parsed(self.ask(call))
 
     # --- stage E and the quick tier ----------------------------------------------------------
 
@@ -267,7 +236,7 @@ class _Fast(Stages):
     ) -> Outcome:
         fields = {**self.measured, **fields}
         if rewrite is not None:
-            fields["changes"] = (STRATEGY_NOTES[strategy(rewrite.variant)],)
+            fields["changes"] = (rewrite.note,)
             fields["length_ratio"] = rewrite.ratio
         return Outcome(
             status="unchanged" if rewrite is None else "improved",
