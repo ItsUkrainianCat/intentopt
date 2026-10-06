@@ -13,9 +13,13 @@ with MIN_THRESHOLD as the margin (SPEC R14a); a second held-out run of the origi
 calls than that, so the checked tier measures no held-out noise. The quick tier only checks its one
 rewrite's contract.
 
-Before stage E the time and calls left are compared with its estimate (`fastplan`); a rewrite
-that has not passed every gate is never returned (SPEC R17). A failed intake, synthesis, contract
-check or held-out run ends the run as BackendError (SPEC R24).
+After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
+leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
+`fastplan.MAX_SCENARIOS`: the user's examples first, else one more synthesis call (stage A2, its
+own sample, its scenarios under ids of their own and kept in the run folder); a failed or cut
+stage A2 keeps the plan's scenarios. Before stage E the time and calls left are compared with its
+estimate (`fastplan`); a rewrite that has not passed every gate is never returned (SPEC R17). A
+failed intake, synthesis, contract check or held-out run ends the run as BackendError (SPEC R24).
 
 DEBT, private names used here, in `fast_stages` and in `fast_prompts` until their owners add public
 seams: `evaluator.Evaluator._task_call` (overridden by `fast_prompts.FastEvaluator`),
@@ -24,11 +28,13 @@ seams: `evaluator.Evaluator._task_call` (overridden by `fast_prompts.FastEvaluat
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from typing import Any, TextIO, cast
 
 from autoimprover.backend import BudgetedBackend, Clock
 from autoimprover.contract import _ask, check, extract_contract
+from autoimprover.fast_calibrate import grow
 from autoimprover.fast_prompts import (
     FastEvaluator,
     parse_synth,
@@ -42,11 +48,12 @@ from autoimprover.fast_stages import (
     Win,
     dropped,
 )
-from autoimprover.fastplan import FastPlan, contract_stage, tail
+from autoimprover.fastplan import PLAN_SHARE, FastPlan, contract_stage, tail
 from autoimprover.parallel import parallel_map
 from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
+    CALL_RETRIES,
     Backend,
     BackendError,
     BudgetExhausted,
@@ -75,6 +82,8 @@ _CUT = {
     "clock": "the clock ran out before a rewrite passed every gate",
     "budget": "the call limit ran out before a rewrite passed every gate",
 }
+# The sample of the second synthesis wave: past the first wave's sample 0 and its retries.
+MORE_SAMPLE = 1 + CALL_RETRIES
 
 
 def improve_fast(
@@ -107,7 +116,7 @@ def improve_fast(
             "and there are none; give more examples, or a shorter --time",
         )
     try:
-        return run.flow(given, kind)
+        return run.flow(given, kind, synthesising=given is None)
     except BudgetExhausted as error:  # the intake, the synthesis, the contract check or stage E
         run.stop = run.stop or dropped(error).cut
         return run.kept("")
@@ -119,7 +128,7 @@ class _Fast(Stages):
     """One fast run: stages B to D and the run's state are `Stages`; here stage A, stage E, the
     quick tier and the endings."""
 
-    def flow(self, given: list[Scenario] | None, kind: Kind | None) -> Outcome:
+    def flow(self, given: list[Scenario] | None, kind: Kind | None, synthesising: bool) -> Outcome:
         contract, scenarios, rewrites = self.stage_a(kind, given)
         if self.fplan.tier == "quick":
             return self.quick(contract, rewrites)
@@ -127,7 +136,9 @@ class _Fast(Stages):
             self.store.save_scenarios(scenarios)
         if not rewrites:
             return self.kept("no rewrite passed the free gates (length cap, literals)")
-        m, h = self.fplan.scenarios, self.fplan.holdout
+        self.calibrate("A")
+        m, scenarios = self.more(len(rewrites), scenarios, synthesising)
+        h = self.fplan.holdout
         win = self.contest(contract, rewrites, scenarios[:m], h)
         if win is None:
             return self.kept(_NO_WIN)
@@ -171,6 +182,46 @@ class _Fast(Stages):
         self.absorb([(f"rewrite {v}", draft) for v, draft in enumerate(drafts)])
         rewrites = self.gates([(v, d) for v, d in enumerate(drafts) if isinstance(d, str)])
         return contract, given or cast(list[Scenario], results.get("synth", [])), rewrites
+
+    def more(
+        self, k: int, scenarios: list[Scenario], can_synthesise: bool
+    ) -> tuple[int, list[Scenario]]:
+        """The pick count and the scenarios after stage A for `k` rewrites: the plan's, or more
+        when the fitted model leaves time for them (`fast_calibrate.grow`), with stage A2 when
+        the scenarios at hand are too few and the run `can_synthesise`."""
+        fp, budgeted = self.fplan, self.budgeted
+        if self.latency is None:
+            return fp.scenarios, scenarios
+        grown = grow(
+            tier=fp.tier,
+            rewrites=k,
+            scenarios=fp.scenarios,
+            holdout=fp.holdout,
+            have=len(scenarios),
+            can_synthesise=can_synthesise,
+            rewrites2=fp.rewrites2,
+            workers=self.workers,
+            prompt_tokens=count_tokens(self.prompt),
+            model=self.latency,
+            seconds_left=min(PLAN_SHARE * fp.time_s, budgeted.deadline) - self.clock.elapsed(),
+            calls_left=budgeted.limit - budgeted.used,
+        )
+        if grown is None:
+            return fp.scenarios, scenarios
+        count = grown.synthesise
+        if not count:
+            self.note(f"re-plan: pick on {grown.scenarios} scenarios")
+        else:
+            self.note(f"stage A2: {count} more scenarios, to pick on {grown.scenarios}")
+            call = synth_call(self.prompt, count, self.plan.models.reflect, sample=MORE_SAMPLE)
+            try:
+                found = _ask(self.backend, call, lambda text: parse_synth(text, count))
+            except (CallFailed, BudgetExhausted) as error:
+                self.absorb([("more scenarios", dropped(error))])
+                return fp.scenarios, scenarios
+            scenarios = [*scenarios, *renamed(found, scenarios)]
+            self.store.save_scenarios(scenarios)
+        return grown.scenarios, scenarios
 
     def draft(self, variant: int) -> str | Dropped:
         plan = self.plan
@@ -248,3 +299,16 @@ class _Fast(Stages):
             mode=self.fplan.tier,
             **fields,
         )
+
+
+def renamed(found: Sequence[Scenario], earlier: Sequence[Scenario]) -> list[Scenario]:
+    """`found` under ids no earlier scenario has: a taken id gets a "+" until it is free."""
+    taken = {scenario.id for scenario in earlier}
+    named = []
+    for scenario in found:
+        name = scenario.id
+        while name in taken:
+            name += "+"
+        taken.add(name)
+        named.append(dataclasses.replace(scenario, id=name))
+    return named

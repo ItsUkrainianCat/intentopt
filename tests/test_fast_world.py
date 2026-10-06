@@ -76,6 +76,20 @@ def two_generations(time_s: int, workers: int, rewrites: int, scenarios: int) ->
     return FastPlan("fast", time_s, workers, rewrites, scenarios, 0, stages, seconds, calls, 2, 2)
 
 
+def checked_holding_out(holdout: int) -> FastPlan:
+    """The checked plan of 60 s on 1 worker, K=1 on M=2, with `holdout` held out, built from the
+    planner's own stages: since WP18 the planner holds out 2 there (`test_fastplan.py`), and the
+    runner reads only the shape, so the tests written for 4 held out keep their plan."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(fastplan, "OVERHEAD_S", MECHANICS_OVERHEAD_S)
+        stages = (
+            fastplan.stage_a(1, 2 + holdout, 1, SHORT),
+            *fastplan.tail(1, 2, holdout, 1, SHORT),
+        )
+    seconds, calls = sum(s.seconds for s in stages), sum(s.calls for s in stages)
+    return FastPlan("checked", 60, 1, 1, 2, holdout, stages, seconds, calls)
+
+
 # Plans by shape: K rewrites, M scenarios, H held out, at MECHANICS_OVERHEAD_S: intake I = 7.829,
 # task T = 4.543, rewrite Rs = 3.257, pairwise judge P(n) = 2.4 + 40 n/70 (P2 3.543), contract
 # check J(n) = 2.4 + 75 n/70 (J1 3.471, J2 4.543, J3 5.614); stage B (K + 2) M task runs, stage C
@@ -86,7 +100,8 @@ K2M2 = mechanics_plan(25, 8, SHORT, False)  # synthesises 2
 K3M3 = mechanics_plan(30, 9, SHORT, False)  # I + 2 T + J3 = 22.529 <= 25.5: synthesises 3
 K3M2_EXAMPLES = mechanics_plan(34, 6, SHORT, True)  # I + 2 T + 2 J3 = 28.143 <= 28.9
 K1M2_EXAMPLES = mechanics_plan(25, 4, SHORT, True)  # the smallest
-CHECKED = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=4 (the smallest): synthesises 6
+CHECKED = checked_holding_out(4)  # K=1, M=2, H=4: synthesises 6
+CHECKED_SMALLEST = mechanics_plan(60, 1, SHORT, False)  # K=1, M=2, H=2: synthesises 4
 # Two generations (from 45 s): the first, then K2=2 reflections; on 6 workers the second costs
 # Rs + T + J2 = 3.257 + 4.543 + 4.543 = 12.343 s, on 4 Rs + T + 2 J2 = 16.886 s (C2: 5 calls).
 TWO_K1 = two_generations(45, 4, 1, 2)  # K=1, M=2: I + 2 T + 2 P2 = 24.0, 40.886 in all
@@ -238,13 +253,16 @@ def run(
     run_id: str = "",
     wrap: Callable[[Backend], Backend] | None = None,
     kind: Kind | None = None,
+    pace: float = 0.0,
 ) -> Result:
     """One process: open the run folder (new unless `run_id`), build the real stack over a raw
-    ScriptedBackend running `world`, with `deadline` on a fake clock, and run improve_fast."""
+    ScriptedBackend running `world`, with `deadline` on a fake clock, and run improve_fast. With
+    `pace`, every answered call takes that many seconds on the fake clock and its reply says so
+    (the replies a run calibrates on, `test_fast_calibrate.py`); without, replies carry none."""
     store = RunStore.resume(root, run_id) if run_id else RunStore.open_or_create(root, plan, prompt)
     try:
         fake = clock or FakeClock()
-        raw = ScriptedBackend(world)
+        raw = ScriptedBackend(world, duration_s=pace, clock=fake if pace else None)
         now = Clock(now=fake.now, elapsed=store.elapsed_s)
         budgeted = BudgetedBackend(
             raw, plan.budget, store.calls_used, now, deadline, on_call=store.save_progress
