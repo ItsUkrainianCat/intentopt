@@ -1,11 +1,13 @@
 """`autoimprover bench` (SPEC R26): the prompt set and the run of a bench.
 
 The set is JSON Lines, one prompt per non-blank line: `id`, `prompt`, optional `kind` (`template`
-or `task`, handed to the run as `--kind`) and optional `examples` (a list of objects as in an
-examples file, SPEC R11); other keys are ignored. A prompt passes the checks of SPEC R1 (CRLF and
-CR become LF); an id names the prompt's folder, so it is a short run of letters, digits, `-` and
-`_` (SPEC R19); a bench takes at most MAX_PROMPTS. Every refusal names its line and never quotes
-the prompt.
+or `task`, handed to the run as `--kind`), optional `examples` (a list of objects as in an
+examples file, SPEC R11) and optional `eval_from` (WP21: a whole number from 1 to one less than
+the examples; the run gets the examples before it, and those from it on, each with an `expected`
+or `criteria`, are hidden and score the result, `bench_hidden`); other keys are ignored. A
+prompt passes the checks of SPEC R1 (CRLF and CR become LF); an id names the prompt's folder, so
+it is a short run of letters, digits, `-` and `_` (SPEC R19); a bench takes at most MAX_PROMPTS.
+Every refusal names its line and never quotes the prompt.
 
 A bench runs the prompts one after the other. Each runs the ordinary pipeline (`run_one`, the
 command line's own run of a prompt) in a run folder under `<bench folder>/<prompt id>/`; a run
@@ -19,7 +21,9 @@ model answers the fresh scenarios, both prompts alike, at the task role's effort
 works only inside the runs); the judge model, never the task or target model (SPEC R14), judges
 the answers at the judge role's effort; the reflection model writes the scenarios at the
 reflection role's effort and the naive rewrite at low effort (SPEC R26). An unchanged prompt
-without the baseline is a tie and costs no call. Ctrl-C ends the bench after the prompts already
+without the baseline is a tie and costs no call. An item with `eval_from` is scored on its hidden
+examples instead of the pairwise judge, also when unchanged (a tie whose pass counts are the
+original's), through the same stack. Ctrl-C ends the bench after the prompts already
 measured; the prompt it cut is not counted, and the bench's own calls in flight are cancelled
 (SPEC R2, R21).
 
@@ -39,6 +43,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
+from autoimprover.bench_hidden import Hidden, hidden_calls, score_hidden
 from autoimprover.bench_judge import Comparison, Judged, judge, pairwise_calls
 from autoimprover.efforts import EffortBackend
 from autoimprover.runstore import RunStore
@@ -70,13 +75,29 @@ _BOM = b"\xef\xbb\xbf"
 @dataclass(frozen=True)
 class BenchPrompt:
     """One prompt of the set: its id, its text (line endings LF), the `--kind` it runs with, the
-    user's examples it runs on (None: synthesised), and its line in the file."""
+    user's examples (None: synthesised), its line in the file, and `eval_from`, the index from
+    which its examples are hidden from the run and score it instead (None: none hidden)."""
 
     id: str
     prompt: str
     kind: Kind | None = None
     examples: tuple[Scenario, ...] | None = None
     line: int = 0
+    eval_from: int | None = None
+
+    @property
+    def given(self) -> tuple[Scenario, ...] | None:
+        """The examples the run gets: those before `eval_from` (None: synthesised)."""
+        if self.examples is None or self.eval_from is None:
+            return self.examples
+        return self.examples[: self.eval_from]
+
+    @property
+    def hidden(self) -> tuple[Scenario, ...]:
+        """The examples the bench scores the original and the returned prompt on (WP21)."""
+        if self.examples is None or self.eval_from is None:
+            return ()
+        return self.examples[self.eval_from :]
 
 
 def load_prompts(path: Path, limit: int | None = None) -> list[BenchPrompt]:
@@ -146,7 +167,30 @@ def _prompt(text: str, number: int) -> BenchPrompt:
         kind=None if kind is ... else kind,
         examples=scenarios,
         line=number,
+        eval_from=_eval_from(entry, scenarios, where),
     )
+
+
+def _eval_from(entry: dict, scenarios: tuple[Scenario, ...] | None, where: str) -> int | None:
+    """The item's `eval_from` (WP21): a whole number from 1 to one less than its examples, every
+    example from it on carrying a reference (`expected` or `criteria`) to score it by."""
+    if "eval_from" not in entry:
+        return None
+    if scenarios is None:
+        raise ValueError(f"{where}: `eval_from` needs `examples`")
+    value = entry["eval_from"]
+    if type(value) is not int or not 1 <= value < len(scenarios):
+        raise ValueError(
+            f"{where}: `eval_from` must be a whole number from 1 to {len(scenarios) - 1}: the "
+            "examples before it go to the run, the rest are hidden and score it"
+        )
+    for n, scenario in enumerate(scenarios[value:], start=value):
+        if scenario.expected is None and not scenario.criteria:
+            raise ValueError(
+                f"{where}: examples[{n}] is hidden by `eval_from` and has no `expected` or "
+                "`criteria` to score it by"
+            )
+    return value
 
 
 def _problem(prompt: str) -> str:
@@ -213,7 +257,8 @@ class Row:
     """One measured prompt: its id, its run's status and reason code, whether the result is
     verified, the seconds on the run's clock, the run's calls and the bench's own, the noise the
     run measured, the tool's comparison with the original (an unchanged prompt ties; None when
-    the run failed), the naive rewrite's (None without the baseline), and what failed."""
+    the run failed), the naive rewrite's (None without the baseline), what failed, and for an
+    item with `eval_from` the pass counts of its hidden examples (`bench_hidden`, WP21)."""
 
     id: str
     status: Literal["improved", "unchanged", "error"]
@@ -226,6 +271,7 @@ class Row:
     tool: Comparison | None
     naive: Comparison | None
     error: str = ""
+    hidden: Hidden | None = None
 
 
 @dataclass(frozen=True)
@@ -300,10 +346,13 @@ def _measure(
             error=collected.failure or "the run failed",
         )
     improved = outcome.status == "improved"
-    judged, used = Judged(None, None), 0
-    if (improved or plan.baseline) and collected.run_id is not None:
+    judged, used, hidden = Judged(None, None), 0, None
+    if (improved or plan.baseline or item.hidden) and collected.run_id is not None:
         candidate = outcome.prompt if improved else None
-        judged, used = _pairwise(item, plan, folder, collected.run_id, candidate, make_raw, now)
+        judged, used, hidden = _compared(
+            item, plan, folder, collected.run_id, candidate, make_raw, now
+        )
+    unchanged = Comparison("tie", 0, 0, 0)  # unchanged: a tie, with its hidden counts if any
     return Row(
         id=item.id,
         status="improved" if improved else "unchanged",
@@ -313,12 +362,13 @@ def _measure(
         calls=collected.calls,
         bench_calls=used,
         noise=outcome.noise,
-        tool=judged.tool if improved else Comparison("tie", 0, 0, 0),  # unchanged: a tie
+        tool=judged.tool if improved or hidden is not None else unchanged,
         naive=judged.naive,
+        hidden=hidden,
     )
 
 
-def _pairwise(
+def _compared(
     item: BenchPrompt,
     plan: BenchPlan,
     folder: Path,
@@ -326,9 +376,11 @@ def _pairwise(
     candidate: str | None,
     make_raw: RawMaker,
     now: Callable[[], float],
-) -> tuple[Judged, int]:
-    """The comparisons of one prompt through the bench's own stack over its run folder, and the
-    calls they used. A backend failure makes them errors; Ctrl-C cancels the calls in flight."""
+) -> tuple[Judged, int, Hidden | None]:
+    """The comparisons of one prompt through the bench's own stack over its run folder (the
+    blind pairwise judge, or for an item with `eval_from` its hidden examples, `bench_hidden`),
+    the calls they used and the hidden pass counts. A backend failure makes them errors; Ctrl-C
+    cancels the calls in flight."""
     store = RunStore.resume(folder, run_id)
     try:
         clock = Clock(now)
@@ -337,24 +389,43 @@ def _pairwise(
             return budgeted.deadline
 
         raw = make_raw(clock, store, deadline)
-        estimate = pairwise_calls(candidate is not None, plan.baseline)
+        hidden, improved = item.hidden, candidate is not None
+        estimate = (
+            hidden_calls(improved, plan.baseline, len(hidden))
+            if hidden
+            else pairwise_calls(improved, plan.baseline)
+        )
         budgeted = BudgetedBackend(
             raw, PAIRWISE_LIMIT_FACTOR * estimate, used=0, clock=clock, deadline=PAIRWISE_CLOCK_S
         )
         stack = EffortBackend(CachedBackend(ResilientBackend(budgeted), store), plan.efforts)
         contract = store.contract()
         kind: Kind = contract.kind if contract is not None else item.kind or "task"
+        found: Hidden | None = None
         try:
-            judged = judge(
-                stack,
-                store.prompt,
-                candidate,
-                naive=plan.baseline,
-                kind=kind,
-                models=plan.models,
-                workers=plan.workers,
-                seed=plan.seed,
-            )
+            if hidden:
+                judged, found = score_hidden(
+                    stack,
+                    store.prompt,
+                    candidate,
+                    naive=plan.baseline,
+                    kind=kind,
+                    models=plan.models,
+                    workers=plan.workers,
+                    seed=plan.seed,
+                    hidden=hidden,
+                )
+            else:
+                judged = judge(
+                    stack,
+                    store.prompt,
+                    candidate,
+                    naive=plan.baseline,
+                    kind=kind,
+                    models=plan.models,
+                    workers=plan.workers,
+                    seed=plan.seed,
+                )
         except BackendError as error:
             failed = Comparison("error", 0, 0, 0, str(error))
             judged = Judged(
@@ -366,7 +437,7 @@ def _pairwise(
             if callable(terminate):
                 terminate()
             raise
-        return judged, budgeted.used
+        return judged, budgeted.used, found
     finally:
         store.close()
 
@@ -377,4 +448,11 @@ def _said(row: Row) -> str:
         return f"error: {row.error}"
     verdict = "not compared" if row.tool is None else row.tool.verdict
     naive = "" if row.naive is None else f", naive {row.naive.verdict}"
-    return f"{row.status} ({row.reason_code}), {verdict}{naive}"
+    hidden = ""
+    if row.hidden is not None:
+        original, returned = row.hidden.original, row.hidden.returned
+        hidden = (
+            f"; hidden examples: original {original.passed} of {original.of}, returned "
+            f"{returned.passed} of {returned.of}"
+        )
+    return f"{row.status} ({row.reason_code}), {verdict}{naive}{hidden}"

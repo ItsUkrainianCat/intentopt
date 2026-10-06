@@ -21,7 +21,10 @@ and whether a real run of it would refuse (SPEC R4, R25), and the state folder (
 prints the plan (`bench_report.DryView`, with the models and efforts) with no call and nothing
 written. A real bench measures the prompts (`bench.run_bench`) in a new folder
 `<state>/bench/<id>/`; each prompt runs through `run_prompt`, the command line's own run of a
-prompt, injected by `cli`, as is the raw model layer. The summary is the one result on
+prompt, injected by `cli`, as is the raw model layer. An item with `eval_from` runs on its
+examples before that index only, and its plan and the bench's own estimate follow that (WP21:
+the run decides by their references, `cli_fast.plan_for`; the bench scores its hidden examples,
+`bench_hidden`). The summary is the one result on
 stdout. Exit 0 once the flags parse, whatever the tool's results (it measures, it does not gate);
 2 for bad usage or a refusal; 3 when every prompt's run ended in a backend failure; a session that
 is not locked down ends the bench with exit 4 (`cli.main`). Ctrl-C is exit 130 as SPEC R2 has it
@@ -56,9 +59,10 @@ from autoimprover.bench import (
     new_bench_folder,
     run_bench,
 )
+from autoimprover.bench_hidden import hidden_calls, hidden_seconds
 from autoimprover.bench_judge import PAIRWISE_SCENARIOS, pairwise_calls, pairwise_seconds
 from autoimprover.bench_report import DryRow, DryView, Summary
-from autoimprover.cli_fast import fast_refusal
+from autoimprover.cli_fast import fast_refusal, plan_for
 from autoimprover.cli_options import (
     Options,
     Settings,
@@ -69,7 +73,7 @@ from autoimprover.cli_options import (
     parse,
     settings,
 )
-from autoimprover.fastplan import fast_plan
+from autoimprover.reference_score import checks_of
 from autoimprover.report import Emitter
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError, make_dirs, runs_root, write_json
@@ -209,8 +213,8 @@ def bench_command(
         tokens = count_tokens(item.prompt)
         calls, seconds, why = _run_plan(item, shared, chosen, tokens)
         refusal = refusal or (None if why is None else f"prompt {item.id}: {why}")
-        bench_s = pairwise_seconds(True, baseline, chosen.workers, tokens)
-        rows.append(DryRow(item.id, calls, seconds, pairwise_calls(True, baseline), bench_s))
+        bench_calls, bench_s = _bench_plan(item, baseline, chosen.workers, tokens)
+        rows.append(DryRow(item.id, calls, seconds, bench_calls, bench_s))
     view = DryView(
         str(path),
         chosen.tier,
@@ -224,6 +228,7 @@ def bench_command(
         tuple(rows),
         refusal,
         shared.ungated,
+        hidden=sum(bool(item.hidden) for item in prompts),
     )
     if opts.dry:
         emit.plan(view, dry=True)
@@ -235,7 +240,7 @@ def bench_command(
     def run_one(item: BenchPrompt, root: Path) -> Collected:
         """The prompt as `autoimprover --time T <the run flags given> --kind K <prompt>` would
         run it."""
-        examples = None if item.examples is None else list(item.examples)
+        examples = None if item.given is None else list(item.given)
         given = dataclasses.replace(shared, words=(item.prompt,), kind=item.kind)
         return run_prompt(given, examples, root)
 
@@ -292,14 +297,27 @@ def _run_plan(
 ) -> tuple[int, float, str | None]:
     """A prompt's run: its estimated calls and seconds, and why a real run would refuse. The deep
     tier's calls are its budget and its seconds its clock (SPEC R4, R17, R25)."""
+    given = item.given
     if chosen.tier != "deep":
-        fplan = fast_plan(chosen.time_s, chosen.workers, tokens, item.examples is not None)
+        fplan = plan_for(chosen.time_s, chosen.workers, item.prompt, given)
         return fplan.est_calls, fplan.est_seconds, fast_refusal(fplan)
     calls = budget(shared, "deep", chosen.time_s, 0)
     plan = Plan(chosen.models, chosen.strictness, calls, wall_clock_s=chosen.time_s, tier="deep")
-    n = SYNTH_COUNT if item.examples is None else len(item.examples)
-    costs = runner.fixed_costs(plan, n, synthesising=item.examples is None)
+    n = SYNTH_COUNT if given is None else len(given)
+    costs = runner.fixed_costs(plan, n, synthesising=given is None)
     return calls, float(chosen.time_s), runner.refusal(costs, force_low_budget=False)
+
+
+def _bench_plan(item: BenchPrompt, baseline: bool, workers: int, tokens: int) -> tuple[int, float]:
+    """The most calls and seconds the bench's own measure of a prompt can take (when the run
+    returns a rewrite): the pairwise judge, or for an item with `eval_from` its hidden examples
+    (WP21)."""
+    if not item.hidden:
+        return pairwise_calls(True, baseline), pairwise_seconds(True, baseline, workers, tokens)
+    n, checks = len(item.hidden), max(checks_of(scenario) for scenario in item.hidden)
+    return hidden_calls(True, baseline, n), hidden_seconds(
+        True, baseline, workers, tokens, n, checks
+    )
 
 
 def _root_refusal(root: Path) -> str | None:

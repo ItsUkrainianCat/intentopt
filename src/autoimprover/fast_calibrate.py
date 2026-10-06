@@ -29,6 +29,7 @@ import threading
 from collections.abc import Sequence
 from typing import NamedTuple
 
+from autoimprover.evaluator import SCENARIO_PREFIX
 from autoimprover.fastplan import (
     CONTRACT_CHECKS,
     INTAKE_TOKENS,
@@ -36,10 +37,13 @@ from autoimprover.fastplan import (
     JUDGED_CHECKS_PER_SCENARIO,
     MAX_SCENARIOS,
     PAIRWISE_TOKENS_PER_SCENARIO,
+    REFERENCE_MAX_SCENARIOS,
     SYNTH_TOKENS_PER_SCENARIO,
     Latency,
+    Reference,
     latency,
     misfit,
+    reference_tokens,
     rewrite_tokens,
     second_stages,
     synthesis_stage,
@@ -106,8 +110,9 @@ def planned_tokens(call: Call, prompt_tokens: int) -> float | None:
     """The output tokens `fastplan` assumes for `call` in a run of a prompt of `prompt_tokens`
     tokens, by its role and what its user message holds: the intake, a synthesis of `count`
     scenarios, a rewrite or reflection, a scoring run, a pairwise call or a judge call (the
-    contract check of each `contract` scenario, or stage E's checks of each output) over its
-    scenarios; None for a call it cannot read."""
+    contract check of each `contract` scenario, a reference judge call of scenario checks only,
+    by its checks, or stage E's checks of each output) over its scenarios; None for a call it
+    cannot read."""
     if call.role == "intake":
         return INTAKE_TOKENS
     if call.role == "reflect":
@@ -118,15 +123,26 @@ def planned_tokens(call: Call, prompt_tokens: int) -> float | None:
         user = json.loads(call.user)
         items = user["count"] if call.role == "synth" else len(user["scenarios"])
         names = [] if call.role == "synth" else [item["scenario"] for item in user["scenarios"]]
+        asked = [] if call.role == "synth" else [_ids(item) for item in user["scenarios"]]
     except (ValueError, TypeError, KeyError):
         return None
     if call.role == "synth":
         return SYNTH_TOKENS_PER_SCENARIO * items
     if call.system == PAIRWISE_BATCH_SYSTEM:
         return PAIRWISE_TOKENS_PER_SCENARIO * items
+    if asked and all(ids and all(i.startswith(SCENARIO_PREFIX) for i in ids) for ids in asked):
+        return sum(reference_tokens(len(ids)) for ids in asked)  # a reference judge call
     contract = all(str(name).startswith("contract") for name in names)
     checks = CONTRACT_CHECKS if contract else JUDGED_CHECKS_PER_SCENARIO
     return JUDGE_TOKENS_PER_CHECK * checks * items
+
+
+def _ids(item: object) -> list[str]:
+    """The check ids of one scenario of a judge call's user JSON; TypeError when it has none."""
+    checks = item.get("checks", []) if isinstance(item, dict) else None
+    if not isinstance(checks, list):
+        raise TypeError("a scenario without a list of checks")
+    return [str(check["id"]) if isinstance(check, dict) else "" for check in checks]
 
 
 def token_ratio(pairs: Sequence[tuple[float, float]]) -> float:
@@ -186,23 +202,26 @@ def grow(
     model: Latency,
     seconds_left: float,
     calls_left: int,
+    ref: Reference | None = None,
 ) -> Growth | None:
     """More pick scenarios than the plan's `scenarios` for `rewrites` rewrites (and `rewrites2`
     reflections, `holdout` held out) when their remaining stages fit `seconds_left` and
-    `calls_left` by `model` (SPEC R25): the most, up to MAX_SCENARIOS, from the `have` scenarios
-    at hand (pick and held out), or with one synthesis call for the missing ones when
-    `can_synthesise`; None when no larger count fits. The `tier` names the run in the plan's
+    `calls_left` by `model` (SPEC R25): the most, up to MAX_SCENARIOS (with `ref`, the user's
+    examples with references, REFERENCE_MAX_SCENARIOS and the reference stages' prices), from the
+    `have` scenarios at hand (pick and held out), or with one synthesis call for the missing ones
+    when `can_synthesise`; None when no larger count fits. The `tier` names the run in the plan's
     terms; the checked tier keeps its holdout."""
     if tier not in ("fast", "checked"):
         return None
-    for count in range(MAX_SCENARIOS, scenarios, -1):
+    top = MAX_SCENARIOS if ref is None else REFERENCE_MAX_SCENARIOS
+    for count in range(top, scenarios, -1):
         extra = max(0, count + holdout - have)
         if extra and not can_synthesise:
             continue
         stages = (synthesis_stage(extra, model),) if extra else ()
-        stages += tail(rewrites, count, holdout, workers, prompt_tokens, model)
+        stages += tail(rewrites, count, holdout, workers, prompt_tokens, model, ref)
         if rewrites2:
-            stages += second_stages(rewrites2, count, workers, prompt_tokens, model)
+            stages += second_stages(rewrites2, count, workers, prompt_tokens, model, ref)
         if misfit(stages, seconds_left, calls_left) is None:
             return Growth(count, holdout, extra)
     return None

@@ -1,7 +1,8 @@
-"""The quick, fast and checked tiers on the command line (SPEC R4, R21, R22, R25; ADR-011): why a
-real run of a fast plan would refuse or keep the original, the fast plan a resumed run rebuilds
-from its saved plan, and `Progress`, the log `improve_fast` writes, which reaches stderr line by
-line while the run goes."""
+"""The quick, fast and checked tiers on the command line (SPEC R4, R21, R22, R25; ADR-011): the fast
+plan of a prompt and its examples (`plan_for`, by their references when every one has one, WP21),
+why a real run of a fast plan would refuse or keep the original, the fast plan a resumed run
+rebuilds from its saved plan, and `Progress`, the log `improve_fast` writes, which reaches stderr
+line by line while the run goes."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from typing import TextIO
 
 from autoimprover.cli_plan import duration
 from autoimprover.fastplan import FastPlan, fast_plan, tier_for
+from autoimprover.reference_score import reference_of
 from autoimprover.report import Emitter
 from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError
@@ -39,10 +41,19 @@ def checked_keeps(fplan: FastPlan, examples: Sequence[Scenario] | None) -> str |
     )
 
 
+def plan_for(
+    time_s: int, workers: int, prompt: str, examples: Sequence[Scenario] | None
+) -> FastPlan:
+    """The fast plan of `prompt` with the user's `examples` (None: synthesised), deciding by
+    their references when every one carries one (`reference_score.reference_of`; WP21)."""
+    reference = None if examples is None else reference_of(examples)
+    return fast_plan(time_s, workers, count_tokens(prompt), examples is not None, reference)
+
+
 def saved_fast_plan(store: RunStore, had_examples: bool) -> FastPlan:
-    """The fast plan of a resumed run, rebuilt from its saved plan and whether it had the user's
-    examples, so it asks the very calls the run asked (SPEC R22); a saved tier that its clock
-    does not select is a damaged manifest."""
+    """The fast plan of a resumed run, rebuilt from its saved plan, whether it had the user's
+    examples and their references (the run folder's scenarios), so it asks the very calls the
+    run asked (SPEC R22); a saved tier that its clock does not select is a damaged manifest."""
     plan = store.plan
     try:
         tier = tier_for(plan.wall_clock_s)
@@ -54,7 +65,10 @@ def saved_fast_plan(store: RunStore, had_examples: bool) -> FastPlan:
             f"not go with its {plan.wall_clock_s} s); start a new run, or remove this one with "
             f"`autoimprover clean {store.run_id}`"
         )
-    return fast_plan(plan.wall_clock_s, plan.workers, count_tokens(store.prompt), had_examples)
+    saved = store.scenarios() if had_examples else None
+    reference = None if saved is None else reference_of(saved)
+    tokens = count_tokens(store.prompt)
+    return fast_plan(plan.wall_clock_s, plan.workers, tokens, had_examples, reference)
 
 
 class Progress(io.StringIO):
