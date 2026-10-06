@@ -32,6 +32,11 @@ FIRST = "Summarise this report for {audience} in `three bullets`, and name Acme.
 SECOND = "For {audience}: summarise the report in `three bullets`; name Acme."
 THIRD = "Summarise the report for {audience}, in `three bullets`, naming Acme."
 CHECK_IDS = ["keep-1", "constraint-1", "no-new-goal", "same-language", "same-format"]
+NO_NEW_GOAL = (  # SPEC R6 (third live run)
+    "the candidate adds no goal or requirement beyond the original's goal and what it clearly "
+    "implies (making a request the original states or clearly implies explicit is NOT a new goal; "
+    "adding an unrelated task, topic, fact or requirement is)"
+)
 
 Passes = Callable[[str, str, str], bool]
 
@@ -74,10 +79,25 @@ def test_each_candidate_gets_its_own_verdict_in_order():
     found = check_many(backend, JUDGE, CONTRACT, ORIGINAL, [FIRST, SECOND, THIRD])
     assert found[0] is None and found[2] is None
     assert found[1] == Violation(
-        "no-new-goal",
-        "failed: the candidate adds no goal or requirement that the original does not have "
-        "(the original's goal: summarise a bug report)",
+        "no-new-goal", f"failed: {NO_NEW_GOAL} (the original's goal: summarise a bug report)"
     )
+
+
+def test_one_call_passes_the_implied_request_made_explicit_and_vetoes_an_unrelated_goal():
+    """SPEC R6: the judge, scripted by content, fails `no-new-goal` for the rewrite that adds a
+    poem; the rewrite that only states the implied request passes."""
+    vague = "so im building a prompt improver app. i think it should have multiple features."
+    implied = Contract(goal="implied: help with the app's features", kind="task")
+    clarified = "I am building a prompt improver app. Help me choose its features."
+    poem = clarified + " Also write a poem about it."
+    backend = judge(
+        lambda _s, check_id, output: not (check_id == "no-new-goal" and "poem" in output)
+    )
+    found = check_many(backend, JUDGE, implied, vague, [clarified, poem])
+    goal = "(the original's goal: implied: help with the app's features)"
+    texts = {c["text"] for s in scenarios(backend.calls[0]) for c in s["checks"]}
+    assert f"{NO_NEW_GOAL} {goal}" in texts
+    assert found == [None, Violation("no-new-goal", f"failed: {NO_NEW_GOAL} {goal}")]
 
 
 def quoting(text: str) -> ScriptedBackend:

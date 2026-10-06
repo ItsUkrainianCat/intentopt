@@ -30,13 +30,18 @@ ORIGINAL = "Summarise the report for {audience} in `three bullets`. Mention Acme
 CANDIDATE = "Summarise this report for {audience} in `three bullets`, and name Acme."
 QUOTE = CANDIDATE[:20]  # what `judge_reply` quotes: in the candidate, not in the original
 CHECK_IDS = ["keep-1", "keep-2", "constraint-1", "no-new-goal", "same-language", "same-format"]
+# SPEC R6 (third live run): making a stated or clearly implied request explicit is no new goal.
+NO_NEW_GOAL = (
+    "the candidate adds no goal or requirement beyond the original's goal and what it clearly "
+    "implies (making a request the original states or clearly implies explicit is NOT a new goal; "
+    "adding an unrelated task, topic, fact or requirement is)"
+)
 CHECK_TEXTS = {
     "keep-1": "the candidate still keeps this, verbatim or with the same meaning: Acme",
     "keep-2": "the candidate still keeps this, verbatim or with the same meaning: "
     "three bullet points",
     "constraint-1": "the candidate still sets this constraint: under 100 words",
-    "no-new-goal": "the candidate adds no goal or requirement that the original does not have "
-    "(the original's goal: summarise a bug report)",
+    "no-new-goal": f"{NO_NEW_GOAL} (the original's goal: summarise a bug report)",
     "same-language": "the candidate is written in the same language as the original (en)",
     "same-format": "the candidate asks for the same output format as the original (markdown list)",
 }
@@ -95,10 +100,7 @@ def test_a_contract_without_keep_items_or_constraints_asks_the_three_fixed_check
     assert check(backend, JUDGE, bare, ORIGINAL, CANDIDATE) == []
     (scenario,) = json.loads(backend.calls[0].user)["scenarios"]
     assert scenario["checks"] == [
-        {
-            "id": "no-new-goal",
-            "text": "the candidate adds no goal or requirement that the original does not have",
-        },
+        {"id": "no-new-goal", "text": NO_NEW_GOAL},
         {
             "id": "same-language",
             "text": "the candidate is written in the same language as the original",
@@ -108,6 +110,35 @@ def test_a_contract_without_keep_items_or_constraints_asks_the_three_fixed_check
             "text": "the candidate asks for the same output format as the original",
         },
     ]
+
+
+VAGUE = "so im building a prompt improver app. i think it should have multiple features."
+IMPLIED = Contract(goal="implied: help with the app's features", kind="task")
+CLARIFIED = "I am building a prompt improver app. Help me choose its features."
+POEM = CLARIFIED + " Also write a poem about it."  # an unrelated goal planted in the rewrite
+
+
+def no_poem(_scenario: str, check_id: str, output: str) -> bool:
+    """A judge scripted by content: it fails `no-new-goal` for a rewrite that asks for a poem."""
+    return not (check_id == "no-new-goal" and "poem" in output)
+
+
+def asked(call, check_id: str) -> list[str]:
+    scenarios = json.loads(call.user)["scenarios"]
+    return [c["text"] for s in scenarios for c in s["checks"] if c["id"] == check_id]
+
+
+@pytest.mark.parametrize(("candidate", "vetoed"), [(CLARIFIED, False), (POEM, True)])
+def test_the_implied_request_made_explicit_passes_and_an_unrelated_goal_is_vetoed(
+    candidate, vetoed
+):
+    """SPEC R6: the judge is told that making a stated or clearly implied request explicit is no
+    new goal, and an unrelated task is; its fail on `no-new-goal` vetoes the rewrite."""
+    backend = judging(no_poem)
+    found = check(backend, JUDGE, IMPLIED, VAGUE, candidate)
+    goal = "(the original's goal: implied: help with the app's features)"
+    assert asked(backend.calls[0], "no-new-goal") == [f"{NO_NEW_GOAL} {goal}"]
+    assert found == ([Violation("no-new-goal", f"failed: {NO_NEW_GOAL} {goal}")] if vetoed else [])
 
 
 def test_the_contract_check_instruction_is_fixed_and_treats_both_prompts_as_data():
