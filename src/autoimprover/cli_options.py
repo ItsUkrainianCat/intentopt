@@ -144,8 +144,8 @@ def _parser() -> _Parser:
     flag(
         "--ungated",
         action="store_true",
-        help="fast and checked, to measure the ranking: with no win, return the best-ranked "
-        "rewrite that passed every gate anyway (never verified)",
+        help="fast and checked, to measure the ranking: return the best-ranked rewrite that "
+        "passed every gate even without a win; no held-out check, never verified",
     )
     flag("--dry", action="store_true", help="print the plan; no model call, nothing written")
     flag("--json", action="store_true", help="print one JSON object on stdout")

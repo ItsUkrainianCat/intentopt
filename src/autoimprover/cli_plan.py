@@ -61,8 +61,8 @@ EVIDENCE = {
     "checked": "verified on held-out scenarios on the target model, no noise measured",
 }
 UNGATED_EVIDENCE = (
-    "ungated (--ungated): a rewrite that wins is returned as above; with no win, the best-ranked "
-    "rewrite that passed every gate is returned anyway, never verified (a measuring aid)"
+    "ungated (--ungated): with no win, the best-ranked rewrite that passed every gate is returned "
+    "anyway, and the checked tier skips its held-out check; never verified (a measuring aid)"
 )
 
 
