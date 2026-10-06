@@ -14,7 +14,7 @@ import {
   viewOf,
 } from '../../hooks/report.js'
 import { Progress } from '../../hooks/stream.js'
-import { DRY, ID, IMPROVED, RUN_DIR } from './world.js'
+import { DRY, ID, IMPROVED, RUN_DIR, TRUSTED } from './world.js'
 
 // Kept in sync by hand with src/autoimprover/types.py REASON_CODES (tests/test_mod_package.py
 // checks report.js against it, this list checks the view against report.js).
@@ -44,6 +44,9 @@ const kept = (code: string) => ({
   reason_code: code,
   score_after: null,
   margin: null,
+  meaning: `what ${code} means`,
+  verified_text: null,
+  margin_text: null,
 })
 
 describe('a finished run', () => {
@@ -56,7 +59,8 @@ describe('a finished run', () => {
       const view = viewOf(end(kept(code)))
       expect(view.state, code).toBe('unchanged')
       expect(view.status, code).toBe(`result: unchanged (${code})`)
-      expect(view.meaning, code).not.toBeNull()
+      expect(view.meaning, code).toBe(`what ${code} means`)
+      expect(view.verifiedLine, code).toBeNull()
       expect(view.improved, code).toBeNull()
       expect(view.useLabel, code).toBeNull()
       expect(view.exitCode, code).toBe(0)
@@ -74,8 +78,11 @@ describe('a finished run', () => {
       exitCode: 0,
       changes: ['asks for exactly five bullets'],
       lengthRatio: "length: 1.10x the original's tokens",
-      margin:
-        "margin: cleared the bar by 0.25 (noise 0.02 between the original's two holdout runs)",
+      verifiedLine: 'verified: yes, on the holdout, on the target model claude-opus-5-5',
+      mode: 'mode: deep (1500 s)',
+      noise: "noise: 0.02 between the original's two holdout runs; " +
+        'the result cleared the bar of 0.05 by 0.25',
+      margin: null,
     })
     expect(view.scores).toContain('holdout score (target model): 0.50 before, 0.80 after')
     expect(view.scores).toContain('search score (search model): 0.40 before, 0.90 after')
@@ -84,12 +91,13 @@ describe('a finished run', () => {
   })
 
   test('an unverified (--trust-search) result says so in its button, lines and meaning', () => {
-    const view = viewOf(end({ ...IMPROVED, verified: false, noise: null, margin: null }))
+    const view = viewOf(end(TRUSTED))
     expect(view.useLabel).toBe('Use it (not verified)')
     expect(view.title).toContain('NOT verified')
-    expect(view.verifiedLine).toContain('NOT verified on a holdout')
-    expect(view.meaning).toContain('not verified')
+    expect(view.verifiedLine).toBe(`verified: ${TRUSTED.verified_text}`)
+    expect(view.meaning).toBe(TRUSTED.meaning)
     expect(view.margin).toBeNull()
+    expect(view.noise).toBeNull()
   })
 
   test('model-written text loses escape sequences and control characters', () => {
