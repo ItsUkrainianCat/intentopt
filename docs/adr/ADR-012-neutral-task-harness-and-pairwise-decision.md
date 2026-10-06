@@ -16,3 +16,4 @@ The judge's reasons in the bench folder showed three things. (1) For prompts tha
 ## Consequences
 
 Scores from before this change are not comparable (different harness). The pairwise stage adds judge calls (2 per rewrite plus 2 for the noise pair, one wave) and replaces the per-prompt absolute judge calls of those tiers. The deep tier keeps GEPA's absolute metric for its search but confirms with pairwise preference.
+- Exception (WP21, SPEC R25): when every example carries `expected` or `criteria`, the decision is agreement with that reference (summed check scores against the noise of two original runs, held-out confirmation on the references), not the pairwise preference: the reference is ground truth the blind judge lacks.
