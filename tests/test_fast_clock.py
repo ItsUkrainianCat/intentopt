@@ -2,10 +2,10 @@
 time and the calls left are compared with the stage's estimate (`fastplan`, one call at a time
 here: workers 1) and what does not fit is shrunk, scenarios first, then rewrites; a deadline or a
 call limit reached inside a stage ends it; a rewrite that has not passed every gate is never
-returned. Estimates at workers 1 (the mechanics model, 2.4 s per call): a task call T = 5.257 s;
-a judge call on n scenarios, or a contract check of n rewrites, J1 3.471, J2 4.543, J3 5.614 s;
-stage B is (K + 2) M task calls (the original runs twice), stage C K + 3 calls of J(max(M, K));
-stage E (4 held out) 8 T + 2 J4 = 55.4 s.
+returned. Estimates at workers 1 (the mechanics model, 2.4 s per call): a task call of 150 output
+tokens (SPEC R25) T = 4.543 s; a judge call on n scenarios, or a contract check of n rewrites, J1
+3.471, J2 4.543, J3 5.614 s; stage B is (K + 2) M task calls (the original runs twice), stage C
+K + 3 calls of J(max(M, K)); stage E (4 held out) 8 T + 2 J4 = 49.7 s.
 """
 
 import dataclasses
@@ -56,8 +56,8 @@ def is_original_judge(call: Call) -> bool:
 
 
 def test_stage_b_that_does_not_fit_runs_on_fewer_scenarios(tmp_path):
-    """55 s left: 3 scenarios need 9 T + 4 J3 = 69.8 s for stages B and C, 2 need 6 T + 4 J2 =
-    49.7 s."""
+    """55 s left: 3 scenarios need 9 T + 4 J3 = 63.3 s for stages B and C, 2 need 6 T + 4 J2 =
+    45.4 s."""
     result = run(tmp_path, World(), K3M3, deadline=55)
     assert {scenario_of(c) for c in result.calls("task")} == {"situation 1", "situation 2"}
     outcome = result.outcome
@@ -65,8 +65,8 @@ def test_stage_b_that_does_not_fit_runs_on_fewer_scenarios(tmp_path):
 
 
 def test_fewer_rewrites_when_one_scenario_is_not_enough(tmp_path):
-    """50 s left: 3 rewrites on 1 scenario need 5 T + 6 J3 = 60.0 s, 2 rewrites 4 T + 5 J2 =
-    43.7 s."""
+    """50 s left: 3 rewrites on 1 scenario need 5 T + 6 J3 = 56.4 s, 2 rewrites 4 T + 5 J2 =
+    40.9 s."""
     result = run(tmp_path, World(rewrites=(BETTER, CLEAR, VERY_CLEAR)), K3M3, deadline=50)
     tasks = result.calls("task")
     assert [(prompt_of(c), scenario_of(c)) for c in tasks] == [
@@ -86,9 +86,9 @@ EXAMPLES = [Scenario(id=f"e{n}", input=f"example {n}") for n in (1, 2)]
     ],
 )
 def test_nothing_fits_keeps_the_original_unconfirmed(tmp_path, examples, roles):
-    """29 s left: even 1 rewrite on 1 scenario needs 3 T + 4 J1 = 29.7 s for stages B and C."""
+    """27 s left: even 1 rewrite on 1 scenario needs 3 T + 4 J1 = 27.5 s for stages B and C."""
     fplan = K3M3 if examples is None else K1M2_EXAMPLES
-    result = run(tmp_path, World(), fplan, deadline=29, examples=examples)
+    result = run(tmp_path, World(), fplan, deadline=27, examples=examples)
     kept_unconfirmed(result.outcome)
     assert [c.role for c in result.raw.calls] == roles
 
@@ -185,7 +185,7 @@ def test_the_quick_contract_check_runs_only_when_it_fits(tmp_path, deadline, ret
 
 @pytest.mark.parametrize("cut", [False, True])
 def test_a_checked_run_without_time_for_stage_e_keeps_the_original(tmp_path, cut):
-    """Stage E is estimated at 55.4 s; the rewrite's judge call leaves 40 s."""
+    """Stage E is estimated at 49.7 s; the rewrite's judge call leaves 40 s."""
     clock = FakeClock()
 
     def hook(call: Call) -> None:
@@ -231,14 +231,14 @@ def test_a_deadline_that_refuses_the_originals_judge_call_is_no_backend_failure(
 
 
 def test_the_checked_tier_runs_no_task_without_time_for_stage_e(tmp_path):
-    """80 s left: 1 scenario needs 29.7 s for stages B and C, 85.1 s with stage E."""
-    result = run(tmp_path, World(), CHECKED, deadline=80)
+    """77 s left: 1 scenario needs 27.5 s for stages B and C, 77.2 s with stage E."""
+    result = run(tmp_path, World(), CHECKED, deadline=77)
     kept_unconfirmed(result.outcome)
     assert result.calls("task") == []
 
 
 def test_the_checked_tier_shrinks_stage_b_to_keep_time_for_stage_e(tmp_path):
-    """90 s left: 2 scenarios need 6 T + 4 J2 + 55.4 = 105.1 s, 1 needs 85.1 s."""
+    """90 s left: 2 scenarios need 6 T + 4 J2 + 49.7 = 95.1 s, 1 needs 77.2 s."""
     result = run(tmp_path, World(), CHECKED, deadline=90)
     picked = [c for c in result.calls("task") if c.model == MODELS.task]
     assert {scenario_of(c) for c in picked} == {"situation 1"}
@@ -246,7 +246,7 @@ def test_the_checked_tier_shrinks_stage_b_to_keep_time_for_stage_e(tmp_path):
 
 
 def test_a_checked_run_skips_stage_c_when_stage_e_would_not_fit_after_it(tmp_path):
-    """After stage B 20 s are left: stage C needs 4 J2 = 18.2 s, but stage E 55.4 s more."""
+    """After stage B 20 s are left: stage C needs 4 J2 = 18.2 s, but stage E 49.7 s more."""
     clock = FakeClock()
 
     def hook(call: Call) -> None:
