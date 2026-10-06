@@ -26,6 +26,9 @@ describe('the forwarded flags', () => {
       ['--file', 1],
       ['--examples', 1],
       ['--kind', 1],
+      ['--time', 1],
+      ['--deep', 0],
+      ['--workers', 1],
       ['--budget', 1],
       ['--strictness', 1],
       ['--allow-growth', 0],
@@ -33,6 +36,10 @@ describe('the forwarded flags', () => {
       ['--judge-model', 1],
       ['--reflect-model', 1],
       ['--target-model', 1],
+      ['--effort', 1],
+      ['--task-effort', 1],
+      ['--judge-effort', 1],
+      ['--reflect-effort', 1],
       ['--merge', 0],
       ['--trust-search', 0],
       ['--force-low-budget', 0],
@@ -60,6 +67,23 @@ describe('the forwarded flags', () => {
     ])
     expect(request.examples).toBe('my examples.jsonl')
     expect(request.prompt).toBe('Do it.')
+  })
+
+  test('the time, worker and effort flags of the tiers are forwarded as given', () => {
+    const request = run('--time 5m --workers 4 --effort high --judge-effort=low Do it.')
+    expect(request.flags).toEqual([
+      { flag: '--time', value: '5m' },
+      { flag: '--workers', value: '4' },
+      { flag: '--effort', value: 'high' },
+      { flag: '--judge-effort', value: 'low' },
+    ])
+    expect(run('--deep --task-effort max --reflect-effort default Do it.').flags).toEqual([
+      { flag: '--deep', value: null },
+      { flag: '--task-effort', value: 'max' },
+      { flag: '--reflect-effort', value: 'default' },
+    ])
+    expect(problem('--deep=yes Do it.')).toBe('--deep takes no value')
+    expect(problem('--time')).toBe('--time needs a value')
   })
 
   test('--dry, --target-model and --file are also read into the request', () => {
