@@ -284,9 +284,9 @@ PARENTS = [
 ]
 
 
-def reflection(variant: int = 0, **kwargs):
+def reflection(variant: int = 0, candidates=PARENTS, **kwargs):
     fields = {"strictness": "balanced", "allow_growth": False, **kwargs}
-    return reflect_call(PROMPT, PARENTS, CONTRACT, variant, MODEL, **fields)
+    return reflect_call(PROMPT, candidates, CONTRACT, variant, MODEL, **fields)
 
 
 def test_a_reflection_sees_the_candidates_and_the_judges_reasons_as_user_json():
@@ -334,6 +334,27 @@ def test_a_reflection_carries_the_adr_006_rules_and_the_token_cap(rule):
 def test_a_negative_reflection_variant_is_refused():
     with pytest.raises(ValueError, match="variant"):
         reflection(-1)
+
+
+# The reflections of the bench's vague-1 and code-1 (2026-10-06) read best candidates of 50 and 85
+# tokens under caps of 62 and 110 and wrote 81 to 128 tokens, so the length cap dropped all four.
+@pytest.mark.parametrize(("best", "near"), [(55, True), (42, True), (41, False), (10, False)])
+def test_a_reflection_from_a_best_candidate_near_the_cap_asks_for_a_shorter_text(best, near):
+    """The first generation's cap and the original's tokens, as a rewrite states them; when the
+    best candidate has at least three quarters of the cap (here 55: 42 tokens and more), a text
+    shorter than that candidate. Only numbers, never the candidate's text (SPEC R18)."""
+    tokens = count_tokens(PROMPT)
+    assert (tokens, tokens + 40) == (15, 55)
+    text = " ".join(["word"] * best)
+    made = reflection(candidates=[{"prompt": text, "scenarios": []}, *PARENTS])
+    stated = f"at most 55 tokens, counting words and punctuation marks (the original has {tokens})"
+    assert stated in made.system
+    assert stated in rewrite_call(PROMPT, 0, MODEL, "balanced", False).system
+    assert (f"already has {best} tokens" in made.system) is near
+    assert ("shorter than it" in made.system) is near
+    assert text not in made.system
+    grown = reflection(candidates=[{"prompt": text}], allow_growth=True)
+    assert "shorter than it" not in grown.system
 
 
 SITUATION = Scenario(id="s1", input="notes of a short meeting")
