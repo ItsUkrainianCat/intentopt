@@ -31,6 +31,16 @@ Loop state for the self-paced `/loop` build (started 2026-10-03 13:23 in a sessi
 - [ ] G6 release vote, user `just smoke`
 - [ ] G7 tag (needs user yes)
 
+## RESUME (2026-10-07 02:45, SOTA loop paused: the remaining items need the user's live numbers)
+
+Main at 9289ac3+ (2236 tests, mod-check 113), 17 commits ahead of origin. Built since the last RESUME: real backend, mod, time tiers and the 30-second parallel pipeline, effort/models flags, noise measurement, bolder rewrites with a reflective second generation, implied goals, concise scoring runs, bench (SPEC R26), README accurate for the tiers. Blockers, one line each:
+1. USER: `git -C ~/projects/optimizer push origin main`.
+2. USER: `cd ~/projects/optimizer && just bench --limit 5 --baseline naive` (about 5 to 6 min, about 170 calls; pause hermes and big apps first): the first measurement of whether the rewrites beat the originals and the naive rewrite; paste the summary table. Then the full `just bench` (about 21 min).
+3. USER: the 45 s retest of the vague prompt (`--time 45s "so im building a prompt improver app. i think it should have multiple features. and be customizable"`): is the clarified request returned and the second round ("stage R") run?
+4. Next backlog items wait on 2 and 3 (they decide what to tune): candidate frontier + merge in generation 2, final decision by blind pairwise comparison, judge calibration, warm worker pool, cross-run lessons. Small unblocked item: align deep boundary with its default budget (a deep run with default flags refuses below --time 18m while SPEC R25 says deep starts at 10 min: either deep from 18 min with checked up to 17, or a different default budget).
+5. USER: G6 eight-reviewer vote needs the low-memory go-ahead again and should come after 2 and 3; then `just smoke`, then the tag (needs the user's yes).
+Optional: the kit copies of `.claude/agents/*.md` under `~/projects/project-kit` lack the report-once rule; the live record of the mod (`/improve`) after the latest changes.
+
 ## RESUME (2026-10-05 01:30, loop stopped: every remaining item needs the user)
 
 Built, merged and green on `main` (fb5c3b9, 1343 tests, `just check`): WP1a, WP2 (+ placeholder follow-up), WP3, WP4, WP5a, WP5b, WP6, WP7, WP8, G5 cleanup. Blockers, one line each:
