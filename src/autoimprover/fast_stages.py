@@ -40,6 +40,7 @@ from autoimprover.evaluator import Answers, Evaluator
 from autoimprover.fast_prompts import (
     REFLECT_NOTES,
     STRATEGY_NOTES,
+    FastEvaluator,
     gathered,
     parse_rewrite,
     reflect_call,
@@ -282,8 +283,10 @@ class Stages:
         self, contract: Contract, runs: list[tuple[str, int]], pick: list[Scenario]
     ) -> list[dict[str, str | CallFailed]] | None:
         """One wave of task runs, each (prompt, sample) on every scenario: the evaluator's very
-        calls; each run's output or the CallFailed it gave per scenario, None when cut."""
-        task = {n: Evaluator(self.backend, contract, self.plan.models.task, "", n) for n in (0, 1)}
+        calls with the fast tiers' suffix (`FastEvaluator`); each run's output or the CallFailed it
+        gave per scenario, None when cut."""
+        model = self.plan.models.task
+        task = {n: FastEvaluator(self.backend, contract, model, "", n) for n in (0, 1)}
         calls = [task[sample]._task_call(text, s) for text, sample in runs for s in pick]
         results = parallel_map(self.ask, calls, self.workers)
         self.absorb([(f"task run {n}", result) for n, result in enumerate(results)])

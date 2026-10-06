@@ -30,8 +30,8 @@ from typing import Any, TextIO, cast
 
 from autoimprover.backend import BudgetedBackend, Clock
 from autoimprover.contract import _ask, check, extract_contract
-from autoimprover.evaluator import Evaluator
 from autoimprover.fast_prompts import (
+    FastEvaluator,
     parse_synth,
     rewrite_call,
     synth_call,
@@ -192,7 +192,7 @@ class _Fast(Stages):
         models, inner = self.plan.models, max(1, self.workers // 2)
 
         def on_target(text: str) -> float:
-            evaluator = Evaluator(self.backend, contract, models.target, models.judge, 0, inner)
+            evaluator = FastEvaluator(self.backend, contract, models.target, models.judge, 0, inner)
             return score_holdout(evaluator, text, holdout)
 
         before, after = parallel_map(on_target, [self.prompt, win.rewrite.text], self.workers)

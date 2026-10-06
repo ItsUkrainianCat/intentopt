@@ -32,7 +32,9 @@ scenarios, not verified on held-out scenarios". Its rewrites may make an implied
 and organise what you wrote (strategies clarify, structure, tighten, specify), and from 45 s, when
 the time allows, a second generation reflects on the first one's outputs and failed checks (the
 reflective step of GEPA) and is scored the same way; checked (1 to 9 minutes) adds a held-out check
-on the target model; deep (10
+on the target model. In the fast and checked tiers every scoring run, of the original and of every
+rewrite, ends with the same request to answer in at most 120 words, so the runs stay short; it belongs to
+the measurement, never to a returned prompt. Deep (10
 minutes and up, `--deep` is `--time 20m`) is the GEPA search that "How a run works" and "Budget
 and clock" below describe. Only checked and deep results are verified. The timings are estimates
 from one timing probe; live runs are not yet measured.
@@ -66,20 +68,21 @@ tier: fast (--time 30 s), 6 calls at a time
 models: task claude-haiku-4-5-20251001, judge claude-opus-5-5, reflection claude-sonnet-5-5, target claude-sonnet-5-5
 effort: task low, judge low, reflection low
 strictness: balanced, length cap 1.5x the original's tokens (at least the original plus 40)
-rewrites: 1; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
+rewrites: 2; scenarios: 2, synthesised by one call (2 to pick on, 0 held out)
 stages:
-  A: intake, synthesis and rewrite: 3 calls, about 8.8 s
-  B: task runs: 6 calls, about 6.3 s
-  C: judge and contract checks: 4 calls, about 5.5 s
+  A: intake, synthesis and rewrites: 4 calls, about 8.8 s
+  B: task runs: 8 calls, about 11.1 s
+  C: judge and contract checks: 5 calls, about 5.5 s
   D: free gates and pick: 0 calls, about 0.0 s
-estimate: 13 calls in about 21 s of 30 s; budget: 39 calls (ceiling 300)
+estimate: 17 calls in about 25 s of 30 s; budget: 51 calls (ceiling 300)
 evidence: a fast check: scored on the scenarios it is picked on, noise measured from two runs of the original, not verified on held-out scenarios
 ```
 
 The stage times come from the latency model of ADR-011 (about 3.4 s per call, the start-up
 measured with the trims of ADR-009, plus its output tokens at 70 per second, one slowest call per
-wave of `--workers` calls). With `--workers 1` it adds `a real run would refuse: the fast plan
-needs about 86 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
+wave of `--workers` calls; a task run is assumed to write 150 tokens, as it asks for at most 120
+words). With `--workers 1` it adds `a real run would refuse: the fast plan
+needs about 82 s, more than --time 30 s; give a longer --time, or more --workers (now 1)` and
 still exits 0. With `--deep` it prints the plan of the GEPA
 search instead: its budget, fixed costs, split, estimated iterations and clock share; with
 `--target-model opus` the judge becomes `claude-sonnet-5-5` (never the task or target model).
