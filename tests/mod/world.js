@@ -43,6 +43,25 @@ export const IMPROVED = {
   length_ratio: 1.1,
   calls_used: 87,
   run_dir: RUN_DIR,
+  mode: 'deep',
+  elapsed_s: 1500,
+  meaning: 'a rewrite scored higher than the original on scenarios the search never saw, by more ' +
+    'than the measured noise',
+  verified_text: 'yes, on the holdout, on the target model claude-opus-5-5',
+  margin_text: 'the result cleared the bar of 0.05 by 0.25',
+}
+
+/** The same run with --trust-search and no holdout, in the CLI's words (report.py). */
+export const TRUSTED = {
+  ...IMPROVED,
+  verified: false,
+  noise: null,
+  margin: null,
+  meaning: "a rewrite scored higher than the original on the search's own validation set; there " +
+    'is no holdout and no noise was measured, so the gain is not verified',
+  verified_text: 'no. NOT VERIFIED on a holdout: with --trust-search the result only beat the ' +
+    'original on the scenarios the search itself used',
+  margin_text: null,
 }
 
 /** What the CLI prints for `--dry --json` (report.py `plan_object`). */

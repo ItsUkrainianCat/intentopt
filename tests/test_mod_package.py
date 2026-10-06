@@ -192,6 +192,19 @@ def test_the_reason_codes_of_the_view_are_those_of_the_tool():
     assert tuple(re.findall(r"'([a-z_]+)'", table)) == REASON_CODES
 
 
+def test_the_outcome_json_has_every_key_the_mod_reads():
+    """hooks/tiers.js shows the CLI's own words and labels from the `--json` object of a finished
+    run (report.py `outcome_object`); a key it reads that the CLI stops writing would blank a line
+    of the pane without any error."""
+    source = hooks_source("tiers.js")
+    read = set(re.findall(r"\bresult\.([a-z_]+)", source))
+    for names in re.findall(r"const \{([^}]*)\} = result\b", source):
+        read |= {name.split(":")[0].strip() for name in names.split(",") if name.strip()}
+    assert {"mode", "elapsed_s", "meaning", "verified_text", "margin_text", "noise"} <= read
+    finished = Outcome(status="unchanged", prompt="p", reason="r", reason_code="no_holdout")
+    assert read <= set(report.outcome_object(finished, "p", None)), read
+
+
 def test_the_run_id_pattern_is_the_tool_s():
     match = re.search(r"^export const RUN_ID = /\^(.*)\$/$", hooks_source("args.js"), flags=re.M)
     assert match and match.group(1).replace("(?:", "(") == RUN_ID_PATTERN

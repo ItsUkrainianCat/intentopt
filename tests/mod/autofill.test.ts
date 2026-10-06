@@ -7,7 +7,18 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import { boxPlan, boxRefused } from '../../hooks/box.js'
 import { viewOf } from '../../hooks/report.js'
-import { DRY, finished, ID, IMPROVED, PANE, RUN_DIR, stderr, stdout, world } from './world.js'
+import {
+  DRY,
+  finished,
+  ID,
+  IMPROVED,
+  PANE,
+  RUN_DIR,
+  stderr,
+  stdout,
+  TRUSTED,
+  world,
+} from './world.js'
 
 const TYPED = {
   origin: { kind: 'composer' },
@@ -23,7 +34,7 @@ const mount = ($: Engine) =>
     requestId: 'improve',
     props: PANE,
   })
-const UNVERIFIED = { ...IMPROVED, verified: false, noise: null, margin: null }
+const UNVERIFIED = TRUSTED
 const IN_THE_BOX = 'improved prompt is in the prompt box: edit it and press Enter to send'
 const KEPT = 'your draft was kept; press Use it to replace it'
 const view = (result: object) =>
