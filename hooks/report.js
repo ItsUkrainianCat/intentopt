@@ -3,6 +3,9 @@
 // changed, the improved prompt or null, the run folder, the resume line, the exit code) and its
 // plain-text rendering, for the pane and for surfaces that draw nothing. Pure: no engine, no I/O.
 // Model-written text is data: escape sequences and control characters are removed (SPEC R19).
+// The words that depend on the run's tier (SPEC R25) are in tiers.js.
+
+import { tierWords } from './tiers.js'
 
 // The fixed reason codes of the CLI's JSON (src/autoimprover/types.py REASON_CODES).
 export const REASON_CODES = [
@@ -14,18 +17,6 @@ export const REASON_CODES = [
   'unconfirmed_out_of_budget',
 ]
 
-// What each reason code means (src/autoimprover/report.py REASON_LINES, shortened).
-const MEANINGS = new Map([
-  ['improved', 'a rewrite beat the original on held-out scenarios by more than the noise'],
-  ['no_reliable_improvement', 'no rewrite beat the original by more than the noise; it is kept'],
-  ['already_strong', 'the original already passes nearly every check, so no search ran'],
-  ['no_holdout', 'fewer than 8 scenarios leave nothing to verify a result on; give --examples'],
-  ['no_candidate_beat_seed', 'no rewrite beat the original on the scenarios the search used'],
-  ['unconfirmed_out_of_budget', 'calls or time ran out before a rewrite was confirmed'],
-])
-const UNVERIFIED =
-  'NOT verified on a holdout: with --trust-search it only beat the original on the scenarios ' +
-  'the search used'
 const ERROR_TITLES = new Map([
   [1, 'failed: internal error'],
   [2, 'refused'],
@@ -49,12 +40,13 @@ const SHOWN_CHARS = 9000
  *   title: string, status: string, reason: string | null, meaning: string | null,
  *   scores: string[], margin: string | null, lengthRatio: string | null, changes: string[],
  *   improved: string | null, shown: string | null, useLabel: string | null, verified: boolean,
- *   box: string | null,
+ *   box: string | null, verifiedLine: string | null, mode: string | null,
  *   runDir: string | null, resume: string | null, hint: string | null, plan: string[],
  *   exitCode: number, toast: string }} View
  * @typedef {{ stdout: string, stderr: string, code: number | null, signal: string | null,
  *   cancelled: boolean, runDir: string | null, command: string }} End
  * @typedef {{ kind: 'title' | 'line' | 'dim' | 'heading' | 'hint' | 'code', text: string }} Row
+ * @typedef {{ head: Row[], tail: Row[] }} Rows
  */
 
 /**
@@ -156,17 +148,14 @@ function outcomeView(result, end) {
   const prompt = improved ? cleanText(text(result.prompt)) : null
   const changes = Array.isArray(result.changes) ? result.changes : []
   const ratio = result.length_ratio
+  const words = tierWords(result)
   return {
     ...blank(end, textOr(result.run_dir, end.runDir)),
+    ...words,
     state: improved ? 'improved' : 'unchanged',
-    title: improved
-      ? `improved${verified ? ', verified on held-out scenarios' : ', NOT verified'}`
-      : 'unchanged: the original prompt is kept',
     status: `result: ${improved ? 'improved' : 'unchanged'} (${code})`,
     reason: oneLine(text(result.reason)),
-    meaning: improved && !verified ? UNVERIFIED : (MEANINGS.get(code) ?? null),
-    scores: scoreLines(result),
-    margin: marginLine(result),
+    meaning: words.meaning === null ? null : oneLine(words.meaning),
     lengthRatio: improved && typeof ratio === 'number'
       ? `length: ${ratio.toFixed(2)}x the original's tokens`
       : null,
@@ -178,40 +167,6 @@ function outcomeView(result, end) {
     exitCode: 0,
     toast: improved ? 'autoimprover: a prompt to review' : 'autoimprover: the original is kept',
   }
-}
-
-/**
- * @param {Record<string, unknown>} result
- * @returns {string[]}
- */
-function scoreLines(result) {
-  const lines = []
-  /** @param {unknown} before @param {unknown} after */
-  const pair = (before, after) =>
-    typeof after === 'number'
-      ? `${fixed(before)} before, ${after.toFixed(2)} after`
-      : `${fixed(before)} for the original`
-  const { score_before, score_after, search_score_before, search_score_after } = result
-  if (typeof score_before === 'number') {
-    lines.push(`holdout score (target model): ${pair(score_before, score_after)}`)
-  }
-  if (typeof search_score_before === 'number') {
-    lines.push(`search score (search model): ${pair(search_score_before, search_score_after)}`)
-  }
-  if (typeof result.calls_used === 'number') lines.push(`calls used: ${result.calls_used}`)
-  return lines
-}
-
-/**
- * @param {Record<string, unknown>} result
- * @returns {string | null}
- */
-function marginLine(result) {
-  if (typeof result.noise !== 'number') return null
-  const noise = `noise ${result.noise.toFixed(2)} between the original's two holdout runs`
-  return typeof result.margin === 'number'
-    ? `margin: cleared the bar by ${result.margin.toFixed(2)} (${noise})`
-    : noise
 }
 
 /**
@@ -330,35 +285,40 @@ export function runningView(progress) {
 }
 
 /**
- * The rows of a view, top to bottom, each with how the pane draws it: the improved prompt in
- * full, or as the pane shows it (`full` false).
+ * The rows of a view, each with how the pane draws it: `head` (the result, the prompt box, whether
+ * it is verified and the improved prompt, in full or as the pane shows it with `full` false),
+ * which the pane draws before its buttons, then `tail`, the details.
  * @param {View} view
  * @param {boolean} full
- * @returns {Row[]}
+ * @returns {Rows}
  */
 export function rowsOf(view, full) {
-  /** @type {Row[]} */
-  const rows = [
-    { kind: 'title', text: `autoimprover: ${view.title}` },
-    { kind: 'line', text: view.status },
-  ]
-  if (view.box !== null) rows.push({ kind: 'hint', text: view.box })
-  /** @param {Row['kind']} kind @param {string | null} text */
-  const add = (kind, text) => {
-    if (text !== null) rows.push({ kind, text })
+  /** @type {Rows} */
+  const rows = { head: [], tail: [] }
+  /** @param {Row[]} to @param {Row['kind']} kind @param {string | null} text */
+  const add = (to, kind, text) => {
+    if (text !== null) to.push({ kind, text })
   }
-  if (view.state === 'improved' || view.state === 'unchanged') add('line', `reason: ${view.reason}`)
-  add('dim', view.meaning)
-  for (const line of [...view.plan, ...view.scores]) add('line', line)
-  add('line', view.margin)
-  add('line', view.lengthRatio)
-  if (view.changes.length > 0) add('heading', 'what changed:')
-  for (const change of view.changes) add('line', `  - ${change}`)
-  if (view.improved !== null) add('heading', 'improved prompt:')
-  add('code', full ? view.improved : view.shown)
-  add('hint', view.hint)
-  add('dim', view.runDir === null ? null : `run folder: ${view.runDir}`)
-  add('dim', view.resume === null ? null : `resume with: ${view.resume}`)
+  const { head, tail } = rows
+  add(head, 'title', `autoimprover: ${view.title}`)
+  add(head, 'line', view.status)
+  add(head, 'hint', view.box)
+  add(head, view.verified ? 'line' : 'hint', view.verifiedLine)
+  if (view.improved !== null) add(head, 'heading', 'improved prompt:')
+  add(head, 'code', full ? view.improved : view.shown)
+  if (view.state === 'improved' || view.state === 'unchanged') {
+    add(tail, 'line', `reason: ${view.reason}`)
+  }
+  add(tail, 'dim', view.meaning)
+  add(tail, 'line', view.mode)
+  for (const line of [...view.plan, ...view.scores]) add(tail, 'line', line)
+  add(tail, 'line', view.margin)
+  add(tail, 'line', view.lengthRatio)
+  if (view.changes.length > 0) add(tail, 'heading', 'what changed:')
+  for (const change of view.changes) add(tail, 'line', `  - ${change}`)
+  add(tail, 'hint', view.hint)
+  add(tail, 'dim', view.runDir === null ? null : `run folder: ${view.runDir}`)
+  add(tail, 'dim', view.resume === null ? null : `resume with: ${view.resume}`)
   return rows
 }
 
@@ -368,9 +328,8 @@ export function rowsOf(view, full) {
  * @returns {string}
  */
 export function renderText(view) {
-  return rowsOf(view, true)
-    .map((row) => row.text)
-    .join('\n')
+  const { head, tail } = rowsOf(view, true)
+  return [...head, ...tail].map((row) => row.text).join('\n')
 }
 
 /**
@@ -419,6 +378,8 @@ function blank(end, runDir) {
     useLabel: null,
     verified: false,
     box: null,
+    verifiedLine: null,
+    mode: null,
     runDir: runDir ?? end?.runDir ?? null,
     resume: null,
     hint: null,
@@ -455,11 +416,6 @@ function textOr(value, fallback) {
 /** @param {unknown} value @param {number} fallback @returns {number} */
 function numberOr(value, fallback) {
   return typeof value === 'number' && Number.isInteger(value) ? value : fallback
-}
-
-/** @param {unknown} value @returns {string} */
-function fixed(value) {
-  return typeof value === 'number' ? value.toFixed(2) : '?'
 }
 
 /** @param {unknown} seconds @returns {string} */
