@@ -173,13 +173,13 @@ def test_its_twin_that_loses_on_the_target_model_keeps_the_original(capsys):
 
 
 def test_the_outcome_does_not_depend_on_the_workers(capsys):
-    """At 9 minutes 1 and 4 workers plan the same shape; the calls run one at a time or four at
+    """At 599 s 1 and 4 workers plan the same shape; the calls run one at a time or four at
     a time, and the result and the calls are the same."""
     tokens = count_tokens(PROMPT)
-    one, four = fast_plan(540, 1, tokens, False), fast_plan(540, 4, tokens, False)
+    one, four = fast_plan(599, 1, tokens, False), fast_plan(599, 4, tokens, False)
     assert (one.rewrites, one.scenarios, one.holdout) == (four.rewrites, four.scenarios, 4)
-    serial = run(capsys, "--json", "--time", "9m", "--workers", "1", PROMPT)
-    parallel = run(capsys, "--json", "--time", "9m", "--workers", "4", PROMPT)
+    serial = run(capsys, "--json", "--time", "599s", "--workers", "1", PROMPT)
+    parallel = run(capsys, "--json", "--time", "599s", "--workers", "4", PROMPT)
     assert comparable(serial.obj()) == comparable(parallel.obj())
     assert sorted(map(repr, serial.raw.calls)) == sorted(map(repr, parallel.raw.calls))
 
@@ -313,18 +313,19 @@ def test_a_fast_run_cut_anywhere_resumes_to_the_same_outcome_with_its_saved_plan
 
 
 def test_a_resumed_fast_run_with_examples_rebuilds_the_same_plan(tmp_path, capsys):
-    """At 59 s on 4 workers (50.15 s planned; stage B runs the original twice, (K + 2) M task
-    runs, stage C K + 3 calls) the plan with examples is K=3 on M=3: no synthesis call, so stage A
-    is one wave, I + 4 T + 2 J3 = 8.83 + 25.03 + 13.23 = 47.1 s (M=4: I + 5 T + 2 J4 = 55.5 s).
-    Without them it is K=3 on M=2, as stage A then needs a second wave: 2 I + 3 T + 2 J3 = 17.66 +
-    18.77 + 13.23 = 49.7 s (M=3: 2 I + 4 T + 2 J3 = 55.9 s). The resume knows from the run folder
-    that the run had them, and runs stage B on all 3."""
+    """At 56 s on 3 workers (47.6 s planned; stage B runs the original twice, (K + 2) M task
+    runs, stage C K + 3 calls) the plan with examples is K=2 on M=3: no synthesis call, so stage A
+    is one wave, I + 4 T + 2 J3 = 8.83 + 25.03 + 13.23 = 47.09 s (M=4: I + 6 T + 2 J4 = 61.7 s).
+    Without them it is K=2 on M=2, as stage A then needs a second wave: 2 I + 3 T + 2 J2 = 17.66 +
+    18.77 + 11.09 = 47.51 s (M=3: 2 I + 4 T + 2 J3 = 55.9 s). No plan with a second generation
+    fits (the smallest, K=1 on M=2 with one reflection, is 48.49 s). The resume knows from the run
+    folder that the run had them, and runs stage B on all 3."""
     tokens = count_tokens(PROMPT)
-    shapes = [fast_plan(59, 4, tokens, given) for given in (True, False)]
-    assert [(plan.rewrites, plan.scenarios) for plan in shapes] == [(3, 3), (3, 2)]
+    shapes = [fast_plan(56, 3, tokens, given) for given in (True, False)]
+    assert [(plan.rewrites, plan.scenarios) for plan in shapes] == [(2, 3), (2, 2)]
     path = tmp_path / "ex.jsonl"
     path.write_text("".join(json.dumps({"input": f"example {i}"}) + "\n" for i in range(3)))
-    argv = ["--json", "--time", "59s", "--workers", "4", "--examples", str(path), PROMPT]
+    argv = ["--json", "--time", "56s", "--workers", "3", "--examples", str(path), PROMPT]
     reference = run(capsys, *argv).obj()
     cli.main(["clean"])
     with pytest.raises(Cut):  # in stage A, before any task run

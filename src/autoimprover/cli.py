@@ -378,7 +378,7 @@ class _Session:
 def _plan(opts: Options, chosen: Settings, calls: int) -> Plan:
     return Plan(
         chosen.models,
-        opts.strictness,
+        chosen.strictness,
         calls,
         wall_clock_s=chosen.time_s,
         allow_growth=opts.allow_growth,
