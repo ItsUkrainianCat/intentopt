@@ -1,0 +1,18 @@
+{"input": "This is my third email about the double charge and nobody has answered.", "expected": "yes"}
+{"input": "If this is not fixed today I am calling my lawyer.", "expected": "yes"}
+{"input": "I am furious, the app is terrible and your support is useless!!", "expected": "no"}
+{"input": "Please fix this or I will dispute the charge with my bank.", "expected": "yes"}
+{"input": "Thanks for the quick help, one more question about exports.", "expected": "no"}
+{"input": "I have written twice before about the missing invoice and still nothing.", "expected": "yes"}
+{"input": "I will leave a one-star review everywhere if you do not refund me.", "expected": "yes"}
+{"input": "This is unacceptable, I expect a response soon.", "expected": "no"}
+{"input": "Following up for the second time on my password reset.", "expected": "no"}
+{"input": "We will take legal steps if the data is not returned by Friday.", "expected": "yes"}
+{"input": "I have contacted you three times about the broken export, please help.", "expected": "yes"}
+{"input": "Wow, that was fast, thanks!", "expected": "no"}
+{"input": "I will file a chargeback if the order is not corrected.", "expected": "yes"}
+{"input": "Your product ruined my weekend and I am very disappointed.", "expected": "no"}
+{"input": "Second message: still waiting for the invoice copy.", "expected": "no"}
+{"input": "I am going to post about this on Twitter and every review site.", "expected": "yes"}
+{"input": "This is the fourth time I am asking for my account to be unlocked.", "expected": "yes"}
+{"input": "Please send me a refund, the item was defective.", "expected": "no"}
