@@ -66,6 +66,9 @@ _EFFORTS_SPEC: dict[str, object] = dict.fromkeys(("task", "judge", "reflect"), _
 _MODELS_SPEC: dict[str, object] = dict.fromkeys(("task", "judge", "reflect", "target"), str)
 _CONTRACT_SPEC = {"goal": str, "kind": str, "keep": _TEXTS, "constraints": _TEXTS, "checks": list}
 _CONTRACT_SPEC |= dict.fromkeys(("output_format", "language", "tone"), str)
+_CONTRACT_SPEC |= {"from_examples": _TEXTS}
+# A contract.json from before the rules learned from examples (ADR-013) lacks them: none.
+_CONTRACT_DEFAULTS: dict[str, Any] = {"from_examples": []}
 _CHECK_SPEC = {"id": str, "group": str, "text": str, "rule": _OPTIONAL, "arg": _OPTIONAL}
 _SCENARIO_SPEC = {"id": str, "input": str, "expected": _OPTIONAL, "criteria": _TEXTS}
 _REPLY_SPEC = {"text": str, "tokens_in": _COUNT, "tokens_out": _COUNT}
@@ -93,7 +96,7 @@ def parse_checkpoint(doc: Any) -> tuple[int, float]:
 
 def parse_contract(doc: Any) -> Contract:
     body = _typed(doc, {"schema_version": _VERSION, "contract": dict})["contract"]
-    body = _typed(body, _CONTRACT_SPEC)
+    body = _typed({**_CONTRACT_DEFAULTS, **body}, _CONTRACT_SPEC)
     checks = tuple(Check(**_typed(check, _CHECK_SPEC)) for check in body["checks"])
     return Contract(**{**body, "checks": checks})
 

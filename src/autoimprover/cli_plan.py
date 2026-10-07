@@ -5,7 +5,7 @@ final steps) and `FastView` for the quick, fast and checked tiers (the tier, the
 the models and efforts, K rewrites, M scenarios to pick on and H held out, the stages with their
 calls and estimated seconds, the estimate of calls and seconds, and whether it is `--ungated`;
 a plan that decides by the user's references says reference-scored in its evidence line, and
-its stage C is named so, WP21).
+its stage C is named so, WP21, and its larger length cap, ADR-013).
 Both say why a real run would refuse, or keep the original without a call. Their `--json` objects
 share one key set, DRY_KEYS, in one order; a key that does not apply to a tier is null. Neither
 makes a call or writes."""
@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from autoimprover import reference_text
+from autoimprover.fast_gates import GROWTH_TOKENS
 from autoimprover.fastplan import FastPlan
 from autoimprover.report import one_line
 from autoimprover.runner import FixedCosts
@@ -101,13 +102,17 @@ def efforts_line(plan: Plan) -> str:
     )
 
 
-def strictness_line(plan: Plan) -> str:
+def strictness_line(plan: Plan, references: bool = False) -> str:
+    """The strictness and its length cap (SPEC R7, R8), larger for a run with `references`
+    unless conservative (ADR-013)."""
     cap = (
         "no length cap (--allow-growth)"
         if plan.allow_growth
         else f"length cap {LENGTH_CAP[plan.strictness]}x the original's tokens (at least the "
         f"original plus {LENGTH_FLOOR_TOKENS})"
     )
+    if references and not plan.allow_growth and plan.strictness != "conservative":
+        cap += f"; with your references at least the original plus {GROWTH_TOKENS}"
     return f"strictness: {plan.strictness}, {cap}" + ("; GEPA merge on" if plan.merge else "")
 
 
@@ -251,7 +256,7 @@ class FastView:
                 "time",
                 models_line(plan),
                 efforts_line(plan),
-                strictness_line(plan),
+                strictness_line(plan, fast.reference is not None),
                 f"rewrites: {fast.rewrites}; {scenarios}",
                 "stages:",
                 *(

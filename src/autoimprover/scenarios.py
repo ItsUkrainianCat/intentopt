@@ -188,7 +188,8 @@ def synthesize(backend: Backend, model: str, prompt: str, contract: Contract) ->
     fixed instruction for the contract's kind (SPEC R11; ADR-005, ADR-008). An invalid reply is
     asked again as `sample + 1`, a new cache key, at most CALL_RETRIES times, then CallFailed;
     whatever the backend raises propagates unchanged."""
-    request = {"prompt": prompt, "contract": dataclasses.asdict(contract), "count": SYNTH_COUNT}
+    meant = {k: v for k, v in dataclasses.asdict(contract).items() if k != "from_examples" or v}
+    request = {"prompt": prompt, "contract": meant, "count": SYNTH_COUNT}
     call = Call(
         role="synth",
         model=model,

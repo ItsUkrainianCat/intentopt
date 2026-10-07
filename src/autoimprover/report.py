@@ -1,11 +1,12 @@
 """What the tool prints (SPEC R2): `render` builds the human report of an Outcome (scores before
 and after, labelled holdout or search score, noise and the bar a result had to clear, length
 ratio, calls used, why the search ended, whether the result is verified, the reason in plain
-language, what changed and the word diff, the intent contract with its checks, and the run
-folder; SPEC R3, R5, R7, R11, R12, R13, R14a, R17, R23), `outcome_object` its `--json` object,
-`error_object` the object of a failed run. `Emitter` is the only writer to stdout: at most one
-result per run, so `--json` gives exactly one object whatever fails after it, and notices stay on
-stderr; the plan of `--dry` (SPEC R4) it prints is built in `cli_plan.py`.
+language, what changed and the word diff, the intent contract with its checks and the rules it
+learned from the examples (ADR-013), and the run folder; SPEC R3, R5, R7, R11, R12, R13, R14a,
+R17, R23), `outcome_object` its `--json` object, `error_object` the object of a failed run.
+`Emitter` is the only writer to stdout: at most one result per run, so `--json` gives exactly one
+object whatever fails after it, and notices stay on stderr; the plan of `--dry` (SPEC R4) it
+prints is built in `cli_plan.py`.
 
 The time tiers (SPEC R25): a report names its tier and the seconds of the run's clock; a quick or
 fast result says, in its verified line, its meaning, its notices and its JSON, that it is not
@@ -309,11 +310,13 @@ def _contract_lines(contract: Contract) -> list[str]:
     def listed(items: tuple[str, ...], none: str) -> str:
         return "; ".join(one_line(item) for item in items) if items else none
 
+    learned = contract.from_examples  # the rules the user's examples showed (ADR-013)
     lines = [
         f"intent contract ({contract.kind}):",
         f"  goal: {one_line(contract.goal)}",
         f"  keep: {listed(contract.keep, 'nothing listed')}",
         f"  constraints: {listed(contract.constraints, 'none listed')}",
+        *([f"  rules learned from the examples: {listed(learned, '')}"] if learned else []),
         f"  output format: {one_line(contract.output_format) or 'none required'}; "
         f"language: {one_line(contract.language) or 'not stated'}; "
         f"tone: {one_line(contract.tone) or 'not stated'}",

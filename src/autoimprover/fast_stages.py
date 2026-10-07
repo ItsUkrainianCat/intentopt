@@ -3,7 +3,9 @@ ADR-002, ADR-006, ADR-011, ADR-012), with the state and the helpers every stage 
 shares; `fast.py` adds stage A, stage E, the quick tier and the endings.
 
 The free gates drop a rewrite that changes no meaning word of the original or of an earlier
-rewrite (`meaning_words`), one over the length cap, one that lost a literal (SPEC R7, R9). Stage B
+rewrite (`fast_gates.meaning_words`), one over the length cap, one that lost a literal (SPEC R7,
+R9); when every example carries a reference, the cap is the larger one of `fast_gates` and a
+rewrite that copies the input of a pick example is dropped too (ADR-013). Stage B
 runs the original twice (samples 0 and 1: two calls, never one cached reply) and every rewrite on
 the M scenarios, all in one wave. Stage C decides by pairwise preference (SPEC R25; ADR-012), in
 one wave: one contract check of every rewrite (`contract.check_many`), the original's run 0
@@ -39,7 +41,6 @@ decides stages C, C2 and D by agreement with it and feeds the reflection its fai
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TextIO, cast
@@ -48,6 +49,7 @@ from autoimprover.backend import BudgetedBackend, Clock
 from autoimprover.bench_judge import parse_pairwise_batch
 from autoimprover.contract import Violation, _ask, check_many, literals_preserved
 from autoimprover.fast_calibrate import Timed, fit
+from autoimprover.fast_gates import copies_example, length_fits, meaning_words
 from autoimprover.fast_pairwise import (
     Judged,
     Rewrite,
@@ -61,13 +63,13 @@ from autoimprover.fast_pairwise import (
 )
 from autoimprover.fast_prompts import (
     REFLECT_NOTES,
-    STRATEGY_NOTES,
+    REWRITE_NOTES,
     FastEvaluator,
     evidence,
     parse_rewrite,
     reflect_call,
     reflect_strategy,
-    strategy,
+    rewrite_strategy,
 )
 from autoimprover.fastplan import (
     FastPlan,
@@ -82,7 +84,7 @@ from autoimprover.fastplan import (
     tail,
 )
 from autoimprover.parallel import parallel_map
-from autoimprover.runner import count_tokens, length_ok
+from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
     Backend,
@@ -96,9 +98,6 @@ from autoimprover.types import (
     StopCause,
 )
 
-# A word that carries meaning: a run of letters or digits. Single letters and articles do not.
-_WORD = re.compile(r"[^\W_]+")
-_ARTICLES = frozenset({"an", "the"})
 # The first-generation rewrites that kept the contract, best first, a reflection reads.
 PARENTS = 2
 
@@ -120,7 +119,8 @@ class Stages:
     with no win, stage D picks the best-ranked rewrite that kept the contract
     (`fast_pairwise.best_ungated`). `ref` is the user's examples when every one carries a
     reference: the estimates price the reference judge, and `fast_reference.ReferenceStages`
-    overrides the pairwise hooks here (`stage_c`, `won`, `best`, `parents`; WP21)."""
+    overrides the pairwise hooks here (`stage_c`, `won`, `best`, `parents`; WP21). `shown` are
+    then the pick examples the intake and the rewrites see (ADR-013), else none."""
 
     prompt: str
     plan: Plan
@@ -133,6 +133,7 @@ class Stages:
     workers: int
     ungated: bool = False
     ref: Reference | None = None
+    shown: tuple[Scenario, ...] = ()
     stop: StopCause | None = None
     ended: bool = False
     measured: dict[str, Any] = field(default_factory=dict)
@@ -144,12 +145,19 @@ class Stages:
         self.backend = self.timed
 
     def gates(
-        self, drafts: list[tuple[int, str]], earlier: Sequence[Rewrite] = (), second: bool = False
+        self,
+        drafts: list[tuple[int, str]],
+        earlier: Sequence[Rewrite] = (),
+        second: bool = False,
+        pick: Sequence[Scenario] = (),
     ) -> list[Rewrite]:
         """The drafts that pass the free gates, in variant order: a change in meaning words from
-        the original and every earlier rewrite, the length cap, every literal kept (SPEC R7, R9).
-        `second` marks the reflections of a second generation."""
+        the original and every earlier rewrite, the length cap, every literal kept (SPEC R7, R9),
+        and with `shown` examples no copy of their inputs or those of `pick` (ADR-013). `second`
+        marks the reflections of a second generation."""
         name = "reflection" if second else "rewrite"
+        refs, plan = bool(self.shown), self.plan
+        copied = (*self.shown, *pick) if refs else ()
         kept: list[Rewrite] = []
         seen = {meaning_words(self.prompt): "no change in meaning words"}
         for rewrite in earlier:
@@ -157,16 +165,18 @@ class Stages:
                 meaning_words(rewrite.text), f"the meaning words of rewrite {rewrite.variant} again"
             )
         for variant, text in drafts:
-            fits, ratio = length_ok(self.prompt, text, self.plan.strictness, self.plan.allow_growth)
+            fits, ratio = length_fits(self.prompt, text, plan.strictness, plan.allow_growth, refs)
             if (words := meaning_words(text)) in seen:
                 why = seen[words]
             elif not fits:
                 why = "it is longer than the length cap"
             elif not literals_preserved(self.prompt, text):
                 why = "it loses a literal of the original"
+            elif copies_example(text, copied, self.prompt):
+                why = "copies an example"
             else:
                 notes = REFLECT_NOTES[reflect_strategy(variant)] if second else None
-                note = notes or STRATEGY_NOTES[strategy(variant)]
+                note = notes or REWRITE_NOTES[rewrite_strategy(variant, refs)]
                 kept.append(Rewrite(variant, text, ratio, note))
                 seen[words] = f"the meaning words of {name} {variant} again"
                 continue
@@ -282,7 +292,7 @@ class Stages:
         drafts = parallel_map(lambda call: self.parsed(self.ask(call)), calls, w)
         self.absorb([(f"reflection {v}", draft) for v, draft in enumerate(drafts)])
         texts = [(v, d) for v, d in enumerate(drafts) if isinstance(d, str)]
-        rewrites = self.gates(texts, [j.rewrite for j in first], second=True)
+        rewrites = self.gates(texts, [j.rewrite for j in first], second=True, pick=pick)
         if self.ended or not rewrites or not self.fits(later[1:]):
             return []
         runs = [(r.text, 0) for r in rewrites]
@@ -470,11 +480,3 @@ def answered(outputs: Sequence[dict[str, str | CallFailed]], scenario: str) -> b
     """Whether the original's two runs (the first two) and a rewrite's answered `scenario`."""
     first, second, *rewrites = (isinstance(out.get(scenario), str) for out in outputs)
     return first and second and any(rewrites)
-
-
-def meaning_words(text: str) -> tuple[str, ...]:
-    """The words of `text` that carry its meaning, in order: lower-cased runs of letters or
-    digits, without single letters and the articles a, an and the. Two prompts with the same
-    meaning words differ only in case, punctuation, whitespace, single letters or articles."""
-    words = _WORD.findall(text.lower())
-    return tuple(w for w in words if not (len(w) == 1 and w.isalpha()) and w not in _ARTICLES)
