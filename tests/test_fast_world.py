@@ -189,14 +189,32 @@ class World:
             return self.task(call)
         if is_pairwise(call):
             return self.pairwise(call)
-        return judge_reply(
+        return quoting_examples(
             call,
-            lambda scenario, check_id, output: (
-                self.contract_ok(output)
-                if scenario.startswith("contract")
-                else self.passes(scenario, check_id, output)
+            judge_reply(
+                call,
+                lambda scenario, check_id, output: (
+                    self.contract_ok(output)
+                    if scenario.startswith("contract")
+                    else self.passes(scenario, check_id, output)
+                ),
             ),
         )
+
+
+def quoting_examples(call: Call, reply: str) -> str:
+    """`reply` to a contract check, with the quote of every `no-new-goal` the input of the first
+    example the check was shown, as the check is told to quote in reference mode (the ADR-013
+    amendment of 2026-10-07); any other reply unchanged."""
+    shown = json.loads(call.user).get("examples") if call.role == "judge" else None
+    if not shown:
+        return reply
+    body = json.loads(reply)
+    for result in body["results"]:
+        for item in result["checks"]:
+            if item["id"] == "no-new-goal":
+                item["quote"] = shown[0]["input"]
+    return json.dumps(body)
 
 
 @dataclass

@@ -3,19 +3,21 @@ R10, R10b, R11, R16, R24, R25; ADR-002, WP21): absolute agreement with the user'
 decides in place of the pairwise preference (`fast_stages`, `fast_pairwise`, ADR-012).
 
 Stage C is one wave: the contract check of every rewrite (`contract.check_many`, as in the pairwise
-stage C) and one judge call per run over the M scenarios, the original's run 0 and run 1 and each
-rewrite's run, by the evaluator's own machinery (`Evaluator.score`: the judge sees the input and the
-output and never the prompt, ADR-002; the quote rule of SPEC R10b), with only the references'
-checks: `expected` is "the output agrees with the reference answer in substance" and each
-`criteria` string one check (SPEC R11); the contract's own checks are not asked. A scenario's score
-is the share of its checks passed. A rewrite wins by `reference_score.beats` against the original's
-two runs on the scenarios all three scored in full; stage D picks the largest mean gain, a tie to
-the shorter rewrite, then the earlier; with `--ungated` and no winner, the rewrite that kept the
-contract with the largest mean gain, then the most scenarios improved, then the fewest tokens, a
-rewrite with no score last. Stage C2 judges the reflections' runs only: the original's scores of
-stage C stand. The reflection reads the best rewrite so far that kept the contract, by mean gain
-(`leading`), else the original, with the examples where it failed a check, the reference, the
-start of the output and the failed checks (`refine.failures`, WP23).
+stage C, shown the pick examples, so `no-new-goal` passes a requirement one of them supports; the
+ADR-013 amendment of 2026-10-07) and one judge call per run over the M scenarios, the original's
+run 0 and run 1 and each rewrite's run, by the evaluator's own machinery (`Evaluator.score`: the
+judge sees the input and the output and never the prompt, ADR-002; the quote rule of SPEC R10b),
+with only the references' checks: `expected` is "the output agrees with the reference answer in
+substance" and each `criteria` string one check (SPEC R11); the contract's own checks are not
+asked. A scenario's score is the share of its checks passed. A rewrite wins by
+`reference_score.beats` against the original's two runs on the scenarios all three scored in full;
+stage D picks the largest mean gain, a tie to the shorter rewrite, then the earlier; with
+`--ungated` and no winner, the rewrite that kept the contract with the largest mean gain, then the
+most scenarios improved, then the fewest tokens, a rewrite with no score last. Stage C2 judges the
+reflections' runs only: the original's scores of stage C stand. The reflection reads the best
+rewrite so far that kept the contract, by mean gain (`leading`), else the original, with the
+examples where it failed a check, the reference, the start of the output and the failed checks
+(`refine.failures`, WP23).
 Stage E (checked tier) runs the original twice and the winner on the held-out examples on the
 target model and compares them the same way; a failed call there ends the run (SPEC R24).
 
@@ -112,7 +114,7 @@ class ReferenceStages(Stages):
         def job(index: int) -> object:
             try:
                 if index < 0:
-                    return check_many(self.backend, model, contract, self.prompt, texts)
+                    return check_many(self.backend, model, contract, self.prompt, texts, pick)
                 outputs, sample = runs[index]
                 return Evaluator(self.backend, bare, "", model, sample).score(pick, outputs)
             except BudgetExhausted as error:
