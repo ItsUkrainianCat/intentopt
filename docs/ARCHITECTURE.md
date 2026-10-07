@@ -110,6 +110,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `fast_calibrate.py` | the in-run latency model: `Timed` (records each distinct call's seconds, output tokens and planned tokens), `fit` (Theil-Sen medians clamped to 0.5x-1.5x), `planned_tokens`, `token_ratio` (`RATIO` 1 to 4), `Timed.model()` and `grow` (extra pick scenarios after stage A within 0.85 of the clock) | R25, ADR-011 |
 | `reference_score.py`, `reference_text.py` | the reference-scored decision (SPEC R25, WP21): the win rule over summed scores and the noise, the batched agreement judge call and its schema, the fast and checked labels | R25 |
 | `induce.py` | the induce wording for reference mode: `shown`, `example_data`, `INTAKE_EXAMPLES_SCHEMA` (`from_examples` required, at most 12, each at most 200 characters) | R5, ADR-013 |
+| `refine.py`, `fast_rounds.py`, `fastsplit.py`, `report_clean.py` | the reflective rounds of reference mode (the reflection's lesson text from the best candidate's failures, the round loop with its stop rules, the pick/held-out split up to 8/3, the report's rounds line) | R25, ADR-013 |
 | `fast_gates.py` | the free gates of the fast tiers: `meaning_words`, `token_cap`, `length_fits` (the larger cap in reference mode), `copies_example` | R7, R9, R25 |
 | `fastfit.py` | `misfit` and `shrink`, moved out of `fastplan.py` (re-exported there) | R25 |
 | `fast_reference.py` | stages C, C2 and E of a fast or checked run with references: the judge calls, `Judged.score`, the reflection evidence | R25 |

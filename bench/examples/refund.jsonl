@@ -8,11 +8,23 @@
 {"input": "I bought a $90 video course bundle yesterday and watched the first lesson, it is not for me.", "expected": "deny"}
 {"input": "My $25 phone case, bought 31 days ago, cracked after a week.", "expected": "deny"}
 {"input": "The $40 lamp I ordered 29 days ago arrived broken.", "expected": "approve"}
-{"input": "I bought a $120 jacket 8 days ago and it arrived with a ripped sleeve.", "expected": "approve"}
-{"input": "My $15 USB cable, bought 10 days ago, stopped working.", "expected": "approve"}
-{"input": "I bought an online photo-editing plugin for $60 and downloaded it, it does not suit me.", "expected": "deny"}
 {"input": "I ordered $230 boots two weeks ago and they never showed up.", "expected": "escalate"}
 {"input": "A $60 mug I bought 60 days ago arrived chipped, I only just opened the box.", "expected": "deny"}
+{"input": "I bought a $120 jacket 8 days ago and it arrived with a ripped sleeve.", "expected": "approve"}
+{"input": "I bought an online photo-editing plugin for $60 and downloaded it, it does not suit me.", "expected": "deny"}
+{"input": "My $15 USB cable, bought 10 days ago, stopped working.", "expected": "approve"}
 {"input": "The $499 tablet I bought 3 days ago will not turn on.", "expected": "escalate"}
 {"input": "I bought a $9 digital template pack and downloaded it, but the colours are wrong.", "expected": "deny"}
 {"input": "The $35 book I ordered 12 days ago never arrived.", "expected": "approve"}
+{"input": "I bought a $199 vacuum 12 days ago and it will not switch on.", "expected": "approve"}
+{"input": "I paid $210 for a chair 9 days ago and one leg arrived cracked.", "expected": "escalate"}
+{"input": "The $50 sneakers I ordered 40 days ago never showed up.", "expected": "deny"}
+{"input": "I bought a $75 e-book bundle and downloaded two of the files, I changed my mind.", "expected": "deny"}
+{"input": "A $20 phone charger I bought 2 days ago is dead out of the box.", "expected": "approve"}
+{"input": "I ordered a $320 drone 25 days ago and it has not arrived.", "expected": "escalate"}
+{"input": "The $30 puzzle I received 30 days ago was missing pieces.", "expected": "approve"}
+{"input": "My $65 mug set arrived 33 days ago with two broken cups, I only opened it now.", "expected": "deny"}
+{"input": "I want a refund for a $12 music album that I downloaded and played.", "expected": "deny"}
+{"input": "The $85 table lamp I ordered 6 days ago never arrived.", "expected": "approve"}
+{"input": "My $750 camera stopped working after 3 days.", "expected": "escalate"}
+{"input": "The $140 backpack I bought 20 days ago has a broken strap.", "expected": "approve"}

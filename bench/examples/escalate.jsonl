@@ -11,8 +11,20 @@
 {"input": "I have contacted you three times about the broken export, please help.", "expected": "yes"}
 {"input": "Wow, that was fast, thanks!", "expected": "no"}
 {"input": "I will file a chargeback if the order is not corrected.", "expected": "yes"}
-{"input": "Your product ruined my weekend and I am very disappointed.", "expected": "no"}
 {"input": "Second message: still waiting for the invoice copy.", "expected": "no"}
+{"input": "Your product ruined my weekend and I am very disappointed.", "expected": "no"}
 {"input": "I am going to post about this on Twitter and every review site.", "expected": "yes"}
 {"input": "This is the fourth time I am asking for my account to be unlocked.", "expected": "yes"}
 {"input": "Please send me a refund, the item was defective.", "expected": "no"}
+{"input": "My attorney will be contacting you about this.", "expected": "yes"}
+{"input": "That is the fifth email I have sent and I still have no answer.", "expected": "yes"}
+{"input": "Thanks, that fixed it.", "expected": "no"}
+{"input": "I am really upset about the delay.", "expected": "no"}
+{"input": "I will tell all my followers how you treat customers.", "expected": "yes"}
+{"input": "I am writing again about the same problem, this is my third message.", "expected": "yes"}
+{"input": "Can you check on my ticket? It has been two days.", "expected": "no"}
+{"input": "I will cancel my card and dispute everything if this is not solved.", "expected": "yes"}
+{"input": "This is not what I expected, please advise.", "expected": "no"}
+{"input": "Please call me, the issue is urgent for my business.", "expected": "no"}
+{"input": "I see you still have not replied to my first and second emails about the broken link.", "expected": "yes"}
+{"input": "Hi, I have a question about my invoice.", "expected": "no"}
