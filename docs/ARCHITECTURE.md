@@ -109,6 +109,9 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `delimiters.py` | `BEGIN_MARKS`, `END_MARKS` and `span(lines)`: the one reading of a rewrite reply's delimiter lines (`<<<INSTRUCTION`, bare or spaced `<<<`), used by `fast_prompts.parse_rewrite` and the deep parser of `search.py`; imports only `types` | ADR-008 |
 | `fast_calibrate.py` | the in-run latency model: `Timed` (records each distinct call's seconds, output tokens and planned tokens), `fit` (Theil-Sen medians clamped to 0.5x-1.5x), `planned_tokens`, `token_ratio` (`RATIO` 1 to 4), `Timed.model()` and `grow` (extra pick scenarios after stage A within 0.85 of the clock) | R25, ADR-011 |
 | `reference_score.py`, `reference_text.py` | the reference-scored decision (SPEC R25, WP21): the win rule over summed scores and the noise, the batched agreement judge call and its schema, the fast and checked labels | R25 |
+| `induce.py` | the induce wording for reference mode: `shown`, `example_data`, `INTAKE_EXAMPLES_SCHEMA` (`from_examples` required, at most 12, each at most 200 characters) | R5, ADR-013 |
+| `fast_gates.py` | the free gates of the fast tiers: `meaning_words`, `token_cap`, `length_fits` (the larger cap in reference mode), `copies_example` | R7, R9, R25 |
+| `fastfit.py` | `misfit` and `shrink`, moved out of `fastplan.py` (re-exported there) | R25 |
 | `fast_reference.py` | stages C, C2 and E of a fast or checked run with references: the judge calls, `Judged.score`, the reflection evidence | R25 |
 | `bench_hidden.py` | the bench's scoring of an item's hidden examples (`eval_from`): both prompts run on each, one or two batched reference judge calls, wins, ties, losses and pass rates | R26 |
 | `report_text.py` | `REASON_LINES` and the fast meanings, split from `report.py` | R2 |
