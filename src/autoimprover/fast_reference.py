@@ -13,9 +13,9 @@ two runs on the scenarios all three scored in full; stage D picks the largest me
 the shorter rewrite, then the earlier; with `--ungated` and no winner, the rewrite that kept the
 contract with the largest mean gain, then the most scenarios improved, then the fewest tokens, a
 rewrite with no score last. Stage C2 judges the reflections' runs only: the original's scores of
-stage C stand. The reflection reads, per parent (the best one or two rewrites that kept the
-contract, by mean gain, else the original), the examples where it failed a check, with the
-reference, the start of the output and the failed checks (`fast_prompts.reference_evidence`).
+stage C stand. The reflection reads the best rewrite so far that kept the contract, by mean gain
+(`leading`), else the original, with the examples where it failed a check, the reference, the
+start of the output and the failed checks (`refine.failures`, WP23).
 Stage E (checked tier) runs the original twice and the winner on the held-out examples on the
 target model and compares them the same way; a failed call there ends the run (SPEC R24).
 
@@ -36,10 +36,11 @@ from typing import Any, cast
 from autoimprover.contract import check_many
 from autoimprover.evaluator import Evaluator
 from autoimprover.fast_pairwise import Judged, Preference, Rewrite, Win
-from autoimprover.fast_prompts import FastEvaluator, reference_evidence
-from autoimprover.fast_stages import PARENTS, Dropped, Stages, dropped
+from autoimprover.fast_prompts import FastEvaluator
+from autoimprover.fast_stages import Dropped, Stages, dropped
 from autoimprover.parallel import parallel_map
 from autoimprover.reference_score import Margin, beats, compare, scored
+from autoimprover.refine import failures
 from autoimprover.runner import count_tokens
 from autoimprover.types import (
     BackendError,
@@ -50,6 +51,21 @@ from autoimprover.types import (
 )
 
 Entries = list[tuple[float, dict[str, Any]]]
+
+
+def leading(judged: Sequence[Judged]) -> Judged | None:
+    """The best of `judged` that kept the contract and has a score: the largest mean gain, then
+    the fewest tokens, then the earliest; None when there is none."""
+    kept = [j for j in judged if j.keep and j.score is not None]
+    return min(
+        kept, key=lambda j: (-round(gain_of(j), 9), count_tokens(j.rewrite.text)), default=None
+    )
+
+
+def gain_of(judged: Judged | None) -> float:
+    """A judged rewrite's mean gain over the original on the scenarios compared; 0 for None (the
+    original against itself)."""
+    return 0.0 if judged is None else shares(judged.rewrite, judged.score).gain
 
 
 def shares(rewrite: Rewrite, margin: Margin | None, gated: bool = True) -> Win:
@@ -166,15 +182,9 @@ class ReferenceStages(Stages):
     def parents(self, first: list[Judged], pick: list[Scenario]) -> list[dict[str, Any]]:
         if self.ref is None:
             return super().parents(first, pick)
-        kept = sorted(
-            (j for j in first if j.keep and j.score is not None),
-            key=lambda j: (
-                -round(shares(j.rewrite, j.score).gain, 9),
-                count_tokens(j.rewrite.text),
-            ),
-        )
-        texts = [j.rewrite.text for j in kept[:PARENTS]] or [self.prompt]
-        return [reference_evidence(text, pick, self.graded.get(text, [])) for text in texts]
+        best = leading(first)
+        text = self.prompt if best is None else best.rewrite.text
+        return [failures(text, pick, self.graded.get(text, []))]
 
     def held_out(self, contract: Contract, text: str, holdout: Sequence[Scenario]) -> Margin:
         """Stage E: the original twice (samples 0 and 1) and `text` on `holdout` on the target

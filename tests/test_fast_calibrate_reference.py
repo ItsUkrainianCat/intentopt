@@ -1,7 +1,8 @@
 """The in-run calibration when every example carries a reference (SPEC R25; WP21): a reference
 judge call's planned tokens are what the planner priced it at (`fastplan.reference_tokens` per
 scenario and its checks), and the re-plan after stage A grows the pick into the examples at hand,
-up to REFERENCE_MAX_SCENARIOS, with the reference stages' prices and never a synthesis."""
+up to REFERENCE_MAX_SCENARIOS (8 since WP23), with the reference stages' prices and never a
+synthesis."""
 
 import pytest
 from fakes import ScriptedBackend, judge_reply
@@ -59,8 +60,9 @@ def grown(have: int, ref: Reference | None, scenarios: int = 3, model: Latency |
     )
 
 
-@pytest.mark.parametrize(("have", "count"), [(8, 6), (6, 6), (5, 5), (4, 4)])
-def test_the_pick_grows_into_the_examples_up_to_six(have, count):
+@pytest.mark.parametrize(("have", "count"), [(12, 8), (8, 8), (7, 7), (6, 6), (5, 5), (4, 4)])
+def test_the_pick_grows_into_the_examples_up_to_eight(have, count):
+    """WP23: up to REFERENCE_MAX_SCENARIOS, as the plan picks."""
     found = grown(have, Reference(have, 1))
     assert found is not None and (found.scenarios, found.synthesise) == (count, 0)
 

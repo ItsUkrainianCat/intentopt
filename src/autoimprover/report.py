@@ -20,20 +20,24 @@ it did not need. A reference-scored result (every example carried a reference, W
 holds `reference_text.MARK`) says so in place of the preference: its two numbers are mean reference
 scores, its noise the difference of the original's two runs, its margin the gain over that noise.
 
+A reference-scored reason ends with the reflection rounds and the pick examples passed (WP23,
+`reference_text.ROUNDS`); the report prints them on a line of their own.
+
 Model-written text (an improved prompt, its "what changed" lines, the contract, messages that
 may quote a reply) is data, never instructions to the terminal: escape sequences and control
-characters are removed before it is printed (SPEC R19). The user's own original prompt is
-printed as given."""
+characters are removed before it is printed (SPEC R19, `report_clean`). The user's own original
+prompt is printed as given."""
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
-from difflib import SequenceMatcher
 from typing import Any, Protocol, TextIO
 
 from autoimprover import reference_text
+from autoimprover.report_clean import clean_text as clean_text
+from autoimprover.report_clean import one_line as one_line
+from autoimprover.report_clean import word_diff as word_diff
 from autoimprover.report_text import (
     FAST_REASON_LINES,
     FAST_UNVERIFIED,
@@ -70,44 +74,6 @@ _FAST_STOPS = {
 _PICKED = "the scenarios it was picked on"
 _FAST_CUT_SHORT = "notice: the clock cut the run short; the result comes from what it scored"
 
-# A terminal escape sequence: CSI (ESC [ or the one-byte CSI, parameters, a final byte), OSC
-# (ESC ] up to BEL or ESC \), or ESC and one more character. Every part is linear: the ranges
-# of neighbouring quantified parts do not overlap.
-_ESCAPE = re.compile(
-    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]?"
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"
-    r"|\x1b[@-Z\\-_]?"
-)
-# Control characters other than newline and tab, DEL, the C1 controls, and the bidirectional
-# overrides and isolates that can reorder what a terminal shows.
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
-
-
-def clean_text(text: str) -> str:
-    """`text` without terminal escape sequences and control characters; newlines, tabs and
-    ordinary Unicode stay (SPEC R19)."""
-    return _CONTROL.sub("", _ESCAPE.sub("", text))
-
-
-def one_line(text: str) -> str:
-    """`clean_text` on one line: every run of whitespace becomes one space."""
-    return " ".join(clean_text(text).split())
-
-
-def word_diff(before: str, after: str) -> str:
-    """A word-level diff: removed words in `[-...-]`, added words in `{+...+}` (SPEC R2)."""
-    old, new = before.split(), after.split()
-    parts: list[str] = []
-    for op, i1, i2, j1, j2 in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
-        if op == "equal":
-            parts += old[i1:i2]
-            continue
-        if i2 > i1:
-            parts.append(f"[-{' '.join(old[i1:i2])}-]")
-        if j2 > j1:
-            parts.append(f"{{+{' '.join(new[j1:j2])}+}}")
-    return " ".join(parts)
-
 
 # --- the outcome ---------------------------------------------------------------------------------
 
@@ -125,9 +91,10 @@ def render(
     improved = outcome.status == "improved"
     fast = outcome.mode in FAST_TIERS
     head = "improved" if improved else "unchanged, the original prompt is returned"
+    reason, rounds = _reason(outcome)
     lines = [
         f"result: {head} ({outcome.reason_code})",
-        f"reason: {one_line(outcome.reason)}",
+        f"reason: {one_line(reason)}",
         f"meaning: {_meaning(outcome)}",
     ]
     if improved:
@@ -135,6 +102,8 @@ def render(
     if outcome.mode is not None:
         lines.append(f"mode: {outcome.mode} ({elapsed_s or 0.0:.0f} s)")
     lines += _scores(outcome, plan)
+    if rounds:  # the reflection rounds of a reference-scored result (WP23)
+        lines.append(f"rounds: {one_line(rounds)}")
     if improved and outcome.length_ratio is not None:
         lines.append(f"length: {outcome.length_ratio:.2f}x the original's tokens")
     lines.append(f"calls used: {outcome.calls_used} of {plan.budget}")
@@ -198,8 +167,17 @@ def _verified(outcome: Outcome, plan: Plan | None) -> str:
         target = f" {plan.models.target}" if plan is not None else ""
         return f"verified: yes, on the holdout, on the target model{target}"
     if outcome.mode in FAST_TIERS:
-        return f"verified: no. NOT VERIFIED ({one_line(outcome.reason)})"
+        return f"verified: no. NOT VERIFIED ({one_line(_reason(outcome)[0])})"
     return f"verified: no. {_UNVERIFIED}"
+
+
+def _reason(outcome: Outcome) -> tuple[str, str]:
+    """The reason of `outcome` and, for a reference-scored one, the rounds it ends with (WP23,
+    `reference_text.ROUNDS`, "" without them)."""
+    if not _referenced(outcome):
+        return outcome.reason, ""
+    reason, _mark, rounds = outcome.reason.partition(reference_text.ROUNDS_MARK)
+    return reason, rounds
 
 
 def _scores(outcome: Outcome, plan: Plan) -> list[str]:
@@ -340,7 +318,7 @@ def notices(outcome: Outcome) -> list[str]:
     fast = outcome.mode in FAST_TIERS
     lines = [_FAST_CUT_SHORT if fast else _CUT_SHORT] if outcome.stop == "clock" else []
     if outcome.status == "improved" and not outcome.verified:
-        unverified = f"NOT VERIFIED ({one_line(outcome.reason)})" if fast else _UNVERIFIED
+        unverified = f"NOT VERIFIED ({one_line(_reason(outcome)[0])})" if fast else _UNVERIFIED
         lines.append(f"notice: {unverified}")
     return lines + _folder(outcome.run_dir)
 
