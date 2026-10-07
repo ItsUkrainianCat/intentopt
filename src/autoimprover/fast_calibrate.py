@@ -29,9 +29,12 @@ import threading
 from collections.abc import Sequence
 from typing import NamedTuple
 
+from autoimprover.contract_text import INTAKE_EXAMPLES_SYSTEM
 from autoimprover.evaluator import SCENARIO_PREFIX
 from autoimprover.fastplan import (
     CONTRACT_CHECKS,
+    INDUCE_INTAKE_TOKENS,
+    INDUCE_REWRITE_TOKENS,
     INTAKE_TOKENS,
     JUDGE_TOKENS_PER_CHECK,
     JUDGED_CHECKS_PER_SCENARIO,
@@ -111,12 +114,15 @@ def planned_tokens(call: Call, prompt_tokens: int) -> float | None:
     tokens, by its role and what its user message holds: the intake, a synthesis of `count`
     scenarios, a rewrite or reflection, a scoring run, a pairwise call or a judge call (the
     contract check of each `contract` scenario, a reference judge call of scenario checks only,
-    by its checks, or stage E's checks of each output) over its scenarios; None for a call it
-    cannot read."""
+    by its checks, or stage E's checks of each output) over its scenarios; an intake or a rewrite
+    that carries the user's examples as `fastplan.stage_a` prices it (ADR-013); None for a call
+    it cannot read."""
     if call.role == "intake":
-        return INTAKE_TOKENS
+        return INTAKE_TOKENS + (
+            INDUCE_INTAKE_TOKENS if call.system == INTAKE_EXAMPLES_SYSTEM else 0
+        )
     if call.role == "reflect":
-        return rewrite_tokens(prompt_tokens)
+        return rewrite_tokens(prompt_tokens) + (INDUCE_REWRITE_TOKENS if _shows(call) else 0)
     if call.role == "task":
         return task_tokens(prompt_tokens)
     try:
@@ -135,6 +141,15 @@ def planned_tokens(call: Call, prompt_tokens: int) -> float | None:
     contract = all(str(name).startswith("contract") for name in names)
     checks = CONTRACT_CHECKS if contract else JUDGED_CHECKS_PER_SCENARIO
     return JUDGE_TOKENS_PER_CHECK * checks * items
+
+
+def _shows(call: Call) -> bool:
+    """Whether a rewrite call carries the user's examples in its user JSON (ADR-013)."""
+    try:
+        user = json.loads(call.user)
+    except ValueError:
+        return False
+    return isinstance(user, dict) and "examples" in user
 
 
 def _ids(item: object) -> list[str]:

@@ -69,13 +69,15 @@ def test_the_last_chance_with_references_is_one_reference_call():
 
 
 def test_two_minutes_and_18_examples_pick_on_6_and_hold_out_at_least_4():
-    """K=5, M=6, H=4 and one reflection: I + 7 T + 2 J5 + (Rs + T + F6) + (2 T + F4) = 8.828571 +
-    38.8 + 17.514286 + 17.057143 + 17.057143 = 99.257143 <= 102; K=5 with two reflections needs
-    104.8, K=6 needs 115.8 even with one."""
+    """K=5, M=6, H=4 and one reflection: I' + 7 T + 2 J5 + (Rs + T + F6) + (2 T + F4) =
+    10.542857 + 38.8 + 17.514286 + 17.057143 + 17.057143 = 100.971429 <= 102, where I' = 3.4 +
+    (380 + 120) / 70 is the intake of a plan with references, which also lists the rules the
+    examples show (WP22, ADR-013); K=5 with two reflections needs 106.5, K=6 needs 119.2 with one
+    and 102.1 with none."""
     plan = fast_plan(120, 6, SHORT, True, ONE)
     assert (plan.tier, plan.rewrites, plan.scenarios, plan.holdout) == ("checked", 5, 6, 4)
     assert (plan.generations, plan.rewrites2, plan.reference) == (2, 1, ONE)
-    assert plan.est_seconds == pytest.approx(99.257143, abs=1e-5)
+    assert plan.est_seconds == pytest.approx(100.971429, abs=1e-5)
     assert [s.name[:2] for s in plan.stages] == ["A:", "B:", "C:", "R:", "B2", "C2", "D:", "E:"]
     assert plan.est_calls == sum(stage.calls for stage in plan.stages)
 

@@ -17,7 +17,9 @@ under its own reason code and label, never verified; the checked tier then never
 and returns a winner under that code too, so the measure sees the ranking's choice, not E's.
 When every example of the user carries a reference (`reference_score.reference_of`), stages C to
 E decide by agreement with the references instead (`fast_reference`; stage E then runs the
-original twice and compares as the pick does), and every reason says so (`reference_text`, WP21).
+original twice and compares as the pick does), and every reason says so (`reference_text`, WP21);
+the fast and checked tiers then show the pick examples, never a held-out one, to the intake and
+to every rewrite (`induce.shown`), whose first one induces the rules they show (ADR-013).
 
 After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
 leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
@@ -29,7 +31,8 @@ failed intake, synthesis, contract check or held-out run ends the run as Backend
 
 DEBT, private names used here, in `fast_stages` and in `fast_prompts` until their owners add public
 seams: `evaluator.Evaluator._task_call` (overridden by `fast_prompts.FastEvaluator`),
-`contract._ask`, `runner._token_cap`, `scenarios._loads`, `scenarios._text_problem`.
+`contract._ask`, `runner._token_cap` (in `fast_gates`), `scenarios._loads`,
+`scenarios._text_problem`.
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ from autoimprover.fast_prompts import (
 from autoimprover.fast_reference import ReferenceStages, shares
 from autoimprover.fast_stages import Dropped, dropped
 from autoimprover.fastplan import PLAN_SHARE, FastPlan, contract_stage, tail
+from autoimprover.induce import shown
 from autoimprover.parallel import parallel_map
 from autoimprover.reference_score import Margin, beats, reference_of
 from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
@@ -117,7 +121,10 @@ def improve_fast(
     original before any call."""
     given = store.scenarios() or (None if scenarios is None else list(scenarios))
     ref = None if given is None else reference_of(given)
-    run = _Fast(prompt, plan, fplan, backend, budgeted, clock, store, log, workers, ungated, ref)
+    seen = () if given is None or ref is None else shown(given, fplan.scenarios)  # quick: 0
+    run = _Fast(
+        prompt, plan, fplan, backend, budgeted, clock, store, log, workers, ungated, ref, seen
+    )
     if fplan.tier == "checked" and given is not None and len(given) <= fplan.scenarios:
         return run.outcome(
             "no_holdout",
@@ -144,7 +151,8 @@ class _Fast(ReferenceStages):
         if self.store.scenarios() is None:
             self.store.save_scenarios(scenarios)
         if not rewrites:
-            return self.kept("no rewrite passed the free gates (length cap, literals)")
+            copies = ", copies of an example" if self.shown else ""
+            return self.kept(f"no rewrite passed the free gates (length cap, literals{copies})")
         self.calibrate("A")
         m, scenarios = self.more(len(rewrites), scenarios, synthesising)
         h = self.fplan.holdout
@@ -181,7 +189,7 @@ class _Fast(ReferenceStages):
     ) -> tuple[Contract, list[Scenario], list[Rewrite]]:
         """In one wave: the contract (the run folder's, or a new intake), the scenarios (`given`,
         else one synthesis call; none in the quick tier) and the rewrites that pass the free
-        gates."""
+        gates; the intake and the rewrites see the `shown` examples (ADR-013)."""
         saved, fp, reflect = self.store.contract(), self.fplan, self.plan.models.reflect
         k, count = fp.rewrites, 0 if given else fp.scenarios + fp.holdout  # quick: 0 + 0
         jobs = (["intake"] if saved is None else []) + (["synth"] if count else []) + [*range(k)]
@@ -189,7 +197,7 @@ class _Fast(ReferenceStages):
 
         def job(name: str | int) -> Contract | list[Scenario] | str | Dropped:
             if name == "intake":
-                return extract_contract(self.backend, reflect, self.prompt, kind)
+                return extract_contract(self.backend, reflect, self.prompt, kind, self.shown)
             if name == "synth":
                 call = synth_call(self.prompt, count, reflect)
                 return _ask(self.backend, call, lambda text: parse_synth(text, count))
@@ -248,7 +256,12 @@ class _Fast(ReferenceStages):
     def draft(self, variant: int) -> str | Dropped:
         plan = self.plan
         call = rewrite_call(
-            self.prompt, variant, plan.models.reflect, plan.strictness, plan.allow_growth
+            self.prompt,
+            variant,
+            plan.models.reflect,
+            plan.strictness,
+            plan.allow_growth,
+            examples=self.shown,
         )
         return self.parsed(self.ask(call))
 
