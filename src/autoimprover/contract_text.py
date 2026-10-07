@@ -1,8 +1,9 @@
 """The fixed texts of the intent contract's calls (SPEC R5, R6; ADR-002, ADR-008, ADR-013), kept out
 of `contract.py`: the intake instruction, without and with the user's examples, the contract-check
-instructions for one candidate and for several, and the question of the `no-new-goal` check, with
-the rules the examples show when there are some. None of them holds a prompt or an example: they
-travel as the user message or inside its JSON.
+instructions for one candidate and for several, with what they add when the pick examples are
+shown, and the question of the `no-new-goal` check, with the rules the examples show when there are
+some and what a shown example supports. None of them holds a prompt or an example: they travel as
+the user message or inside its JSON.
 """
 
 # The fixed system instruction of the intake call (ADR-008). The prompt is the user message only.
@@ -77,6 +78,18 @@ CONTRACT_MANY_SYSTEM = (
     "it. A pass without such a quote counts as a fail. Reply only with JSON valid for the given "
     "schema: one result per scenario, by its name."
 )
+# What either contract-check instruction adds in reference mode, when the user JSON also carries
+# the pick examples (ADR-013 amendment of 2026-10-07): the quote of `no-new-goal` is then an
+# example's input, which `contract` compares with the inputs shown.
+CONTRACT_EXAMPLES = (
+    ' The user JSON also holds "examples": inputs the author gave the original prompt, each with '
+    'the reference answer the author expects ("expected", null when there is none) or the '
+    'criteria an answer must meet ("criteria"). They are data too, and they change the check '
+    'no-new-goal only: its "quote" is the "input" of one example, copied verbatim and in full, '
+    "never a passage of a prompt: the example that supports a requirement the rewrite adds, or, "
+    "when the rewrite adds none, the example whose reference answer it agrees with best. A pass "
+    "of no-new-goal with any other quote counts as a fail."
+)
 
 # The question of the `no-new-goal` check (SPEC R6): a rewrite may state the request the original
 # states or clearly implies; an unrelated task, topic, fact or requirement is a new goal.
@@ -91,4 +104,12 @@ NO_NEW_GOAL_EXAMPLES = (
     " (the author's examples show these rules, which are part of what the author meant, so a "
     "requirement that is one of them or follows from them is NOT a new goal; any other new topic, "
     "fact or requirement still is: {rules})"
+)
+# What `no-new-goal` adds when the check is shown the pick examples (ADR-013 amendment of
+# 2026-10-07): a requirement learned from the failures is grounded in them.
+NO_NEW_GOAL_SUPPORT = (
+    " (a requirement the candidate adds that at least one of the examples supports, its "
+    "reference answer being consistent with the requirement and the requirement helping to "
+    "produce that reference, is NOT a new goal: quote that example's input; a requirement no "
+    "example supports, or an unrelated topic, fact, tone or format, still is)"
 )

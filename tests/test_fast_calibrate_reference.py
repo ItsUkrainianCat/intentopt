@@ -4,12 +4,16 @@ scenario and its checks), and the re-plan after stage A grows the pick into the 
 up to REFERENCE_MAX_SCENARIOS (8 since WP23), with the reference stages' prices and never a
 synthesis."""
 
+import json
+
 import pytest
 from fakes import ScriptedBackend, judge_reply
 
+from autoimprover.contract import check_many
 from autoimprover.evaluator import Evaluator
 from autoimprover.fast_calibrate import grow, planned_tokens
 from autoimprover.fastplan import (
+    CONTRACT_CHECKS,
     JUDGE_TOKENS_PER_CHECK,
     JUDGED_CHECKS_PER_SCENARIO,
     Latency,
@@ -40,6 +44,22 @@ def test_a_judge_call_with_contract_checks_keeps_its_plan():
     contract = Contract(goal="g", kind="task", checks=(Check("c1", "content", "on topic"),))
     (call,) = judge_calls(contract)
     assert planned_tokens(call, 20) == JUDGE_TOKENS_PER_CHECK * JUDGED_CHECKS_PER_SCENARIO * 2
+
+
+def test_a_contract_check_shown_the_examples_is_planned_as_one_without():
+    """WP24: the examples add input, which the latency model does not price (ADR-011), and the
+    quote of `no-new-goal` becomes an example's input, no longer than the quote it replaces (the
+    live refund bench of 2026-10-07: its quotes 6 to 50 words and marks, median 20; the shipped
+    inputs 7 to 25, median 14), so the call keeps its plan of CONTRACT_CHECKS per candidate."""
+    contract = Contract(goal="g", kind="task", from_examples=("P1 for an outage",))
+    calls = []
+    for shown in ((), EXAMPLES):
+        raw = ScriptedBackend(lambda call: judge_reply(call))
+        check_many(raw, "judge-m", contract, "Rate it.", ["Rate it now.", "Rate it, P1."], shown)
+        calls += raw.calls
+    bare, shown = calls
+    assert "examples" in json.loads(shown.user) and "examples" not in json.loads(bare.user)
+    assert planned_tokens(shown, 20) == planned_tokens(bare, 20) == 2 * CONTRACT_CHECKS * 25
 
 
 def grown(have: int, ref: Reference | None, scenarios: int = 3, model: Latency | None = None):

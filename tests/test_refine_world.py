@@ -23,6 +23,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     MODELS,
     PLAN,
     World,
+    is_contract_check,
     judged_scenarios,
     mechanics_latency_model,
     no_disk_flush,
@@ -270,6 +271,13 @@ def test_no_held_out_example_reaches_any_call_but_those_of_stage_e(tmp_path):
     for call in [c for c in result.raw.calls if c.role in ("intake", "reflect", "synth")]:
         for example in held:
             assert example.input not in call.user + call.system
+    # WP24: the contract check of stage C and of every round's C2 sees the pick examples only
+    checks = [c for c in result.raw.calls if is_contract_check(c)]
+    assert len(checks) == 4
+    for call in checks:
+        shown = json.loads(call.user)["examples"]
+        assert [e["input"] for e in shown] == [e.input for e in given[:6]]
+        assert not any(h.input in call.user + call.system for h in held)
 
 
 # --- the clock ------------------------------------------------------------------------------------
