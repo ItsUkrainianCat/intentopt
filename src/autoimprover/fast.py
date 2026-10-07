@@ -19,7 +19,10 @@ When every example of the user carries a reference (`reference_score.reference_o
 E decide by agreement with the references instead (`fast_reference`; stage E then runs the
 original twice and compares as the pick does), and every reason says so (`reference_text`, WP21);
 the fast and checked tiers then show the pick examples, never a held-out one, to the intake and
-to every rewrite (`induce.shown`), whose first one induces the rules they show (ADR-013).
+to every rewrite (`induce.shown`), whose first one induces the rules they show (ADR-013); the
+second generation reflects in rounds on the best candidate's failed pick examples (`fast_rounds`,
+WP23), and once stage C has scored, every reason ends with the rounds and the pick examples
+passed.
 
 After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
 leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
@@ -52,7 +55,8 @@ from autoimprover.fast_prompts import (
     rewrite_call,
     synth_call,
 )
-from autoimprover.fast_reference import ReferenceStages, shares
+from autoimprover.fast_reference import shares
+from autoimprover.fast_rounds import RoundStages
 from autoimprover.fast_stages import Dropped, dropped
 from autoimprover.fastplan import PLAN_SHARE, FastPlan, contract_stage, tail
 from autoimprover.induce import shown
@@ -140,9 +144,10 @@ def improve_fast(
         raise BackendError(str(error)) from error
 
 
-class _Fast(ReferenceStages):
+class _Fast(RoundStages):
     """One fast run: stages B to D and the run's state are `Stages` (`ReferenceStages` when every
-    example carries a reference); here stage A, stage E, the quick tier and the endings."""
+    example carries a reference, with the reflection rounds of `RoundStages`); here stage A,
+    stage E, the quick tier and the endings."""
 
     def flow(self, given: list[Scenario] | None, kind: Kind | None, synthesising: bool) -> Outcome:
         contract, scenarios, rewrites = self.stage_a(kind, given)
@@ -345,10 +350,11 @@ class _Fast(ReferenceStages):
         if rewrite is not None:
             fields["changes"] = (rewrite.note,)
             fields["length_ratio"] = rewrite.ratio
+        rounds = self.said_rounds(rewrite)
         return Outcome(
             status="unchanged" if rewrite is None else "improved",
             prompt=self.prompt if rewrite is None else rewrite.text,
-            reason=f"tier {self.fplan.tier}: {why}",
+            reason=f"tier {self.fplan.tier}: {why}" + (f"; {rounds}" if rounds else ""),
             reason_code=code,
             stop=self.stop,
             calls_used=self.budgeted.used,

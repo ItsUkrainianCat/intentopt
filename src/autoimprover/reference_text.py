@@ -29,6 +29,14 @@ HELD_LOSS = (
     "original on {held}, by more than the noise of the original's two runs there"
 )
 
+# The end of a reference-scored reason (WP23, `fast_rounds`): the reflection rounds that ran and
+# the pick examples passed in full by the returned rewrite (else the best candidate) and by both
+# runs of the original. The report prints it on a line of its own, from ROUNDS_MARK on.
+ROUNDS_MARK = "; rounds: "
+ROUNDS = (
+    "rounds: {rounds}; pick examples passed: {passed} of {total} (original {original} of {total})"
+)
+
 # What the report says a result means (`report.py`).
 MEANING_UNVERIFIED = (
     "a rewrite kept the intent contract, passed the free gates and agreed with your reference "

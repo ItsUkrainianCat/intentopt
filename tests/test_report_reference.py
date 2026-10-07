@@ -141,6 +141,31 @@ def test_an_ungated_reference_result_reports_its_gain_it_did_not_need():
     assert line(text, "meaning: ") == f"meaning: {report.REASON_LINES['ungated_best_candidate']}"
 
 
+ROUNDS = "rounds: 2; pick examples passed: 5 of 6 (original 3 of 6)"
+
+
+@pytest.mark.parametrize("outcome", [FAST, CHECKED, NO_WIN], ids=["fast", "verified", "no win"])
+def test_the_rounds_of_a_reference_result_are_a_line_of_their_own(outcome):
+    """WP23: the reason of a reference-scored result ends with its rounds (the mod shows the
+    reason as the CLI writes it); the report prints them on a line of their own, and the
+    verified line and the notices quote the reason without them."""
+    said = dataclasses.replace(outcome, reason=f"{outcome.reason}; {ROUNDS}")
+    assert said.reason.endswith(
+        reference_text.ROUNDS.format(rounds=2, passed=5, original=3, total=6)
+    )
+    plan = dataclasses.replace(PLAN, tier="checked", wall_clock_s=120)
+    text = text_of(said, plan)
+    assert line(text, "rounds: ") == ROUNDS
+    assert line(text, "reason: ") == f"reason: {outcome.reason}"
+    assert "rounds" not in text.replace(ROUNDS, "")
+    found = report.outcome_object(said, ORIGINAL, None, plan)
+    assert found["reason"] == said.reason and "rounds" not in str(found["verified_text"])
+    assert all("rounds" not in notice for notice in report.notices(said))
+    assert "rounds: " not in text_of(outcome, plan)
+    pairwise = dataclasses.replace(said, reason=f"tier fast: preferred; {ROUNDS}")
+    assert not [found for found in text_of(pairwise).splitlines() if found.startswith("rounds")]
+
+
 @pytest.mark.parametrize(("time_s", "tier"), [(30, "fast"), (120, "checked")])
 def test_the_dry_plan_says_its_evidence_is_reference_scored(time_s, tier):
     fplan = fast_plan(time_s, 6, 10, True, Reference(18, 1))

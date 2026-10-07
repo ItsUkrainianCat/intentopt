@@ -19,10 +19,12 @@ When every example of the user carries a reference (`Reference`), stage C is one
 call per run over its M scenarios (the original's two and each rewrite's, ADR-002) and the
 contract check, K + 3 calls, each longer than a pairwise call as it quotes per check
 (`reference_seconds`); C2 is K2 + 1 calls; E runs the original twice and the winner, 3 H task runs
-and 3 judge calls (WP21). Such a plan picks on up to REFERENCE_MAX_SCENARIOS of the examples (and,
-in the checked tier, holds out REFERENCE_HOLDOUT of them) before any shape of the ordinary split,
-as long as the examples last. Its stage A is longer: the intake also lists the rules the examples
-show, and every rewrite states them (INDUCE_INTAKE_TOKENS, INDUCE_REWRITE_TOKENS; ADR-013).
+and 3 judge calls (WP21). A judge call holds at most JUDGE_BATCH_MAX scenarios, so a run's
+judging of more is two calls, one after the other. Such a plan picks on the largest number of the
+examples it can price, up to REFERENCE_MAX_SCENARIOS, and in the checked tier holds out at least
+REFERENCE_MIN_HOLDOUT of them, as long as the examples last (`fastsplit`, WP23). Its stage A is
+longer: the intake also lists the rules the examples show, and every rewrite states them
+(INDUCE_INTAKE_TOKENS, INDUCE_REWRITE_TOKENS; ADR-013).
 
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
 run time (`tail`, and `misfit` and `shrink` of `fastfit`) to shrink what the time or the calls
@@ -38,7 +40,15 @@ from typing import NamedTuple
 
 from autoimprover.fastfit import misfit as misfit
 from autoimprover.fastfit import shrink as shrink
-from autoimprover.types import HOLDOUT_MAX, JUDGE_BATCH_MAX, Tier
+from autoimprover.fastsplit import CHECKED_HOLDOUT as CHECKED_HOLDOUT
+from autoimprover.fastsplit import CHECKED_MIN_HOLDOUT as CHECKED_MIN_HOLDOUT
+from autoimprover.fastsplit import MAX_SCENARIOS as MAX_SCENARIOS
+from autoimprover.fastsplit import MIN_SCENARIOS as MIN_SCENARIOS
+from autoimprover.fastsplit import REFERENCE_MAX_SCENARIOS as REFERENCE_MAX_SCENARIOS
+from autoimprover.fastsplit import REFERENCE_MIN_HOLDOUT as REFERENCE_MIN_HOLDOUT
+from autoimprover.fastsplit import Reference as Reference
+from autoimprover.fastsplit import splits
+from autoimprover.types import JUDGE_BATCH_MAX, Tier
 
 # Where each tier starts, in seconds of `--time` (SPEC R25); below MIN_TIME_S a run is refused.
 MIN_TIME_S = 15
@@ -81,29 +91,8 @@ PAIRWISE_TOKENS_PER_SCENARIO = 40  # a winner and one short reason (ADR-012)
 REFERENCE_TOKENS_PER_SCENARIO = 20
 CONTRACT_CHECKS = 3  # the contract check's three fixed questions (contract.check)
 
-# The shapes a tier may take: rewrites from the most down to 1, scenarios from the most down to
-# the fewest, and the held-out scenarios of the checked tier.
+# The rewrites a tier may take, from the most down to 1; its scenarios are `fastsplit`'s.
 MAX_REWRITES: dict[Tier, int] = {"quick": 1, "fast": 3, "checked": 6}
-MAX_SCENARIOS = 4
-MIN_SCENARIOS = 2
-CHECKED_HOLDOUT = 4
-# The checked tier's split: when the time allows, it picks on MAX_SCENARIOS scenarios and holds
-# out CHECKED_HOLDOUT down to CHECKED_MIN_HOLDOUT, and only when no such plan fits does it pick on
-# fewer, with CHECKED_MIN_HOLDOUT held out (the bench of 2026-10-06 picked among six rewrites on 2
-# scenarios with 4 held out: a pick by noise). Each tier's groups of (scenarios, holdout), best
-# group first; a plan of an earlier group always comes before one of a later group.
-CHECKED_MIN_HOLDOUT = 2
-_SPLITS: dict[Tier, tuple[tuple[tuple[int, int], ...], ...]] = {
-    "fast": (tuple((m, 0) for m in range(MAX_SCENARIOS, MIN_SCENARIOS - 1, -1)),),
-    "checked": (
-        tuple((MAX_SCENARIOS, h) for h in range(CHECKED_HOLDOUT, CHECKED_MIN_HOLDOUT - 1, -1)),
-        tuple((m, CHECKED_MIN_HOLDOUT) for m in range(MAX_SCENARIOS - 1, MIN_SCENARIOS - 1, -1)),
-    ),
-}
-# With references (WP21) a plan picks on up to one judge batch of the examples and holds out from
-# HOLDOUT_MAX down to CHECKED_HOLDOUT of them, before the ordinary split, as the examples last.
-REFERENCE_MAX_SCENARIOS = JUDGE_BATCH_MAX
-REFERENCE_HOLDOUT = range(HOLDOUT_MAX, CHECKED_HOLDOUT - 1, -1)
 # From this `--time` a run has a second generation of up to MAX_REWRITES2 rewrites, written by
 # reflecting on the first one's failed checks, when the whole plan fits (SPEC R25; ADR-011).
 TWO_GENERATIONS_FROM_S = 45
@@ -116,15 +105,6 @@ class Stage(NamedTuple):
     name: str
     calls: int
     seconds: float
-
-
-class Reference(NamedTuple):
-    """The user's examples when every one carries a reference (`expected` or `criteria`): how
-    many there are, and the most judged checks one of them has (SPEC R11). A plan with one
-    decides by agreement with the references, not by pairwise preference (SPEC R25, WP21)."""
-
-    examples: int
-    checks: int
 
 
 @dataclass(frozen=True)
@@ -231,13 +211,16 @@ def reference_seconds(scenarios: int, checks: int, model: Latency | None = None)
 
 def _judges(
     pairs: int, runs: int, scenarios: int, ref: Reference | None, model: Latency | None
-) -> tuple[int, float, str]:
-    """The judge calls of a stage C on `scenarios` scenarios, the seconds of one and their kind:
-    the two orders of each of `pairs` pairs, or with references one call per each of `runs`
-    runs."""
+) -> tuple[int, int, float, str]:
+    """The judging of a stage C on `scenarios` scenarios: its jobs, which run side by side, its
+    calls, the seconds of one job and their kind: the two orders of each of `pairs` pairs, a call
+    each, or with references the judging of each of `runs` runs, one call per JUDGE_BATCH_MAX
+    scenarios, one after the other (`evaluator.Evaluator.score`)."""
     if ref is None:
-        return 2 * pairs, pair_seconds(scenarios, model), "pairwise"
-    return runs, reference_seconds(scenarios, ref.checks, model), "reference"
+        return 2 * pairs, 2 * pairs, pair_seconds(scenarios, model), "pairwise"
+    batches = [min(JUDGE_BATCH_MAX, scenarios - s) for s in range(0, scenarios, JUDGE_BATCH_MAX)]
+    seconds = sum(reference_seconds(n, ref.checks, model) for n in batches or [0])
+    return runs, runs * max(1, len(batches)), seconds, "reference"
 
 
 def stage_a(
@@ -279,16 +262,19 @@ def scoring_stages(
 ) -> tuple[Stage, ...]:
     """Stages B, C and D for the original, run twice, and `rewrites` rewrites on `scenarios`
     scenarios; stage C is two pairwise calls (both orders) per rewrite and for the original's two
-    runs (ADR-012), or with `ref` one reference judge call per run, and one contract check of
-    every rewrite."""
+    runs (ADR-012), or with `ref` the reference judging of each run (one call per
+    JUDGE_BATCH_MAX scenarios, one after the other), and one contract check of every rewrite."""
     runs = rewrites + 2
-    judges, seconds, kind = _judges(rewrites + 1, runs, scenarios, ref, model)
+    jobs, judges, seconds, kind = _judges(rewrites + 1, runs, scenarios, ref, model)
     judging = max(seconds, contract_seconds(rewrites, model))
-    calls = judges + 1
     task = call_seconds(task_tokens(prompt_tokens), model)
     return (
         Stage("B: task runs", runs * scenarios, wave_seconds(runs * scenarios, workers, task)),
-        Stage(f"C: {kind} judge and contract checks", calls, wave_seconds(calls, workers, judging)),
+        Stage(
+            f"C: {kind} judge and contract checks",
+            judges + 1,
+            wave_seconds(jobs + 1, workers, judging),
+        ),
         Stage("D: free gates and pick", 0, 0.0),
     )
 
@@ -303,12 +289,12 @@ def second_stages(
 ) -> tuple[Stage, ...]:
     """The second generation: `rewrites2` reflections (each a rewrite's length), their task runs
     on the `scenarios` scenarios, then two pairwise calls each against the original's answers (or
-    with `ref` one reference judge call each) and one contract check of all."""
+    with `ref` the reference judging of each, as in `scoring_stages`) and one contract check of
+    all; with references a run may have up to `refine.MAX_ROUNDS` of these (`fast_rounds`)."""
     reflection = call_seconds(rewrite_tokens(prompt_tokens), model)
-    judges, seconds, kind = _judges(rewrites2, rewrites2, scenarios, ref, model)
+    jobs, judges, seconds, kind = _judges(rewrites2, rewrites2, scenarios, ref, model)
     judging = max(seconds, contract_seconds(rewrites2, model))
     runs = rewrites2 * scenarios
-    calls = judges + 1
     return (
         Stage(
             "R: reflection on the first generation",
@@ -322,8 +308,8 @@ def second_stages(
         ),
         Stage(
             f"C2: {kind} judge and contract checks of the second generation",
-            calls,
-            wave_seconds(calls, workers, judging),
+            judges + 1,
+            wave_seconds(jobs + 1, workers, judging),
         ),
     )
 
@@ -363,14 +349,15 @@ def fast_plan(
     """The plan of a quick, fast or checked run of `time_s` seconds on `workers` threads for a
     prompt of `prompt_tokens` tokens (`runner.count_tokens`), with the user's examples or with a
     synthesis call, and with `reference` when every example carries one. Fast and checked take
-    the most rewrites, then the most scenarios (the checked tier: the first group of its split
-    that has a plan that fits, then the most held out; with `reference` first the group of the
-    larger picks the examples allow), whose estimate fits PLAN_SHARE of the time; from
-    TWO_GENERATIONS_FROM_S the most rewrites, then scenarios, then second-generation rewrites of
-    a plan with two generations come first, and one generation only when none fits. When even 1
-    rewrite on MIN_SCENARIOS does not fit, that smallest plan is returned and the runner shrinks
-    it at run time. The deep tier is the search (`runner.improve`), not a fast plan:
-    ValueError."""
+    the first plan whose estimate fits PLAN_SHARE of the time, in this order: group by group of
+    their split (`fastsplit.splits`); in a group, from TWO_GENERATIONS_FROM_S, every plan with
+    two generations before every plan with one; then row by row, the most rewrites first, shape
+    by shape of the row, the most second-generation rewrites first. A row of the ordinary split
+    is its whole group (the most rewrites, then the most scenarios, then the most held out); a
+    row of a reference split is one pick size (the largest pick, then the most rewrites, then the
+    most held out; WP23). When even 1 rewrite on MIN_SCENARIOS does not fit, that smallest plan
+    is returned and the runner shrinks it at run time. The deep tier is the search
+    (`runner.improve`), not a fast plan: ValueError."""
     tier = tier_for(time_s)
     if tier == "deep":
         raise ValueError(f"{time_s} s is the deep tier: the search of runner.improve")
@@ -382,37 +369,24 @@ def fast_plan(
     ordered: list[FastPlan] = []
     second = range(MAX_REWRITES2, 0, -1) if time_s >= TWO_GENERATIONS_FROM_S else range(0)
     w, p, ref = workers, prompt_tokens, reference
-    for group in _splits(tier, ref):
+    for group in splits(tier, ref):
         one: list[FastPlan] = []
         two: list[FastPlan] = []
-        for rewrites in range(MAX_REWRITES[tier], 0, -1):
-            for scenarios, holdout in group:
-                synthesis = 0 if have_examples else scenarios + holdout
-                *scoring, pick = scoring_stages(rewrites, scenarios, w, p, ref=ref)
-                first = (stage_a(rewrites, synthesis, w, p, ref=ref), *scoring)
-                last = (pick, *tail(0, 0, holdout, w, p, ref=ref))
-                shape = (tier, time_s, w, rewrites, scenarios, holdout)
-                one.append(_plan(*shape, (*first, *last), reference=ref))
-                for rewrites2 in second:
-                    stages = (*first, *second_stages(rewrites2, scenarios, w, p, ref=ref))
-                    two.append(_plan(*shape, (*stages, *last), rewrites2, ref))
+        for row in group:
+            for rewrites in range(MAX_REWRITES[tier], 0, -1):
+                for scenarios, holdout in row:
+                    synthesis = 0 if have_examples else scenarios + holdout
+                    *scoring, pick = scoring_stages(rewrites, scenarios, w, p, ref=ref)
+                    first = (stage_a(rewrites, synthesis, w, p, ref=ref), *scoring)
+                    last = (pick, *tail(0, 0, holdout, w, p, ref=ref))
+                    shape = (tier, time_s, w, rewrites, scenarios, holdout)
+                    one.append(_plan(*shape, (*first, *last), reference=ref))
+                    for rewrites2 in second:
+                        stages = (*first, *second_stages(rewrites2, scenarios, w, p, ref=ref))
+                        two.append(_plan(*shape, (*stages, *last), rewrites2, ref))
         ordered += (*two, *one)
     fitting = (p for p in ordered if p.est_seconds <= PLAN_SHARE * time_s)
     return next(fitting, ordered[-1])
-
-
-def _splits(tier: Tier, ref: Reference | None) -> tuple[tuple[tuple[int, int], ...], ...]:
-    """The groups of (scenarios, holdout) of `tier`, best first: with `ref`, first the larger
-    picks of REFERENCE_MAX_SCENARIOS (and in the checked tier REFERENCE_HOLDOUT held out) that its
-    examples cover, then the ordinary split."""
-    if ref is None or tier not in _SPLITS:
-        return _SPLITS[tier]
-    if tier == "checked":
-        wide = [(REFERENCE_MAX_SCENARIOS, holdout) for holdout in REFERENCE_HOLDOUT]
-    else:
-        wide = [(m, 0) for m in range(REFERENCE_MAX_SCENARIOS, MAX_SCENARIOS, -1)]
-    covered = tuple((m, h) for m, h in wide if m + h <= ref.examples)
-    return ((covered,) if covered else ()) + _SPLITS[tier]
 
 
 def _plan(
