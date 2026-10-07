@@ -131,7 +131,8 @@ def test_the_rule_a_reflection_learns_passes_the_check_when_a_pick_example_suppo
     assert len(reflections(result)) == 2
     checks = contract_checks(result)
     assert len(checks) == 2  # stage C and the C2 of round 1: the examples add no call
-    picked = ("e1", "e2", "e3", "e4", "e5", "e6") if supported else ("e1", "e2", "e4", "e5")
+    # the pick in the label order (WP25: approve, escalate, deny, then again)
+    picked = ("e1", "e2", "e3", "e5", "e4", "e6") if supported else ("e1", "e2", "e5", "e4")
     shown = [ALL[s][0] for s in picked]  # as the raw model got them, after `Unshown`
     assert all([e["input"] for e in json.loads(c.user)["examples"]] == shown for c in checks)
 

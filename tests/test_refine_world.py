@@ -33,6 +33,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
 )
 
 from autoimprover import fast_prompts
+from autoimprover.strata import ordered
 from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, Backend, Call, Reply, Scenario
 
 PROMPT = "Decide what to do with this refund request."
@@ -211,7 +212,8 @@ def test_a_checked_run_verifies_both_rules_on_the_held_out_examples(tmp_path, se
 
 def test_the_rounds_go_on_while_they_gain_and_stop_after_three(tmp_path):
     """Five rules: the first generation states one, each round learns one more, and the fourth
-    round that the failures left would need is never asked."""
+    round that the failures left would need is never asked. The pick is in the label order
+    (WP25: f1 f2 f6 f4 f3 f5), so the failures, and the rules learned, come f2 f4 f3."""
     result = run(
         tmp_path, refunds(), plan("fast", 0), prompt=PROMPT, plan=BALANCED, examples=examples(FIVE)
     )
@@ -220,7 +222,7 @@ def test_the_rounds_go_on_while_they_gain_and_stop_after_three(tmp_path):
         line = f"fast: round {number}: best passes {now} of 6 pick examples, was {was}"
         assert line in result.log
     outcome = result.outcome
-    assert outcome.prompt == f"{PROMPT} {PRICE} {DAYS} {DIGITAL} {LEGAL}"
+    assert outcome.prompt == f"{PROMPT} {PRICE} {DAYS} {LEGAL} {DIGITAL}"
     assert outcome.reason.endswith("rounds: 3; pick examples passed: 5 of 6 (original 1 of 6)")
     assert outcome.changes and "round 3" in outcome.changes[0]
 
@@ -251,16 +253,20 @@ def test_a_best_candidate_with_no_failure_left_ends_the_rounds(tmp_path):
 
 
 def test_no_held_out_example_reaches_any_call_but_those_of_stage_e(tmp_path):
-    """The extension of the WP22 test to the rounds: the checked run picks on f1 to f6 and holds
-    out e7 to e9; every generating call of every round (intake, rewrites, reflections) and every
-    call of the pick sees the pick examples only, and a held-out example reaches only the task
-    runs on the target model and their judge calls."""
+    """The extension of the WP22 test to the rounds: the checked run picks on the first six of
+    the label order (WP25: f1 f2 f6 f4 f3 e9) and holds out the other three (e7 f5 e8); every
+    generating call of every round (intake, rewrites, reflections) and every call of the pick
+    sees the pick examples only, and a held-out example reaches only the task runs on the target
+    model and their judge calls."""
     given = examples({**FIVE, **{k: TWO[k] for k in ("e7", "e8", "e9")}})
     result = run(
         tmp_path, refunds(), plan("checked", 3), prompt=PROMPT, plan=BALANCED, examples=given
     )
     assert len(reflections(result)) == 6 and result.outcome.verified
-    held = given[6:]
+    order = ordered(given)
+    pick, held = order[:6], order[6:]
+    assert [e.id for e in pick] == ["f1", "f2", "f6", "f4", "f3", "e9"]
+    assert [e.id for e in held] == ["e7", "f5", "e8"]
     for call in result.raw.calls:
         text = call.user + call.system
         if not any(h.input in text for h in held):
@@ -276,7 +282,7 @@ def test_no_held_out_example_reaches_any_call_but_those_of_stage_e(tmp_path):
     assert len(checks) == 4
     for call in checks:
         shown = json.loads(call.user)["examples"]
-        assert [e["input"] for e in shown] == [e.input for e in given[:6]]
+        assert [e["input"] for e in shown] == [e.input for e in pick]
         assert not any(h.input in call.user + call.system for h in held)
 
 

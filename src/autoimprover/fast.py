@@ -22,7 +22,9 @@ the fast and checked tiers then show the pick examples, never a held-out one, to
 to every rewrite (`induce.shown`), whose first one induces the rules they show (ADR-013); the
 second generation reflects in rounds on the best candidate's failed pick examples (`fast_rounds`,
 WP23), and once stage C has scored, every reason ends with the rounds and the pick examples
-passed.
+passed. The user's examples, or the run folder's on a resume, are split in the order of
+`strata.ordered` (WP25): round robin over their labels when they are labels, so the pick examples,
+the head, cover every label they can; a pick that misses a label says so in the log.
 
 After stage A the latency model is fitted to its replies (`fast_calibrate`), and the time it
 leaves within PLAN_SHARE of the clock, never past the deadline, buys more pick scenarios, up to
@@ -64,6 +66,7 @@ from autoimprover.parallel import parallel_map
 from autoimprover.reference_score import Margin, beats, reference_of
 from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
 from autoimprover.runstore import RunStore
+from autoimprover.strata import coverage, ordered
 from autoimprover.types import (
     CALL_RETRIES,
     Backend,
@@ -123,7 +126,8 @@ def improve_fast(
     the best-ranked rewrite that passed every gate is returned, unverified, and the checked tier
     skips stage E, also for a winner. The checked tier with nothing left to hold out keeps the
     original before any call."""
-    given = store.scenarios() or (None if scenarios is None else list(scenarios))
+    saved = store.scenarios() or scenarios
+    given = None if saved is None else ordered(saved)  # by label when they are labels (WP25)
     ref = None if given is None else reference_of(given)
     seen = () if given is None or ref is None else shown(given, fplan.scenarios)  # quick: 0
     run = _Fast(
@@ -160,6 +164,8 @@ class _Fast(RoundStages):
             return self.kept(f"no rewrite passed the free gates (length cap, literals{copies})")
         self.calibrate("A")
         m, scenarios = self.more(len(rewrites), scenarios, synthesising)
+        if (cover := coverage(scenarios, m)) is not None:
+            self.note("pick examples cover {} of {} labels".format(*cover))
         h = self.fplan.holdout
         win = self.contest(contract, rewrites, scenarios[:m], h)
         referenced = self.ref is not None
