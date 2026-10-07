@@ -28,6 +28,7 @@ from test_fast_world import (  # noqa: F401  (two autouse fixtures)
     mechanics_latency_model,
     no_disk_flush,
     prompt_of,
+    quoting_examples,
     run,
     scenario_of,
 )
@@ -83,7 +84,7 @@ class Policy(World):
         if call.role == "reflect":
             return f"{INSTRUCTION_BEGIN}\n{self.rewrite(call)}\n{INSTRUCTION_END}"
         if is_contract_check(call):
-            return contract_reply(call)
+            return quoting_examples(call, contract_reply(call))
         return super().__call__(call)
 
     def rewrite(self, call: Call) -> str:
@@ -196,6 +197,16 @@ def test_no_held_out_example_reaches_any_generating_call(tmp_path):
     for call in [c for c in calls if c not in reflections]:
         for picked in given[:2]:
             assert picked.input in call.user and str(picked.expected) in call.user
+    # WP24: the contract checks of stages C and C2 see the pick examples, never a held-out one
+    checks = [c for c in result.raw.calls if is_contract_check(c)]
+    assert len(checks) == 2
+    for call in checks:
+        shown = json.loads(call.user)["examples"]
+        assert [(e["input"], e["expected"]) for e in shown] == [
+            (e.input, e.expected) for e in given[:2]
+        ]
+        for held in given[2:]:
+            assert held.input not in call.user and str(held.expected) not in call.user
 
 
 # --- the meaning check, the copy gate and the length cap ------------------------------------------

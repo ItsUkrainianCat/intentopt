@@ -5,10 +5,12 @@ run whose examples all carry a reference, it sends them as data (`induce.example
 contract records `from_examples`, what they show and the prompt leaves unsaid, which the
 `no-new-goal` check then counts as intent (ADR-013). `check` vetoes a candidate that lost a literal
 of the original (SPEC R9), and otherwise asks one judge call whether it still keeps the contract, a
-pass counting only with a verbatim quote from the candidate (SPEC R6, R10b);
+pass counting only with a verbatim quote from the candidate (SPEC R6, R10b); shown the pick
+examples of such a run, `no-new-goal` passes a requirement one of them supports, and its pass
+counts only with the input of a shown example as its quote (the ADR-013 amendment of 2026-10-07);
 `check_many` does the same for up to JUDGE_BATCH_MAX candidates in one call (SPEC R25). `literals`
 finds the spans a rewrite must keep verbatim: code blocks, inline code, placeholders,
-URLs, file paths and quoted strings (SPEC R9).
+URLs, file paths and quoted strings (SPEC R9; `autoimprover.literals`, re-exported here).
 
 Prompts and replies are untrusted data: a prompt travels as the user message or inside its JSON,
 never in the fixed system instructions (`contract_text`), and a reply is parsed as JSON and never
@@ -22,20 +24,23 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast, get_args
 
 from autoimprover.contract_text import (
+    CONTRACT_EXAMPLES,
     CONTRACT_MANY_SYSTEM,
     CONTRACT_SYSTEM,
     INTAKE_EXAMPLES_SYSTEM,
     INTAKE_SYSTEM,
     NO_NEW_GOAL,
     NO_NEW_GOAL_EXAMPLES,
+    NO_NEW_GOAL_SUPPORT,
 )
-from autoimprover.induce import INTAKE_EXAMPLES_SCHEMA, example_data
+from autoimprover.induce import INTAKE_EXAMPLES_SCHEMA, check_data, example_data
+from autoimprover.literals import literals as literals
+from autoimprover.literals import literals_preserved as literals_preserved
 from autoimprover.types import (
     CALL_RETRIES,
     INTAKE_SCHEMA,
@@ -60,33 +65,9 @@ _GEPA_TOKENS = ("<curr_param>", "<side_info>")
 
 _CONTRACT_SCENARIO = "contract"
 _LITERAL = "literal"  # the check id of a lost literal
+_NO_NEW_GOAL = "no-new-goal"
+_NO_INPUT = "no shown example's input as the quote: "  # a pass of no-new-goal the code refuses
 _VIOLATION_TEXT_MAX = 80
-
-# Every pattern below runs in linear time: no nested quantifiers, and no two neighbouring
-# quantified parts that can match the same character, so a failed attempt gives back at most its
-# own span once. Literals do not cross a line break except fenced code blocks, which are found
-# line by line in `_fences`.
-_INLINE_CODE = re.compile(r"`[^`\r\n]+`")
-_PLACEHOLDER = re.compile(
-    r"\{\{[ \t]*\w[\w.-]*[ \t]*\}\}"  # {{name}}, {{ name }}
-    r"|\$?\{\w[\w.-]*\}"  # {name}, ${name}
-    r"|%\(\w+\)[A-Za-z]"  # %(name)s
-    r"|<[A-Za-z][\w-]*>"  # <topic>, <PATH>; no spaces, so `a < b and c > d` is not one
-)
-_DOUBLE_QUOTED = re.compile(r'"[^"\r\n]*"|“[^“”\r\n]*”')
-# A single quote counts only around 2 or more characters, opening at a word start and closing
-# before a non-word character, so the apostrophes of don't, it's, rock 'n' roll and the users' are
-# not quotes. An opening that is an elision ('90s, 'em, 'til, ...) is not a quote either: it would
-# pair with the next plural possessive ("the '90s kids' toys").
-_SINGLE_QUOTED = re.compile(
-    r"(?<!\w)'(?!(?i:\d\ds|em|til|cause|tis|twas|bout|round|n)(?!\w))"
-    r"[^\s'][^'\r\n]*[^\s']'(?!\w)"
-)
-_URL = re.compile(r"(?i:https?)://\S+")
-_URL_TRAILING = ".,;:!?)]}>'\"`*”’"
-_PATH_RUN = re.compile(r"[\w.~/-]+")
-_PATH_PREFIXES = ("~/", "./", "../", "/")
-_FENCE_OPEN = re.compile(r"[ \t]*(`{3,}|~{3,})")
 
 
 @dataclass(frozen=True)
@@ -131,7 +112,12 @@ def extract_contract(
 
 
 def check(
-    backend: Backend, judge_model: str, contract: Contract, original: str, candidate: str
+    backend: Backend,
+    judge_model: str,
+    contract: Contract,
+    original: str,
+    candidate: str,
+    examples: Sequence[Scenario] = (),
 ) -> list[Violation]:
     """How `candidate` breaks the contract of `original`; [] only when it breaks nothing (SPEC R6).
 
@@ -140,12 +126,17 @@ def check(
     judge call to `judge_model` asks the contract checks (ADR-008). A check holds only when the
     judge passes it with a quote that is not blank and occurs in the candidate after whitespace is
     normalised (SPEC R10b); a check failed, without such a quote, or not answered is a violation,
-    because the contract check is a veto. An invalid reply is asked again as `sample + 1`, at most
-    CALL_RETRIES times, then CallFailed."""
+    because the contract check is a veto. With `examples`, the pick examples of a run whose
+    examples all carry a reference, the call also carries them (`induce.check_data`) and
+    `no-new-goal` passes a requirement one of them supports, but holds only when its quote is,
+    case and whitespace runs ignored, the whole input of one example shown (ADR-013 amendment);
+    without, the call is the one it always was. An invalid reply is asked again as `sample + 1`,
+    at most CALL_RETRIES times, then CallFailed."""
     lost = [literal for literal in literals(original) if literal not in candidate]
     if lost:
         return [Violation(_LITERAL, _shorten(literal)) for literal in lost]
-    checks = _contract_checks(contract)
+    shown = check_data(examples)
+    checks = _contract_checks(contract, bool(shown))
     scenario = {
         "scenario": _CONTRACT_SCENARIO,
         "input": original,
@@ -155,13 +146,13 @@ def check(
     call = Call(
         role="judge",
         model=judge_model,
-        user=json.dumps({"scenarios": [scenario]}),
-        system=CONTRACT_SYSTEM,
+        user=_request([scenario], shown),
+        system=CONTRACT_SYSTEM + (CONTRACT_EXAMPLES if shown else ""),
         json_schema=json.dumps(JUDGE_SCHEMA),
     )
     asked = [check_id for check_id, _ in checks]
     found = _ask(backend, call, lambda text: _many_verdicts(text, [_CONTRACT_SCENARIO], asked))
-    return _violations(checks, found[_CONTRACT_SCENARIO], candidate)
+    return _violations(checks, found[_CONTRACT_SCENARIO], candidate, _inputs(shown))
 
 
 def check_many(
@@ -170,12 +161,14 @@ def check_many(
     contract: Contract,
     original: str,
     candidates: Sequence[str],
+    examples: Sequence[Scenario] = (),
 ) -> list[Violation | None]:
     """Per candidate, in order, its first violation of the contract of `original` or None, as
     `check` decides (SPEC R6, R9, R10b), from one judge call for all (SPEC R25): one scenario
     each, named contract-1, contract-2, ... A candidate that lost a literal is not sent (its
     violation is that literal); nothing to send, no call; more than JUDGE_BATCH_MAX, ValueError.
-    Invalid replies are retried as in `check`."""
+    `examples` are shown and decide `no-new-goal`'s quote as in `check`. Invalid replies are
+    retried as in `check`."""
     kept = literals(original)
     found: list[Violation | None] = []
     for candidate in candidates:
@@ -186,7 +179,8 @@ def check_many(
         raise ValueError(f"one contract check holds at most {JUDGE_BATCH_MAX} candidates")
     if not sent:
         return found
-    checks = _contract_checks(contract)
+    shown = check_data(examples)
+    checks = _contract_checks(contract, bool(shown))
     names = [f"{_CONTRACT_SCENARIO}-{n}" for n in range(1, len(sent) + 1)]
     items = [{"id": check_id, "text": text} for check_id, text in checks]
     request = [
@@ -196,22 +190,37 @@ def check_many(
     call = Call(
         role="judge",
         model=judge_model,
-        user=json.dumps({"scenarios": request}),
-        system=CONTRACT_MANY_SYSTEM,
+        user=_request(request, shown),
+        system=CONTRACT_MANY_SYSTEM + (CONTRACT_EXAMPLES if shown else ""),
         json_schema=json.dumps(JUDGE_SCHEMA),
     )
     asked = [check_id for check_id, _ in checks]
     answers = _ask(backend, call, lambda text: _many_verdicts(text, names, asked))
     for name, index in zip(names, sent, strict=True):
-        violations = _violations(checks, answers.get(name, {}), candidates[index])
+        violations = _violations(checks, answers.get(name, {}), candidates[index], _inputs(shown))
         found[index] = violations[0] if violations else None
     return found
 
 
+def _request(scenarios: list[dict[str, Any]], shown: list[dict[str, Any]]) -> str:
+    """The user JSON of a contract check: the scenarios, and the examples when some are shown."""
+    return json.dumps({"scenarios": scenarios, **({"examples": shown} if shown else {})})
+
+
+def _inputs(shown: list[dict[str, Any]]) -> frozenset[str]:
+    """The inputs of the examples shown, whitespace normalised and case folded: the quotes
+    `no-new-goal` may give."""
+    return frozenset(flat for example in shown if (flat := _flat(example["input"]).casefold()))
+
+
 def _violations(
-    checks: list[tuple[str, str]], verdicts: dict[str, tuple[bool, str]], candidate: str
+    checks: list[tuple[str, str]],
+    verdicts: dict[str, tuple[bool, str]],
+    candidate: str,
+    inputs: frozenset[str] = frozenset(),
 ) -> list[Violation]:
-    """The checks failed, unanswered or passed without a quote from the candidate (R6, R10b)."""
+    """The checks failed, unanswered or passed without a quote from the candidate (R6, R10b); with
+    the `inputs` of shown examples, a pass of `no-new-goal` needs one of them as its quote."""
     output = _flat(candidate)
     violations = []
     for check_id, text in checks:
@@ -219,33 +228,12 @@ def _violations(
             violations.append(Violation(check_id, f"not answered: {text}"))
         elif not verdicts[check_id][0]:
             violations.append(Violation(check_id, f"failed: {text}"))
+        elif check_id == _NO_NEW_GOAL and inputs:
+            if _flat(verdicts[check_id][1]).casefold() not in inputs:
+                violations.append(Violation(check_id, f"{_NO_INPUT}{text}"))
         elif not (quote := _flat(verdicts[check_id][1])) or quote not in output:
             violations.append(Violation(check_id, f"no verbatim quote from the candidate: {text}"))
     return violations
-
-
-def literals(prompt: str) -> tuple[str, ...]:
-    """The spans of `prompt` a rewrite must keep verbatim, deduplicated, in order of first
-    appearance, SPEC R9: fenced code blocks (an unterminated fence runs to the end of the text),
-    inline code, placeholders ({name}, {{name}}, ${name}, <name>, %(name)s), http and https URLs,
-    file paths and quoted strings. A span inside another is kept too, after it (it starts later)."""
-    spans = _fences(prompt)
-    for pattern in (_INLINE_CODE, _PLACEHOLDER, _DOUBLE_QUOTED, _SINGLE_QUOTED):
-        spans += [m.span() for m in pattern.finditer(prompt)]
-    for m in _URL.finditer(prompt):
-        url = m.group().rstrip(_URL_TRAILING)
-        if not url.endswith("://"):
-            spans.append((m.start(), m.start() + len(url)))
-    for m in _PATH_RUN.finditer(prompt):
-        if path := _path(m.group()):
-            spans.append((m.start(), m.start() + len(path)))
-    return tuple(dict.fromkeys(prompt[start:end] for start, end in sorted(spans)))
-
-
-def literals_preserved(original: str, candidate: str) -> bool:
-    """True exactly when every literal of `original` occurs in `candidate` as an exact substring,
-    whitespace and line endings inside code blocks included (SPEC R9)."""
-    return all(literal in candidate for literal in literals(original))
 
 
 # --- replies -------------------------------------------------------------------------------------
@@ -351,12 +339,14 @@ def _checks(value: object) -> tuple[Check, ...]:
     return tuple(found)
 
 
-def _contract_checks(contract: Contract) -> list[tuple[str, str]]:
+def _contract_checks(contract: Contract, supported: bool = False) -> list[tuple[str, str]]:
     """(id, text) of the contract checks: one per keep item and per constraint, then three fixed
     ones (no new goal, same language, same output format). The ids are stable. The `no-new-goal`
-    question names the rules the examples show, when the contract has some (ADR-013)."""
+    question names the rules the examples show, when the contract has some (ADR-013), and, when
+    the check is `supported` by shown examples, what one of them supports (its amendment)."""
     learned = "; ".join(contract.from_examples)
     shown = NO_NEW_GOAL_EXAMPLES.format(rules=learned) if learned else ""
+    shown += NO_NEW_GOAL_SUPPORT if supported else ""
     checks = [
         (f"keep-{n}", f"the candidate still keeps this, verbatim or with the same meaning: {item}")
         for n, item in enumerate(contract.keep, start=1)
@@ -368,7 +358,7 @@ def _contract_checks(contract: Contract) -> list[tuple[str, str]]:
     return [
         *checks,
         (
-            "no-new-goal",
+            _NO_NEW_GOAL,
             NO_NEW_GOAL + _aside("the original's goal: ", contract.goal) + shown,
         ),
         (
@@ -434,46 +424,3 @@ def _flat(text: str) -> str:
 
 def _aside(label: str, value: str) -> str:
     return f" ({label}{value})" if value.strip() else ""
-
-
-# --- literals ------------------------------------------------------------------------------------
-
-
-def _fences(text: str) -> list[tuple[int, int]]:
-    """Spans of the fenced code blocks, from the first fence character of the opening line to the
-    last of the closing line. A fence opens on a line that starts (after spaces or tabs) with 3 or
-    more backticks or tildes; a backtick fence's info string has no backtick. It closes on a line
-    holding only a run of the same character at least as long (CommonMark), so a longer fence can
-    hold a shorter one. A "\\r" before a line break counts as trailing whitespace (CRLF text)."""
-    spans: list[tuple[int, int]] = []
-    start, fence, offset = -1, "", 0
-    for line in text.split("\n"):
-        if start < 0:
-            m = _FENCE_OPEN.match(line)
-            if m and not (m.group(1)[0] == "`" and "`" in line[m.end(1) :]):
-                start, fence = offset + m.start(1), m.group(1)
-        else:
-            body = line.strip()
-            if len(body) >= len(fence) and not body.strip(fence[0]):
-                spans.append((start, offset + len(line) - len(line.lstrip()) + len(body)))
-                start = -1
-        offset += len(line) + 1
-    if start >= 0:
-        spans.append((start, len(text.rstrip())))
-    return spans
-
-
-def _path(run: str) -> str:
-    """The file path a run of path characters is, or "": absolute (/a/b), ./a, ../a, ~/a, or
-    relative with at least one slash and an extension on the last part (a/b.ext). Dots ending the
-    run end a sentence, not the path. An empty part refuses the run, so the "//host/..." left of a
-    URL after its scheme is not a path."""
-    run = run.rstrip(".")
-    prefix = next((p for p in _PATH_PREFIXES if run.startswith(p)), "")
-    parts = run[len(prefix) :].split("/")
-    if prefix:
-        if parts[-1] == "":
-            parts.pop()  # a trailing slash: a folder
-        return run if parts and all(parts) else ""
-    _, dot, extension = parts[-1].rpartition(".")
-    return run if len(parts) > 1 and all(parts) and dot and extension[:1].isalpha() else ""
