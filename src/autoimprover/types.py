@@ -294,9 +294,16 @@ class Check:
             raise ValueError(f"check rule {self.rule!r} needs a whole number, got {self.arg!r}")
 
 
+# The rules a contract records from the user's examples (ADR-013): at most this many, each at most
+# this many characters.
+FROM_EXAMPLES_MAX = 12
+FROM_EXAMPLE_MAX_CHARS = 200
+
+
 @dataclass(frozen=True)
 class Contract:
-    """What the user's prompt means; frozen for the whole run (SPEC R5)."""
+    """What the user's prompt means; frozen for the whole run (SPEC R5). `from_examples` are the
+    labels, rules and formats the user's examples show and the prompt leaves unsaid (ADR-013)."""
 
     goal: str
     kind: Kind
@@ -306,10 +313,19 @@ class Contract:
     language: str = ""
     tone: str = ""
     checks: tuple[Check, ...] = ()
+    from_examples: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in get_args(Kind):
             raise ValueError(f"unknown prompt kind {self.kind!r}")
+        rules = self.from_examples
+        if len(rules) > FROM_EXAMPLES_MAX or not all(
+            type(rule) is str and len(rule) <= FROM_EXAMPLE_MAX_CHARS for rule in rules
+        ):
+            raise ValueError(
+                f"from_examples holds at most {FROM_EXAMPLES_MAX} strings of at most "
+                f"{FROM_EXAMPLE_MAX_CHARS} characters (ADR-013)"
+            )
 
 
 @dataclass(frozen=True)

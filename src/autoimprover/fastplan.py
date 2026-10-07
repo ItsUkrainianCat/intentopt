@@ -21,22 +21,24 @@ contract check, K + 3 calls, each longer than a pairwise call as it quotes per c
 (`reference_seconds`); C2 is K2 + 1 calls; E runs the original twice and the winner, 3 H task runs
 and 3 judge calls (WP21). Such a plan picks on up to REFERENCE_MAX_SCENARIOS of the examples (and,
 in the checked tier, holds out REFERENCE_HOLDOUT of them) before any shape of the ordinary split,
-as long as the examples last.
+as long as the examples last. Its stage A is longer: the intake also lists the rules the examples
+show, and every rewrite states them (INDUCE_INTAKE_TOKENS, INDUCE_REWRITE_TOKENS; ADR-013).
 
 Pure and deterministic: no clock, no call. The fast runner (`fast.py`) uses the same estimates at
-run time (`tail`, `misfit`, `shrink`) to shrink what the time or the calls left cannot cover
-(SPEC R17), each with the latency model fitted to the run's own replies once it has one
-(`Latency`, `fast_calibrate`), and to grow the pick scenarios into what that model leaves.
+run time (`tail`, and `misfit` and `shrink` of `fastfit`) to shrink what the time or the calls
+left cannot cover (SPEC R17), each with the latency model fitted to the run's own replies once it
+has one (`Latency`, `fast_calibrate`), and to grow the pick scenarios into what that model leaves.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from autoimprover.types import HOLDOUT_MAX, JUDGE_BATCH_MAX, StopCause, Tier
+from autoimprover.fastfit import misfit as misfit
+from autoimprover.fastfit import shrink as shrink
+from autoimprover.types import HOLDOUT_MAX, JUDGE_BATCH_MAX, Tier
 
 # Where each tier starts, in seconds of `--time` (SPEC R25); below MIN_TIME_S a run is refused.
 MIN_TIME_S = 15
@@ -58,6 +60,10 @@ SYNTH_TOKENS_PER_SCENARIO = 45
 REWRITE_MIN_TOKENS = 60
 REWRITE_GROWTH = 1.2
 REWRITE_MAX_TOKENS = 600
+# With references the intake lists the rules the examples show and every rewrite of stage A states
+# them (ADR-013): their replies run this many tokens longer.
+INDUCE_INTAKE_TOKENS = 120
+INDUCE_REWRITE_TOKENS = 100
 # A scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX), which binds for a short
 # prompt but not for one that asks for a full document: task_tokens(p) = 150 for p <= 50 prompt
 # tokens (`runner.count_tokens`), 150 + 3 (p - 50) above, at most 600 (from p = 200). From the
@@ -235,13 +241,20 @@ def _judges(
 
 
 def stage_a(
-    rewrites: int, synthesis: int, workers: int, prompt_tokens: int, model: Latency | None = None
+    rewrites: int,
+    synthesis: int,
+    workers: int,
+    prompt_tokens: int,
+    model: Latency | None = None,
+    ref: Reference | None = None,
 ) -> Stage:
     """Stage A, one wave: the intake, the synthesis of `synthesis` scenarios (none for 0) and the
-    rewrites; none of them needs another's reply."""
+    rewrites; none of them needs another's reply. With `ref` the intake and each rewrite write
+    INDUCE_INTAKE_TOKENS and INDUCE_REWRITE_TOKENS more (ADR-013)."""
+    intake, rewrite = (INDUCE_INTAKE_TOKENS, INDUCE_REWRITE_TOKENS) if ref else (0, 0)
     slowest = max(
-        call_seconds(INTAKE_TOKENS, model),
-        call_seconds(rewrite_tokens(prompt_tokens), model),
+        call_seconds(INTAKE_TOKENS + intake, model),
+        call_seconds(rewrite_tokens(prompt_tokens) + rewrite, model),
         call_seconds(SYNTH_TOKENS_PER_SCENARIO * synthesis, model),
     )
     calls = 1 + rewrites + (1 if synthesis else 0)
@@ -376,7 +389,7 @@ def fast_plan(
             for scenarios, holdout in group:
                 synthesis = 0 if have_examples else scenarios + holdout
                 *scoring, pick = scoring_stages(rewrites, scenarios, w, p, ref=ref)
-                first = (stage_a(rewrites, synthesis, w, p), *scoring)
+                first = (stage_a(rewrites, synthesis, w, p, ref=ref), *scoring)
                 last = (pick, *tail(0, 0, holdout, w, p, ref=ref))
                 shape = (tier, time_s, w, rewrites, scenarios, holdout)
                 one.append(_plan(*shape, (*first, *last), reference=ref))
@@ -463,33 +476,3 @@ def last_chance(
     held = tail(0, 0, holdout, workers, prompt_tokens, model, ref)
     one = pair_seconds(1, model) if ref is None else reference_seconds(1, ref.checks, model)
     return (judging._replace(seconds=one), *held)
-
-
-def misfit(stages: Sequence[Stage], seconds_left: float, calls_left: int) -> StopCause | None:
-    """Why `stages` cannot run in what is left: "clock" when their seconds pass `seconds_left`,
-    else "budget" when their calls pass `calls_left`; None when they fit."""
-    if sum(stage.seconds for stage in stages) > seconds_left:
-        return "clock"
-    if sum(stage.calls for stage in stages) > calls_left:
-        return "budget"
-    return None
-
-
-def shrink(
-    rewrites: int,
-    scenarios: int,
-    stages: Callable[[int, int], Sequence[Stage]],
-    seconds_left: float,
-    calls_left: int,
-) -> tuple[tuple[int, int] | None, StopCause | None]:
-    """The largest (rewrites, scenarios) up to the given ones whose `stages` fit in what is left,
-    scenarios shrunk first, with the cause that shrank it (None when nothing was shrunk); None
-    for the shape when not even (1, 1) fits."""
-    cause: StopCause | None = None
-    for k in range(rewrites, 0, -1):
-        for m in range(scenarios, 0, -1):
-            why = misfit(stages(k, m), seconds_left, calls_left)
-            if why is None:
-                return (k, m), cause
-            cause = cause or why
-    return None, cause
