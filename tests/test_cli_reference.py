@@ -1,6 +1,7 @@
 """`autoimprover --examples` with a reference in every example (SPEC R4, R11, R22, R25; WP21): the
-plan of `--dry` decides by the references (it prices the reference judge, picks on up to 6 of the
-examples and holds out at least 4 in the checked tier when they fit, and says reference-scored),
+plan of `--dry` decides by the references (it prices the reference judge, picks on up to 8 of the
+examples and holds out at least 3 in the checked tier when they fit, WP23, and says
+reference-scored),
 the run is reference-scored, and a resumed run rebuilds the same plan from its run folder."""
 
 import json
@@ -28,12 +29,12 @@ def examples_file(tmp_path, n: int, reference: bool = True) -> str:
     return str(path)
 
 
-def test_dry_with_18_referenced_examples_at_2_minutes_picks_on_6_and_holds_out_4(tmp_path, capsys):
+def test_dry_with_18_referenced_examples_at_2_minutes_picks_on_8_and_holds_out_4(tmp_path, capsys):
     path = examples_file(tmp_path, 18)
     done = run(capsys, "--dry", "--json", "--time", "2m", "--examples", path, PROMPT)
     plan = done.obj()
     assert (done.code, plan["tier"]) == (0, "checked")
-    assert plan["scenarios"] >= 6 + 4 and plan["holdout"] >= 4
+    assert (plan["scenarios"], plan["holdout"]) == (8 + 4, 4)
     assert "C: reference judge and contract checks" in [s["name"] for s in plan["stages"]]
     text = run(capsys, "--dry", "--time", "2m", "--examples", path, PROMPT).out
     assert f"evidence: {reference_text.EVIDENCE['checked']}" in text
@@ -77,7 +78,7 @@ def test_a_resumed_run_rebuilds_the_reference_plan_from_its_folder(tmp_path):
         rebuilt = saved_fast_plan(store, True)
     finally:
         store.close()
-    assert rebuilt.reference == Reference(18, 1) and rebuilt.scenarios == 6
+    assert rebuilt.reference == Reference(18, 1) and rebuilt.scenarios == 8
 
 
 def test_a_cut_run_with_referenced_examples_resumes_to_the_same_calls(tmp_path, capsys):
