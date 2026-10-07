@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from fakes import MARKER, intake_reply, judge_reply, pairwise_reply, synth_reply
+from test_fast_world import quoting_examples
 
 from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import INSTRUCTION_BEGIN, INSTRUCTION_END, Call
@@ -49,7 +50,8 @@ def by_content(call: Call) -> str:
 class BenchWorld:
     """The raw model: the pipeline's rewrites propose `rewrite`, the naive baseline `naive`; a task
     output is GOOD when the prompt it ran holds MARKER (`task` replaces that); the pipeline's
-    judge passes GOOD outputs and every contract check; the pairwise judge is `pairwise`."""
+    judge passes GOOD outputs and every contract check (`no-new-goal` quoting an example's input
+    when the check is shown the examples); the pairwise judge is `pairwise`."""
 
     rewrite: str = BETTER
     naive: str = NAIVE
@@ -74,10 +76,13 @@ class BenchWorld:
             return self.pairwise(call)
         if call.system == PAIRWISE_BATCH_SYSTEM:
             return pairwise_reply(call)
-        return judge_reply(
+        return quoting_examples(
             call,
-            lambda scenario, _c, output: (
-                scenario.startswith("contract") or output.startswith("GOOD")
+            judge_reply(
+                call,
+                lambda scenario, _c, output: (
+                    scenario.startswith("contract") or output.startswith("GOOD")
+                ),
             ),
         )
 

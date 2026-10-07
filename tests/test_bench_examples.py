@@ -71,11 +71,18 @@ def test_eval_from_needs_examples_with_references_after_it(tmp_path):
         load_prompts(path)
 
 
+def shipped() -> list[dict]:
+    """The entries of the shipped examples set as written in the file."""
+    return [json.loads(line) for line in EXAMPLES_SET.read_text().splitlines() if line.strip()]
+
+
 def test_the_shipped_examples_set_loads():
     items = load_prompts(EXAMPLES_SET)
     assert [item.id for item in items] == ["ex-priority", "ex-refund", "ex-escalate"]
-    assert all(item.eval_from == 8 and len(item.hidden) == 10 for item in items)
-    assert all(len(item.given or ()) == 8 for item in items)
+    for item, entry in zip(items, shipped(), strict=True):
+        assert item.eval_from == entry["eval_from"] == 14
+        assert len(item.given or ()) == 14
+        assert len(item.hidden) == len(entry["examples"]) - 14 == 16
 
 
 # --- the run of a bench ---------------------------------------------------------------------------
@@ -194,17 +201,20 @@ def test_the_examples_set_runs_end_to_end_on_the_scripted_world(capsys):
     assert code == 0, err
     found = json.loads(out)
     assert (found["measured"], found["improved"], found["wins"]) == (3, 3, 3)
-    assert found["hidden"]["original_pass_rate"] == 0.0
-    assert found["hidden"]["returned_pass_rate"] == 1.0 and found["hidden"]["returned_of"] == 30
-    assert all(r["hidden"]["returned"] == {"passed": 10, "of": 10} for r in found["rows"])
     items = load_prompts(EXAMPLES_SET)
+    held = [len(item.hidden) for item in items]
+    assert found["hidden"]["original_pass_rate"] == 0.0
+    assert found["hidden"]["returned_pass_rate"] == 1.0
+    assert found["hidden"]["returned_of"] == sum(held) == 48
+    for r, n in zip(found["rows"], held, strict=True):
+        assert r["hidden"]["returned"] == {"passed": n, "of": n} == {"passed": 16, "of": 16}
     given = {s.input for item in items for s in item.given or ()}
     hidden = {s.input for item in items for s in item.hidden}
     ran = [c for c in raw.calls if c.role == "task"]
     in_runs = {c.user.split("\n\n")[0] for c in ran if c.user.endswith(FAST_TASK_SUFFIX)}
     in_bench = {c.user.split("\n\n")[0] for c in ran if c.sample == 7000}
     assert in_runs <= given and in_bench == hidden
-    # every run decided by the references of its 8 examples (its stage lines on stderr)
+    # every run decided by the references of its 14 examples (its stage lines on stderr)
     assert "reference judge calls" in err and "pairwise judge calls" not in err
 
 
@@ -214,7 +224,8 @@ def test_the_examples_set_dry_plans_the_hidden_scoring(capsys):
     found = json.loads(capsys.readouterr().out)
     items = load_prompts(EXAMPLES_SET)
     for item, planned in zip(items, found["per_prompt"], strict=True):
-        assert planned["bench_calls"] == hidden_calls(True, False, 10)
+        assert planned["bench_calls"] == hidden_calls(True, False, len(item.hidden))
+        assert len(item.hidden) == 16
         plan = plan_for(120, 6, item.prompt, list(item.given or ()))
         assert planned["run_calls"] == plan.est_calls and plan.reference is not None
     assert BETTER  # the world's rewrite, used by the end-to-end test above
