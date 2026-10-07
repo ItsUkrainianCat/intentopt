@@ -1,8 +1,11 @@
 """The intent contract of a prompt, and the check that a rewrite keeps it (SPEC R5, R6, R9, R10b).
 
-`extract_contract` asks one intake call for the contract (SPEC R5). `check` vetoes a candidate
-that lost a literal of the original (SPEC R9), and otherwise asks one judge call whether it still
-keeps the contract, a pass counting only with a verbatim quote from the candidate (SPEC R6, R10b);
+`extract_contract` asks one intake call for the contract (SPEC R5); given the pick examples of a
+run whose examples all carry a reference, it sends them as data (`induce.example_data`) and the
+contract records `from_examples`, what they show and the prompt leaves unsaid, which the
+`no-new-goal` check then counts as intent (ADR-013). `check` vetoes a candidate that lost a literal
+of the original (SPEC R9), and otherwise asks one judge call whether it still keeps the contract, a
+pass counting only with a verbatim quote from the candidate (SPEC R6, R10b);
 `check_many` does the same for up to JUDGE_BATCH_MAX candidates in one call (SPEC R25). `literals`
 finds the spans a rewrite must keep verbatim: code blocks, inline code, placeholders,
 URLs, file paths and quoted strings (SPEC R9).
@@ -27,9 +30,12 @@ from typing import Any, cast, get_args
 from autoimprover.contract_text import (
     CONTRACT_MANY_SYSTEM,
     CONTRACT_SYSTEM,
+    INTAKE_EXAMPLES_SYSTEM,
     INTAKE_SYSTEM,
     NO_NEW_GOAL,
+    NO_NEW_GOAL_EXAMPLES,
 )
+from autoimprover.induce import INTAKE_EXAMPLES_SCHEMA, example_data
 from autoimprover.types import (
     CALL_RETRIES,
     INTAKE_SCHEMA,
@@ -42,6 +48,7 @@ from autoimprover.types import (
     CheckGroup,
     Contract,
     Kind,
+    Scenario,
 )
 
 _MAX_CHECKS = 8
@@ -92,12 +99,18 @@ class Violation:
 
 
 def extract_contract(
-    backend: Backend, model: str, prompt: str, kind: Kind | None = None
+    backend: Backend,
+    model: str,
+    prompt: str,
+    kind: Kind | None = None,
+    examples: Sequence[Scenario] = (),
 ) -> Contract:
     """The intent contract of `prompt` from one intake call to `model`, the reflection model
     (SPEC R5; ADR-008). A `kind` given (`--kind`) replaces the model's guess; the call is the same
-    either way. An invalid reply is asked again as `sample + 1`, at most CALL_RETRIES times, then
-    CallFailed."""
+    either way. With `examples` (the pick examples of a run whose examples all carry a reference)
+    the user message is JSON with the prompt and the examples as data, and the contract records
+    `from_examples` (ADR-013); a reply without the key records none. An invalid reply is asked
+    again as `sample + 1`, at most CALL_RETRIES times, then CallFailed."""
     if kind is not None and kind not in get_args(Kind):
         raise ValueError(f"unknown prompt kind {kind!r}; allowed: {get_args(Kind)}")
     call = Call(
@@ -107,7 +120,13 @@ def extract_contract(
         system=INTAKE_SYSTEM,
         json_schema=json.dumps(INTAKE_SCHEMA),
     )
-    contract = _ask(backend, call, _contract)
+    if examples:
+        user = json.dumps({"prompt": prompt, "examples": example_data(examples)})
+        schema = json.dumps(INTAKE_EXAMPLES_SCHEMA)
+        call = dataclasses.replace(
+            call, user=user, system=INTAKE_EXAMPLES_SYSTEM, json_schema=schema
+        )
+    contract = _ask(backend, call, lambda text: _contract(text, bool(examples)))
     return contract if kind is None else dataclasses.replace(contract, kind=kind)
 
 
@@ -284,13 +303,15 @@ def _texts(value: object, where: str) -> tuple[str, ...]:
     return tuple(_text(item, f"an item of `{where}`", blank=False) for item in value)
 
 
-def _contract(text: str) -> Contract:
+def _contract(text: str, examples: bool = False) -> Contract:
     """The contract an intake reply holds; ValueError when it is not valid for INTAKE_SCHEMA or
     for Check and Contract, has a blank goal, keep item, constraint, check id or check text, or
-    has a GEPA template token in any text. Keys the schema does not name are ignored."""
+    has a GEPA template token in any text. Keys the schema does not name are ignored; with
+    `examples`, `from_examples` is read (absent: none) and checked as the keep items are."""
     reply = _loads(text)
     if not isinstance(reply, dict):
         raise ValueError("not a JSON object")
+    learned = reply.get("from_examples", []) if examples else []
     return Contract(
         goal=_text(reply.get("goal"), "`goal`", blank=False),
         kind=cast(Kind, _text(reply.get("kind"), "`kind`")),  # Contract checks the value
@@ -300,6 +321,7 @@ def _contract(text: str) -> Contract:
         language=_text(reply.get("language"), "`language`"),
         tone=_text(reply.get("tone"), "`tone`"),
         checks=_checks(reply.get("checks")),
+        from_examples=_texts(learned, "from_examples"),
     )
 
 
@@ -331,7 +353,10 @@ def _checks(value: object) -> tuple[Check, ...]:
 
 def _contract_checks(contract: Contract) -> list[tuple[str, str]]:
     """(id, text) of the contract checks: one per keep item and per constraint, then three fixed
-    ones (no new goal, same language, same output format). The ids are stable."""
+    ones (no new goal, same language, same output format). The ids are stable. The `no-new-goal`
+    question names the rules the examples show, when the contract has some (ADR-013)."""
+    learned = "; ".join(contract.from_examples)
+    shown = NO_NEW_GOAL_EXAMPLES.format(rules=learned) if learned else ""
     checks = [
         (f"keep-{n}", f"the candidate still keeps this, verbatim or with the same meaning: {item}")
         for n, item in enumerate(contract.keep, start=1)
@@ -344,7 +369,7 @@ def _contract_checks(contract: Contract) -> list[tuple[str, str]]:
         *checks,
         (
             "no-new-goal",
-            NO_NEW_GOAL + _aside("the original's goal: ", contract.goal),
+            NO_NEW_GOAL + _aside("the original's goal: ", contract.goal) + shown,
         ),
         (
             "same-language",
