@@ -1,5 +1,5 @@
 {
-  "name": "optimizer",
+  "name": "intentopt",
   "description": "autoimprover: improve a prompt by running it on test scenarios (GEPA), from inside Claude Code",
   "owner": { "name": "ItsUkrainianCat" },
   "plugins": [

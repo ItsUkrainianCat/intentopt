@@ -2,7 +2,7 @@
 text: the plugin and marketplace manifests against `pyproject.toml`, the hooks module's trust
 surface (the events it hooks, the calls it makes on `$`, the variables it reads, no home path),
 the pure modules' tables against the CLI (`FLAGS`, `REASON_CODES`, the run id pattern), and the
-README against the code and SPEC R2. No process is started: the mod's behaviour is tested by the
+USAGE against the code and SPEC R2. No process is started: the mod's behaviour is tested by the
 `*.test.ts` files under `claude plugin test`, its static analysis by `claude plugin validate`."""
 
 import json
@@ -25,7 +25,7 @@ from autoimprover.types import (
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / "hooks"
-README = (ROOT / "README.md").read_text(encoding="utf-8")
+USAGE = (ROOT / "docs" / "USAGE.md").read_text(encoding="utf-8")
 SPEC = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 # The trust surface of ADR-010 as `claude plugin validate` lists it: the events the module hooks
@@ -211,22 +211,22 @@ def test_the_run_id_pattern_is_the_tool_s():
     assert match and match.group(1).replace("(?:", "(") == RUN_ID_PATTERN
 
 
-# --- the README -----------------------------------------------------------------------------------
+# --- the CLI reference --------------------------------------------------------------------------
 
 
 def section(title: str) -> str:
-    """The README text under `## <title>`, up to the next `## ` heading."""
-    start = README.index(f"\n## {title}\n")
-    end = README.find("\n## ", start + 1)
-    return README[start : None if end == -1 else end]
+    """The USAGE text under `## <title>`, up to the next `## ` heading."""
+    start = USAGE.index(f"\n## {title}\n")
+    end = USAGE.find("\n## ", start + 1)
+    return USAGE[start : None if end == -1 else end]
 
 
-def test_the_readme_says_how_to_use_the_mod_and_names_every_command():
+def test_the_usage_says_how_to_use_the_mod_and_names_every_command():
     text = " ".join(section("Use it inside Claude Code").split())
     plugin = manifest("plugin.json")["name"]
     market = manifest("marketplace.json")["name"]
     for phrase in (
-        "claude plugin marketplace add ItsUkrainianCat/optimizer",
+        "claude plugin marketplace add ItsUkrainianCat/intentopt",
         f"claude plugin install {plugin}@{market}",
         "--plugin-dir",
         "/reload-plugins",
@@ -241,60 +241,60 @@ def test_the_readme_says_how_to_use_the_mod_and_names_every_command():
         "claude plugin validate",
     ):
         assert phrase in text, phrase
-    assert "commands/improve.md" not in README and "~/.claude/commands" not in README
+    assert "commands/improve.md" not in USAGE and "~/.claude/commands" not in USAGE
 
 
-def readme_flags() -> list[tuple[str, str]]:
-    """(flag, metavar or "") for each row of the README's flags table."""
+def usage_flags() -> list[tuple[str, str]]:
+    """(flag, metavar or "") for each row of the USAGE's flags table."""
     return re.findall(r"^\| `(--[a-z-]+)(?: ([^`]+))?` \|", section("Flags"), flags=re.M)
 
 
-# A value for each README flag that takes one; parse() checks only these three.
+# A value for each USAGE flag that takes one; parse() checks only these three.
 SAMPLE = {"--kind": "task", "--strictness": "balanced", "--budget": "100"}
 
 
-def test_every_flag_the_readme_lists_is_parsed_by_the_cli():
-    for flag, metavar in readme_flags():
+def test_every_flag_the_usage_lists_is_parsed_by_the_cli():
+    for flag, metavar in usage_flags():
         argv = [flag, SAMPLE.get(flag, "x")] if metavar else [flag]
         assert flag[2:].replace("-", "_") in cli.parse(argv).given, flag
 
 
-def test_the_readme_lists_every_flag_of_the_help(capsys):
+def test_the_usage_lists_every_flag_of_the_help(capsys):
     assert cli.main(["--help"]) == EXIT_OK
     shown = set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", capsys.readouterr().out))
-    assert {flag for flag, _ in readme_flags()} == shown
+    assert {flag for flag, _ in usage_flags()} == shown
 
 
-def test_the_readme_exit_codes_are_those_of_spec_r2():
+def test_the_usage_exit_codes_are_those_of_spec_r2():
     r2 = next(line for line in SPEC.splitlines() if line.startswith("- R2. "))
     listed = r2[r2.index("Exit codes:") : r2.index("Every non-zero exit")]
     spec = {int(code) for code in re.findall(r"(?:: |, )(\d+) [a-z]", listed)}
-    readme = {int(code) for code in re.findall(r"^\| (\d+) \|", section("Exit codes"), re.M)}
+    usage = {int(code) for code in re.findall(r"^\| (\d+) \|", section("Exit codes"), re.M)}
     codes = {EXIT_OK, EXIT_INTERNAL, EXIT_USAGE, EXIT_BACKEND, EXIT_NOT_LOCKED_DOWN}
-    assert readme == spec == codes | {EXIT_INTERRUPTED}
+    assert usage == spec == codes | {EXIT_INTERRUPTED}
 
 
-def readme_keys(label: str) -> list[str]:
+def usage_keys(label: str) -> list[str]:
     line = next(
         line for line in section("JSON output").splitlines() if line.startswith(f"- {label}: ")
     )
     return re.findall(r"`([a-z_]+)`", line.split(": ", 1)[1])
 
 
-def test_the_readme_json_keys_are_those_the_tool_writes(capsys):
+def test_the_usage_json_keys_are_those_the_tool_writes(capsys):
     finished = Outcome(status="unchanged", prompt="p", reason="r", reason_code="no_holdout")
-    assert readme_keys("finished run") == list(report.outcome_object(finished, "p", None))
-    assert readme_keys("error") == list(report.error_object(EXIT_USAGE, "e", ""))
+    assert usage_keys("finished run") == list(report.outcome_object(finished, "p", None))
+    assert usage_keys("error") == list(report.error_object(EXIT_USAGE, "e", ""))
     assert cli.main(["--dry", "--json", "Summarise the notes."]) == EXIT_OK
     plan = json.loads(capsys.readouterr().out)
-    assert readme_keys("dry run") == list(plan)
-    assert readme_keys("dry run plan") == list(plan["plan"])
+    assert usage_keys("dry run") == list(plan)
+    assert usage_keys("dry run plan") == list(plan["plan"])
     assert cli.main(["clean", "--json"]) == EXIT_OK
-    assert readme_keys("clean") == list(json.loads(capsys.readouterr().out))
+    assert usage_keys("clean") == list(json.loads(capsys.readouterr().out))
 
 
-def test_the_readme_dry_example_is_the_tool_output(capsys):
+def test_the_usage_dry_example_is_the_tool_output(capsys):
     assert cli.main(["--dry", "Summarise the meeting notes."]) == EXIT_OK
     out = capsys.readouterr().out
     assert out.startswith("dry run: no model call made, nothing written\n")
-    assert f"$ uv run --frozen autoimprover --dry --file prompt.txt\n{out}```" in README
+    assert f"$ uv run --frozen autoimprover --dry --file prompt.txt\n{out}```" in USAGE

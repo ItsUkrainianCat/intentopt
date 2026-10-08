@@ -12,7 +12,13 @@ build/
 
 # Secrets and logs
 .env
+.env.*
+!.env.example
 .secrets
+*.pem
+*.key
+*.p12
+*.pfx
 *.log
 
 # Files that Claude Code and ruflo drop into a project folder. Only the agent definitions and the
@@ -23,6 +29,8 @@ build/
 .claude-flow/
 .swarm/
 .agents/
+.codex/
+.remember/
 agentdb.rvf*
 ruvector.db
 
