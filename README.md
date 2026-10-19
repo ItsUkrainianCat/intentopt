@@ -49,7 +49,8 @@ The repository contains a scripted-model test suite and three synthetic policy b
 The build log reports a small live experiment with 34/48 hidden examples passed by returned
 prompts versus 23/48 by originals. Those numbers describe one historical run on three tasks;
 raw live-run artifacts are not published here, and subsequent changes have not been validated
-by that experiment. They are a pilot observation, not an independently reproducible result.
+by that experiment. The three tasks were also used while the tool was being tuned, so they are not
+an untouched test set. They are a pilot observation, not an independently reproducible result.
 See [research evidence, protocol and limitations](docs/RESEARCH.md).
 
 ## Support the work
