@@ -1,6 +1,6 @@
 # ADR-004: Every model call goes through one Backend seam that counts, caches, retries and stops
 
-- **Status:** Proposed (revised 2026-10-03 after G3 rounds 1 and 2 and the pre-flight reviews)
+- **Status:** Accepted 2026-10-04 (G3 closed by the user's sign-off; the G3 vote itself was rejected 0-6 three times, see `docs/BUILD-LOG.md`; revised 2026-10-03 after G3 rounds 1 and 2 and the pre-flight reviews)
 - **Date:** 2026-10-03
 - **Requirement(s):** R17, R18, R19, R20, R22, R24
 

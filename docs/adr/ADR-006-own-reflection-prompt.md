@@ -1,6 +1,6 @@
 # ADR-006: We supply our own reflection prompt instead of the paper's or the library's
 
-- **Status:** Proposed
+- **Status:** Accepted 2026-10-04 (G3 closed by the user's sign-off; the G3 vote itself was rejected 0-6 three times, see `docs/BUILD-LOG.md`)
 - **Date:** 2026-10-03
 - **Requirement(s):** R6, R8, R9, R16
 

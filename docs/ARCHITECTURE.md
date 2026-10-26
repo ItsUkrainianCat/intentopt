@@ -1,6 +1,6 @@
 # ARCHITECTURE: autoimprover 0.2
 
-Status: Draft 5 (2026-10-04). Draft 2 answered G3 round 1 (rejected 0-6), Draft 3 two pre-flight reviews, Draft 4 G3 round 2 (rejected 0-6), this draft two more pre-flight reviews. Implements `docs/SPEC.md`. Needs the G3 vote (round 3, the last the kit allows before the user decides). Every fact has one home: numbers in `types.py` and `docs/SPEC.md`, decisions in `docs/adr/`.
+Status: Accepted 2026-10-04 by the user's sign-off; the G3 vote itself was never passed. Draft 2 answered G3 round 1 (rejected 0-6), Draft 3 two pre-flight reviews, Draft 4 G3 round 2 (rejected 0-6), Draft 5 two more pre-flight reviews and G3 round 3 (rejected 0-6); the user closed G3 without a fourth vote (`docs/BUILD-LOG.md`, "USER DECISION 2026-10-04"). Implements `docs/SPEC.md`. Every fact has one home: numbers in `types.py` and `docs/SPEC.md`, decisions in `docs/adr/`.
 
 ## 1. Key flows
 
@@ -261,6 +261,6 @@ DSPy and any second optimiser (ADR-001); GEPA merge by default (R15); the local 
 - `--merge` is accepted and handed to GEPA, but with a valset under GEPA's overlap floor of 5 (ours is at most 4) it never merges (probe, G3 pre-flight), so at default sizes it changes nothing; kept because SPEC R15 lists it, and a candidate for removal if the user agrees.
 - Model aliases are pinned in `types.py` (`MODEL_ALIASES`); the claude CLI may resolve `opus` to a newer id later. Provisional: the user passes full ids when they care.
 
-## ADRs (all Proposed until the G3 vote; index: `docs/adr/`)
+## ADRs (ADR-001 to ADR-008 accepted by the user's G3 sign-off, ADR-009 to ADR-013 accepted when written; index: `docs/adr/`)
 
 ADR-001 gepa only, no DSPy in v1. ADR-002 judge sees outputs, not candidates. ADR-003 three-way split and holdout rule. ADR-004 one backend seam, budget, stop and failure handling. ADR-005 one-off tasks are tested on synthesised situations, templates on inputs. ADR-006 our own reflection prompt. ADR-007 run folder format, atomic writes, clocks, lock and resume. ADR-008 wire formats of every model message (intake, synthesis, task, judge, contract check, reflection).

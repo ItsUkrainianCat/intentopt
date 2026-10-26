@@ -1,6 +1,6 @@
 # ADR-008: Every message to and from the model has a fixed wire format
 
-- **Status:** Proposed
+- **Status:** Accepted 2026-10-04 (G3 closed by the user's sign-off; the G3 vote itself was rejected 0-6 three times, see `docs/BUILD-LOG.md`)
 - **Date:** 2026-10-03
 - **Requirement(s):** R5, R6, R10, R10a, R10b, R11, R16, R18
 

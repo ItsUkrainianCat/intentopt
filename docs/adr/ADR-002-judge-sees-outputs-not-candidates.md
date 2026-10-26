@@ -1,6 +1,6 @@
 # ADR-002: The judge sees outputs and a checklist, never the candidate prompt
 
-- **Status:** Proposed
+- **Status:** Accepted 2026-10-04 (G3 closed by the user's sign-off; the G3 vote itself was rejected 0-6 three times, see `docs/BUILD-LOG.md`)
 - **Date:** 2026-10-03
 - **Requirement(s):** R10, R14, R16
 
