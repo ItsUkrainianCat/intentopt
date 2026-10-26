@@ -60,8 +60,9 @@ How to choose: the default 30 s for a short run whose result you read before usi
 `--time 1m` or more when you want the result checked on scenarios it was not picked on, on your
 model; `--deep` for the search. Below 15 s a run is refused (exit 2). The deep tier's default
 budget is one call per 12 s of `--time` (20 to 100 calls); with 12 synthesised scenarios that
-affords at least 4 search iterations only from `--time 18m`, so a shorter deep run refuses unless
-you give `--budget 86` or more, or `--force-low-budget` (`--dry` says so).
+affords at least 4 search iterations only from `--time 19m`, so a shorter deep run refuses unless
+you give `--budget 91` or more, or `--force-low-budget` (`--dry` says so; with references on every
+example the figures are 18m and `--budget 86`, ADR-014).
 
 ## Example: the plan of a run
 

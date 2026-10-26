@@ -93,7 +93,12 @@ Planning commands, which make no model calls:
 ```sh
 uv run --frozen autoimprover bench --prompts bench/examples-set.jsonl --time 2m --baseline naive --dry
 uv run --frozen autoimprover bench --prompts bench/prompts.jsonl --time 90s --baseline naive --dry
+uv run --frozen autoimprover bench --prompts bench/prompts.jsonl --time 20m --limit 3 --baseline naive --dry
 ```
+
+The last one plans the deep tier without references, whose decision is the pairwise preference
+of ADR-014 (at most 390 calls and about an hour live for 3 prompts); the first one has references
+and keeps the absolute rule.
 
 Removing `--dry` runs the live experiment and consumes subscription usage. Use
 [USAGE.md](USAGE.md) for result files, flags and local cleanup. Raw run directories contain
