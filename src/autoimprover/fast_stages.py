@@ -83,8 +83,8 @@ from autoimprover.fastplan import (
     shrink,
     tail,
 )
+from autoimprover.lengths import count_tokens
 from autoimprover.parallel import parallel_map
-from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore
 from autoimprover.types import (
     Backend,

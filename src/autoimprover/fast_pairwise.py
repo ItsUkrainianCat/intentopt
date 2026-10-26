@@ -20,8 +20,8 @@ from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from autoimprover.bench_judge import pairwise_batch_call, scenario_vote
+from autoimprover.lengths import count_tokens
 from autoimprover.reference_score import Margin
-from autoimprover.runner import count_tokens
 from autoimprover.types import Call, CallFailed, Scenario
 
 # (scenario id, situation, the original's answer, the other side's answer)

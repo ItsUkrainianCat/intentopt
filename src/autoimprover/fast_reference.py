@@ -40,10 +40,10 @@ from autoimprover.evaluator import Evaluator
 from autoimprover.fast_pairwise import Judged, Preference, Rewrite, Win
 from autoimprover.fast_prompts import FastEvaluator
 from autoimprover.fast_stages import Dropped, Stages, dropped
+from autoimprover.lengths import count_tokens
 from autoimprover.parallel import parallel_map
 from autoimprover.reference_score import Margin, beats, compare, scored
 from autoimprover.refine import failures
-from autoimprover.runner import count_tokens
 from autoimprover.types import (
     BackendError,
     BudgetExhausted,

@@ -12,9 +12,9 @@ from typing import TextIO
 
 from autoimprover.cli_plan import duration
 from autoimprover.fastplan import FastPlan, fast_plan, tier_for
+from autoimprover.lengths import count_tokens
 from autoimprover.reference_score import reference_of
 from autoimprover.report import Emitter
-from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError
 from autoimprover.types import Scenario
 

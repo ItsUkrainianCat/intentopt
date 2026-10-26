@@ -62,9 +62,10 @@ from autoimprover.fast_rounds import RoundStages
 from autoimprover.fast_stages import Dropped, dropped
 from autoimprover.fastplan import PLAN_SHARE, FastPlan, contract_stage, tail
 from autoimprover.induce import shown
+from autoimprover.lengths import count_tokens
 from autoimprover.parallel import parallel_map
 from autoimprover.reference_score import Margin, beats, reference_of
-from autoimprover.runner import MIN_THRESHOLD, count_tokens, score_holdout
+from autoimprover.runner import MIN_THRESHOLD, score_holdout
 from autoimprover.runstore import RunStore
 from autoimprover.strata import coverage, ordered
 from autoimprover.types import (

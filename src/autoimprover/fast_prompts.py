@@ -47,7 +47,7 @@ from autoimprover.delimiters import span
 from autoimprover.evaluator import Evaluator
 from autoimprover.fast_gates import GROWTH_TOKENS, token_cap
 from autoimprover.induce import example_data
-from autoimprover.runner import count_tokens
+from autoimprover.lengths import count_tokens
 from autoimprover.scenarios import _loads, _text_problem
 from autoimprover.types import (
     INSTRUCTION_BEGIN,

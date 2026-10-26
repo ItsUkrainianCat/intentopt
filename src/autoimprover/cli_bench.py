@@ -73,9 +73,9 @@ from autoimprover.cli_options import (
     parse,
     settings,
 )
+from autoimprover.lengths import count_tokens
 from autoimprover.reference_score import checks_of
 from autoimprover.report import Emitter
-from autoimprover.runner import count_tokens
 from autoimprover.runstore import RunStore, RunStoreError, make_dirs, runs_root, write_json
 from autoimprover.types import (
     EFFORT_LEVELS,
