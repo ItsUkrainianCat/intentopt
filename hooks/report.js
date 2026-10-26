@@ -159,6 +159,8 @@ function outcomeView(result, end) {
     meaning: words.meaning === null ? null : oneLine(words.meaning),
     verifiedLine: words.verifiedLine === null ? null : oneLine(words.verifiedLine),
     margin: words.margin === null ? null : oneLine(words.margin),
+    scores: words.scores.map(oneLine),
+    noise: words.noise === null ? null : oneLine(words.noise),
     lengthRatio: improved && typeof ratio === 'number'
       ? `length: ${ratio.toFixed(2)}x the original's tokens`
       : null,

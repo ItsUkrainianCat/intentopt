@@ -167,6 +167,71 @@ describe('a checked or deep result', () => {
   })
 })
 
+// The lines report.py writes into the JSON's `score_lines` (`outcome_object`): which rule decided
+// and where it was taken, the noise and the margin included. The mod shows them as given.
+const DEEP_LINES = [
+  'preference on the holdout (judge claude-opus-5-5, target model claude-sonnet-5-5): the ' +
+    'original won 0.00, the rewrite 0.75',
+  "noise: 0.50 of the holdout had a winner between the original's two runs; lead 0.75 vs noise " +
+    '0.50 on the holdout',
+  'search score (valset, search model claude-haiku-4-5-20251001): 0.40 before, 0.90 after',
+]
+const FAST_LINES = [
+  'preference on the scenarios it was picked on (judge claude-opus-5-5, not held out): the ' +
+    'original won 0.25, the rewrite 0.75',
+  "noise: 0.25 of the scenarios it was picked on had a winner between the original's two runs",
+  'margin: lead 0.50 vs noise 0.25 on the scenarios it was picked on',
+]
+// A deep result decided by the pairwise judge (ADR-014): its shares are preferences, not scores.
+const DEEP_PREFERRED = {
+  ...IMPROVED,
+  score_before: 0,
+  score_after: 0.75,
+  noise: 0.5,
+  margin: 0.25,
+  margin_text: 'lead 0.75 vs noise 0.50 on the holdout',
+  score_lines: DEEP_LINES,
+}
+
+describe("the CLI's own score lines", () => {
+  test('are shown as given, with the calls, and replace the mod\'s own labels', () => {
+    const shown = view(DEEP_PREFERRED)
+    expect(shown.scores).toEqual([...DEEP_LINES, `calls used: ${IMPROVED.calls_used}`])
+    expect(shown.noise).toBeNull()
+    expect(shown.margin).toBeNull()
+    const text = all(DEEP_PREFERRED)
+    expect(text).toContain('preference on the holdout')
+    expect(text).not.toContain('holdout score (target model)')
+    expect(text).not.toContain('cleared the bar')
+  })
+
+  test('a fast preference is a preference, not a score on the scenarios it was picked on', () => {
+    const fast = { ...FAST, score_lines: FAST_LINES }
+    const shown = view(fast)
+    expect(shown.scores.slice(0, 3)).toEqual(FAST_LINES)
+    expect(shown.noise).toBeNull()
+    expect(shown.margin).toBeNull()
+    expect(all(fast)).not.toContain('score on the scenarios it was picked on (not held out)')
+  })
+
+  test('are cleaned of escape sequences and control characters', () => {
+    const shown = view({
+      ...DEEP_PREFERRED,
+      score_lines: ['preference \u001b[1mon\u001b[0m the holdout\u0007', 'noise: 0.50\u202e'],
+    })
+    expect(shown.scores.slice(0, 2)).toEqual(['preference on the holdout', 'noise: 0.50'])
+  })
+
+  test('without them (an older CLI) or with none usable, the mod labels the scores itself', () => {
+    for (const lines of [undefined, null, 'text', [], [3, null, '  ']]) {
+      const shown = view({ ...IMPROVED, score_lines: lines })
+      expect(shown.scores, JSON.stringify(lines)).toContain(
+        'holdout score (target model): 0.50 before, 0.80 after',
+      )
+    }
+  })
+})
+
 describe('the improved prompt in the pane', () => {
   test('comes right after the result, before the details and the buttons', () => {
     const { head, tail } = rowsOf(view(FAST), false)

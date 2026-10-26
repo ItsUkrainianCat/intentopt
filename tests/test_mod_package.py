@@ -202,6 +202,7 @@ def test_the_outcome_json_has_every_key_the_mod_reads():
     for names in re.findall(r"const \{([^}]*)\} = result\b", source):
         read |= {name.split(":")[0].strip() for name in names.split(",") if name.strip()}
     assert {"mode", "elapsed_s", "meaning", "verified_text", "margin_text", "noise"} <= read
+    assert "score_lines" in read  # the labelled score, noise and margin lines (ADR-014)
     finished = Outcome(status="unchanged", prompt="p", reason="r", reason_code="no_holdout")
     assert read <= set(report.outcome_object(finished, "p", None)), read
 

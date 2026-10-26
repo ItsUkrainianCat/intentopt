@@ -127,6 +127,29 @@ def test_a_deep_result_decided_by_preference_says_so_and_prints_no_score():
     assert "holdout score" not in text and "cleared the bar" not in text
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        IMPROVED,
+        PREFERRED,
+        dataclasses.replace(IMPROVED, mode="fast", verified=False, search_score_before=None),
+    ],
+    ids=["deep-score", "deep-preference", "fast-preference"],
+)
+def test_the_json_score_lines_are_the_lines_the_report_prints(outcome):
+    """The mod shows `score_lines` as given, so each says its rule and where it was taken."""
+    obj = report.outcome_object(outcome, ORIGINAL, CONTRACT, PLAN)
+    printed = report.render(outcome, ORIGINAL, CONTRACT, PLAN).splitlines()
+    assert obj["score_lines"] and all(line in printed for line in obj["score_lines"])
+    assert report.outcome_object(outcome, ORIGINAL, CONTRACT)["score_lines"] is None
+
+
+def test_the_json_score_lines_of_a_deep_preference_never_call_a_share_a_score():
+    lines = report.outcome_object(PREFERRED, ORIGINAL, CONTRACT, PLAN)["score_lines"]
+    assert any(line.startswith("preference on the holdout") for line in lines)
+    assert not any(line.startswith("holdout score") for line in lines)
+
+
 def test_a_deep_result_without_a_preference_keeps_the_score_lines():
     text = report.render(dataclasses.replace(IMPROVED, mode="deep"), ORIGINAL, CONTRACT, PLAN)
     assert "holdout score (target model" in text and "cleared the bar" in text
@@ -265,6 +288,7 @@ JSON_KEYS = {
     "meaning",
     "verified_text",
     "margin_text",
+    "score_lines",
 }
 
 
@@ -400,7 +424,7 @@ def test_with_json_stdout_holds_one_object_and_stderr_only_the_notices():
     emit, out, err = emitter(True)
     clock = dataclasses.replace(IMPROVED, stop="clock", verified=False, prompt=BETTER + HOSTILE)
     emit.outcome(clock, ORIGINAL, CONTRACT, PLAN)
-    assert json.loads(out.getvalue()) == report.outcome_object(clock, ORIGINAL, CONTRACT)
+    assert json.loads(out.getvalue()) == report.outcome_object(clock, ORIGINAL, CONTRACT, PLAN)
     assert out.getvalue().count("\n") == 1 and "\x1b" not in out.getvalue()
     assert "\x7f" not in out.getvalue()
     notices = err.getvalue()

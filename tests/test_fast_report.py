@@ -110,7 +110,8 @@ def said(text: str, label: str) -> str | None:
 @pytest.mark.parametrize("outcome", [FAST, KEPT, DEEP], ids=["fast", "kept", "deep"])
 def test_the_json_carries_the_seconds_and_the_reports_own_words(outcome):
     obj = report.outcome_object(outcome, ORIGINAL, None, PLAN, 21.5)
-    assert list(obj)[-5:] == ["mode", "elapsed_s", "meaning", "verified_text", "margin_text"]
+    tail = ["mode", "elapsed_s", "meaning", "verified_text", "margin_text", "score_lines"]
+    assert list(obj)[-6:] == tail
     text = report.render(outcome, ORIGINAL, None, PLAN, 21.5)
     assert obj["elapsed_s"] == 21.5 and obj["noise"] == outcome.noise
     assert obj["meaning"] == said(text, "meaning: ")

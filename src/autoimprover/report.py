@@ -354,7 +354,10 @@ def outcome_object(
     """The `--json` object of a finished run (SPEC R2; ARCHITECTURE section 8). After `mode` it
     carries the seconds of the run's clock and the human report's own words, each its line
     without the label: `meaning`, `verified_text` (None when the report prints no verified line)
-    and `margin_text` (None without a margin), so a reader shows what the command line says."""
+    and `margin_text` (None without a margin), then `score_lines`: the lines the report prints for
+    the scores, the noise and the margin, each labelled by the rule that decided (a score, a
+    preference or a reference score) and by where it was taken, so a reader never has to guess
+    (None without the plan, which names the models). A reader shows what the command line says."""
     improved = outcome.status == "improved"
     return {
         "status": outcome.status,
@@ -380,6 +383,7 @@ def outcome_object(
         "meaning": _meaning(outcome),
         "verified_text": _verified(outcome, plan).removeprefix("verified: ") if improved else None,
         "margin_text": _margin_text(outcome),
+        "score_lines": None if plan is None else _scores(outcome, plan),
     }
 
 

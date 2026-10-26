@@ -1,9 +1,11 @@
 // The words of a finished run by its tier (SPEC R25; the JSON's `mode`). The CLI's JSON carries
-// its own words, `meaning`, `verified_text` and `margin_text`, and the seconds of the run's clock,
-// `elapsed_s`: they are shown as given (the caller removes escape and control characters). What
-// has no key of its own is labelled here as src/autoimprover/report.py labels it: each score by
-// where it was taken (quick and fast on the scenarios they were picked on, checked and deep on
-// held-out scenarios) and the noise between the original's two runs. Pure: no engine, no I/O.
+// its own words, `meaning`, `verified_text`, `margin_text` and `score_lines`, and the seconds of
+// the run's clock, `elapsed_s`: they are shown as given (the caller removes escape and control
+// characters). `score_lines` says, for the scores, the noise and the margin, which rule decided (a
+// score, a preference or a reference score) and where it was taken; only JSON without it (an
+// older CLI) is labelled here, as report.py labelled it before: each score by where it was taken
+// (quick and fast on the scenarios they were picked on, checked and deep on held-out scenarios)
+// and the noise between the original's two runs, all as scores. Pure: no engine, no I/O.
 
 const UNHELD = ['quick', 'fast']
 const PIPELINE = ['quick', 'fast', 'checked']
@@ -27,6 +29,7 @@ export function tierWords(result) {
   const unheld = mode !== null && UNHELD.includes(mode)
   const said = given(result.verified_text)
   const margin = given(result.margin_text)
+  const lines = givenLines(result.score_lines)
   const seconds = typeof result.elapsed_s === 'number' ? ` (${result.elapsed_s.toFixed(0)} s)` : ''
   return {
     title: !improved
@@ -37,10 +40,33 @@ export function tierWords(result) {
     verifiedLine: improved && said !== null ? `verified: ${said}` : null,
     mode: mode === null ? null : `mode: ${mode}${seconds}`,
     meaning: given(result.meaning),
-    scores: scoreLines(result, unheld, pipeline),
-    noise: noiseLine(result, pipeline, margin),
-    margin: pipeline && margin !== null ? `margin: ${margin}` : null,
+    scores: lines === null ? scoreLines(result, unheld, pipeline) : withCalls(lines, result),
+    noise: lines === null ? noiseLine(result, pipeline, margin) : null,
+    margin: lines === null && pipeline && margin !== null ? `margin: ${margin}` : null,
   }
+}
+
+/**
+ * The CLI's own score lines (report.py `outcome_object`, `score_lines`), or null when the JSON has
+ * none (an older CLI), or none usable. They hold the noise and the margin lines too.
+ * @param {unknown} value
+ * @returns {string[] | null}
+ */
+function givenLines(value) {
+  if (!Array.isArray(value)) return null
+  const lines = value.filter((line) => typeof line === 'string' && line.trim() !== '')
+  return lines.length > 0 ? lines : null
+}
+
+/**
+ * @param {string[]} lines the CLI's score lines
+ * @param {Record<string, unknown>} result
+ * @returns {string[]}
+ */
+function withCalls(lines, result) {
+  return typeof result.calls_used === 'number'
+    ? [...lines, `calls used: ${result.calls_used}`]
+    : lines
 }
 
 /**

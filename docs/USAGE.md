@@ -284,7 +284,7 @@ calls it had answered are replayed from its cache for free.
 
 The keys of the object on stdout, in order:
 
-- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`, `elapsed_s`, `meaning`, `verified_text`, `margin_text`
+- finished run: `status`, `prompt`, `verified`, `stop`, `changes`, `reason`, `reason_code`, `diff`, `contract`, `score_before`, `score_after`, `search_score_before`, `search_score_after`, `noise`, `margin`, `length_ratio`, `calls_used`, `run_dir`, `mode`, `elapsed_s`, `meaning`, `verified_text`, `margin_text`, `score_lines`
 - dry run: `status`, `plan`, `scenarios`, `synthesised`, `holdout`, `valset`, `dataset`, `calls_before_search`, `calls_after_search`, `search_calls`, `iteration_cost`, `iterations`, `iterations_best`, `search_clock_s`, `final_clock_s`, `refusal`, `keeps_original`, `tier`, `workers`, `efforts`, `rewrites`, `stages`, `est_calls`, `est_seconds`, `ungated`
 - dry run plan: `models`, `strictness`, `budget`, `wall_clock_s`, `allow_growth`, `merge`, `seed`, `tier`, `workers`, `efforts`
 - error: `status`, `code`, `error`, `run_dir`
@@ -302,7 +302,11 @@ to the rewrite. In reference mode they are the shares of reference checks passed
 runs had a winner, and a rewrite had to lead by more than it. Elsewhere scores are shares of
 checks passed, from 0 to 1. Any of them is null when not measured. `elapsed_s` is the run's clock in seconds; `meaning`, `verified_text` and
 `margin_text` are the report's lines of those names without their labels, null when it prints
-none. A dry run's keys are the same in every
+none. `score_lines` is the list of lines the report prints for the scores, the noise and the
+margin, each saying which rule decided (score, preference or reference score) and where it was
+taken: show them as given, and read `score_before`, `score_after` and `noise` as numbers only
+with that in mind (a deep result decided by the pairwise judge, ADR-014, carries preference shares
+in them too). A dry run's keys are the same in every
 tier, null where they do not apply: the search's numbers (`valset` to `final_clock_s`) in the
 quick, fast and checked tiers, `rewrites`, `stages`, `est_calls` and `est_seconds` in deep; each
 stage is `name`, `calls` and `seconds`.
