@@ -76,7 +76,7 @@ INDUCE_INTAKE_TOKENS = 120
 INDUCE_REWRITE_TOKENS = 100
 # A scoring run asks for at most 120 words (fast_prompts.FAST_TASK_SUFFIX), which binds for a short
 # prompt but not for one that asks for a full document: task_tokens(p) = 150 for p <= 50 prompt
-# tokens (`runner.count_tokens`), 150 + 3 (p - 50) above, at most 600 (from p = 200). From the
+# tokens (`lengths.count_tokens`), 150 + 3 (p - 50) above, at most 600 (from p = 200). From the
 # fast scoring runs of the live benches of 2026-10-06, read as (seconds - OVERHEAD_S) x
 # TOKENS_PER_S: run medians 84 to 273 for prompts of 18 to 46 tokens, 357 to 602 for prompts of 135
 # and 148 (formula: 405 and 444); the slowest run of the 148-token prompt took 13.9 s, 735.
@@ -347,7 +347,7 @@ def fast_plan(
     reference: Reference | None = None,
 ) -> FastPlan:
     """The plan of a quick, fast or checked run of `time_s` seconds on `workers` threads for a
-    prompt of `prompt_tokens` tokens (`runner.count_tokens`), with the user's examples or with a
+    prompt of `prompt_tokens` tokens (`lengths.count_tokens`), with the user's examples or with a
     synthesis call, and with `reference` when every example carries one. Fast and checked take
     the first plan whose estimate fits PLAN_SHARE of the time, in this order: group by group of
     their split (`fastsplit.splits`); in a group, from TWO_GENERATIONS_FROM_S, every plan with

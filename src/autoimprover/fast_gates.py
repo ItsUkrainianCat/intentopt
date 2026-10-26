@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from autoimprover.runner import _token_cap, count_tokens, length_ok
+from autoimprover.lengths import _token_cap, count_tokens, length_ok
 from autoimprover.types import SYSTEM_PROMPT_MAX_BYTES, Scenario, Strictness
 
 # With references a rewrite may run to the original plus this many tokens (ADR-013).
@@ -46,7 +46,7 @@ def token_cap(original_tokens: int, strictness: Strictness, references: bool) ->
 def length_fits(
     original: str, candidate: str, strictness: Strictness, allow_growth: bool, references: bool
 ) -> tuple[bool, float]:
-    """`runner.length_ok`, with the cap of `token_cap` when `references`: whether `candidate` is
+    """`lengths.length_ok`, with the cap of `token_cap` when `references`: whether `candidate` is
     short enough, and its tokens relative to `original`'s."""
     fits, ratio = length_ok(original, candidate, strictness, allow_growth)
     if fits or not references or allow_growth:

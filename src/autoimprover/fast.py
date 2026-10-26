@@ -36,7 +36,7 @@ failed intake, synthesis, contract check or held-out run ends the run as Backend
 
 DEBT, private names used here, in `fast_stages` and in `fast_prompts` until their owners add public
 seams: `evaluator.Evaluator._task_call` (overridden by `fast_prompts.FastEvaluator`),
-`contract._ask`, `runner._token_cap` (in `fast_gates`), `scenarios._loads`,
+`contract._ask`, `lengths._token_cap` (in `fast_gates`), `scenarios._loads`,
 `scenarios._text_problem`.
 """
 
