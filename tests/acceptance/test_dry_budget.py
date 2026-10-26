@@ -10,8 +10,9 @@ names, so they appear only in PLAN_KEYS below.
 import json
 
 import pytest
-from fakes import MARKER, FakeClock, ScriptedBackend, happy_backend, judge_reply
+from fakes import MARKER, FakeClock, ScriptedBackend, happy_backend, judge_reply, pairwise_reply
 
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import Call, CallError
 
 ORIGINAL = "Summarise the meeting notes for the team in five bullet points."
@@ -34,16 +35,18 @@ PLAN_KEYS = {  # meaning -> key in the `--dry --json` object
     "final_clock_s": "final_clock_s",
 }
 # (extra argv, examples to write or None for synthesis) -> expected plan at budget 100.
+# Without references the finalists are run, not scored, and judged in pairs (ADR-014): after =
+# 3*h (finalist runs) + 3 (contract checks) + 3*2 + 2 (pairwise judge calls).
 # n=12 synthesised: holdout 4, valset 3, dataset 5; before 1+1+2*(4+1)+(3+1)=16, after
-# 3*(4+1)+3=18, iteration 1+2*(3+1)+(3+1)=13, (100-34)//13=5.
+# 3*4+3+8=23, iteration 1+2*(3+1)+(3+1)=13, (100-39)//13=4.
 PLANS = {
-    "synth-12": ([], None, dict(before=16, after=18, iterations=5, h=4, v=3, d=5, n=12)),
-    # n=8: 3/2/3; before 1+2*(3+1)+(2+1)=12, after 3*4+3=15, iteration 1+8+3=12, 73//12=6
-    "examples-8": ([], 8, dict(before=12, after=15, iterations=6, h=3, v=2, d=3, n=8)),
-    # n=10: 4/3/3; before 1+2*5+4=15, after 18, iteration 13, 67//13=5
-    "examples-10": ([], 10, dict(before=15, after=18, iterations=5, h=4, v=3, d=3, n=10)),
-    # n=40: 6/4/30 (holdout capped at 6); before 1+2*7+5=20, after 3*7+3=24, iteration 14, 4
-    "examples-40": ([], 40, dict(before=20, after=24, iterations=4, h=6, v=4, d=30, n=40)),
+    "synth-12": ([], None, dict(before=16, after=23, iterations=4, h=4, v=3, d=5, n=12)),
+    # n=8: 3/2/3; before 1+2*(3+1)+(2+1)=12, after 3*3+3+8=20, iteration 1+8+3=12, 68//12=5
+    "examples-8": ([], 8, dict(before=12, after=20, iterations=5, h=3, v=2, d=3, n=8)),
+    # n=10: 4/3/3; before 1+2*5+4=15, after 23, iteration 13, 62//13=4
+    "examples-10": ([], 10, dict(before=15, after=23, iterations=4, h=4, v=3, d=3, n=10)),
+    # n=40: 6/4/30 (holdout capped at 6); before 1+2*7+5=20, after 3*6+3+8=29, iteration 14, 3
+    "examples-40": ([], 40, dict(before=20, after=29, iterations=3, h=6, v=4, d=30, n=40)),
     # n=7 with --trust-search: no holdout, dataset = valset = 7 (2 judge calls); before 1+(7+2)=10,
     # after 3 contract checks, iteration 1+2*(3+1)+9=18, 87//18=4
     "trust-7": (["--trust-search"], 7, dict(before=10, after=3, iterations=4, h=0, v=7, d=7, n=7)),
@@ -178,30 +181,30 @@ def test_dry_usage_error_is_still_exit_2(run_cli):
 
 
 def test_low_budget_runs_with_force_and_stays_inside_the_budget(run_cli):
-    """R4 twin of the refusal: --force-low-budget lets 3 iterations run, within the 85 calls."""
+    """R4 twin of the refusal: --force-low-budget lets 3 iterations run, within the 90 calls."""
     backend = happy_backend(IMPROVED)
-    r = run_cli(["--json", "--budget", "85", "--force-low-budget", ORIGINAL], backend)
+    r = run_cli(["--json", "--budget", "90", "--force-low-budget", ORIGINAL], backend)
     assert r.code == 0, r.err
-    assert 0 < len(backend.calls) <= 85
+    assert 0 < len(backend.calls) <= 90
     assert r.json()["calls_used"] == len(backend.calls)
 
 
 def test_four_iterations_run_without_force(run_cli):
-    """R4 boundary: a budget of 86 affords exactly 4 worst-case iterations, so no refusal; it is
+    """R4 boundary: a budget of 91 affords exactly 4 worst-case iterations, so no refusal; it is
     also the twin of the zero-search run below: with calls left for the search, a candidate wins."""
     backend = happy_backend(IMPROVED)
-    r = run_cli(["--budget", "86", ORIGINAL], backend)
+    r = run_cli(["--budget", "91", ORIGINAL], backend)
     assert r.code == 0, r.err
-    assert 0 < len(backend.calls) <= 86
+    assert 0 < len(backend.calls) <= 91
     assert backend.count("reflect") > 0
     assert r.out == IMPROVED + "\n"
 
 
 def test_fixed_costs_above_budget_refuse_even_with_force(run_cli):
-    """R17: when the fixed costs alone (34 at 12 scenarios) exceed the budget the run refuses
+    """R17: when the fixed costs alone (39 at 12 scenarios) exceed the budget the run refuses
     (exit 2) before the first paid call, --force-low-budget or not."""
     backend = happy_backend(IMPROVED)
-    r = run_cli(["--budget", "33", "--force-low-budget", ORIGINAL], backend)
+    r = run_cli(["--budget", "38", "--force-low-budget", ORIGINAL], backend)
     assert r.code == 2
     assert backend.calls == []
     assert "--budget" in next(x for x in r.err.splitlines() if x.startswith("error: "))
@@ -209,20 +212,20 @@ def test_fixed_costs_above_budget_refuse_even_with_force(run_cli):
 
 def test_fixed_costs_equal_to_budget_run_with_force(run_cli):
     """R17 twin: fixed costs equal to the budget do not exceed it; the run starts and never spends
-    more than the 34 calls. No call is left for one iteration, so the search stops before its first
+    more than the 39 calls. No call is left for one iteration, so the search stops before its first
     reflection and the original is returned (a budget stop, not a failure)."""
     backend = happy_backend(IMPROVED)
-    r = run_cli(["--json", "--budget", "34", "--force-low-budget", ORIGINAL], backend)
+    r = run_cli(["--json", "--budget", "39", "--force-low-budget", ORIGINAL], backend)
     assert r.code == 0, r.err
     obj = r.json()
-    assert 0 < len(backend.calls) <= 34
+    assert 0 < len(backend.calls) <= 39
     assert obj["calls_used"] == len(backend.calls)
     assert backend.count("reflect") == 0
     assert obj["prompt"] == ORIGINAL
     assert obj["stop"] == "budget"
 
 
-@pytest.mark.parametrize("budget", [86, 100, 173, 300])
+@pytest.mark.parametrize("budget", [91, 100, 173, 300])
 def test_every_call_counts_and_the_budget_is_a_hard_limit(run_cli, budget):
     """R17: every call (intake, synthesis, task, judge, reflection) counts toward one budget and the
     run never makes more; identical calls are cached, so none is made twice and a hit is not
@@ -254,7 +257,9 @@ def test_retries_count_toward_the_budget_and_never_exceed_it(run_cli):
     r = run_cli(["--json", ORIGINAL], backend)
     assert r.code == 0, r.err
     assert len(backend.calls) <= 100
-    assert len(backend.calls) == 2 * len(failed_once)
+    # every call failed once before it answered; the call the limit reached last may be cut before
+    # its retry
+    assert 0 <= 2 * len(failed_once) - len(backend.calls) <= 1
     assert r.json()["calls_used"] == len(backend.calls)
 
 
@@ -327,6 +332,8 @@ def test_a_clock_stop_never_returns_a_candidate_that_skipped_the_gates(
     clock = FakeClock()
 
     def judge(call: Call) -> str:
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         if json.loads(call.user)["scenarios"][0]["scenario"] == "contract":
             return judge_reply(call, lambda *_: passes)
         return judge_reply(call, lambda _s, _c, output: output.startswith("GOOD"))

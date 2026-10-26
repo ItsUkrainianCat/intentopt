@@ -31,6 +31,16 @@ FAST_REASON_LINES = {
     "unconfirmed_out_of_budget": "the clock or the calls ran out before a rewrite passed every "
     "gate, so the original is kept; a longer --time leaves more room",
 }
+# The same for a deep result decided by the pairwise judge on the holdout (ADR-014).
+PREFERRED_REASON_LINES = {
+    "improved": "a rewrite was preferred over the original by a blind pairwise judge, in both "
+    "orders, on more held-out scenarios than it lost, by more than the noise of two runs of the "
+    "original; a preference, not a score",
+    "no_reliable_improvement": "no rewrite was preferred over the original by the blind pairwise "
+    "judge on the held-out scenarios by more than the noise of two runs of the original, so the "
+    "original is kept; this is the normal result for a prompt that already works",
+    "unconfirmed_out_of_budget": REASON_LINES["unconfirmed_out_of_budget"],
+}
 FAST_VERIFIED = (
     "a rewrite beat the original on held-out scenarios, on the target model; no noise was "
     "measured, so a small margin is a weak signal"

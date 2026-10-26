@@ -17,11 +17,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TextIO
 
+from autoimprover import deep_pairwise
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock
 from autoimprover.contract import check, extract_contract, literals_preserved
 from autoimprover.evaluator import Evaluator
+from autoimprover.fast_pairwise import prefers
 from autoimprover.lengths import count_tokens as count_tokens  # re-exported: many importers
 from autoimprover.lengths import length_ok as length_ok
+from autoimprover.reference_score import reference_of
 from autoimprover.reflection_text import reflection_template as reflection_template
 from autoimprover.runstore import RunStore
 from autoimprover.scenarios import MIN_SCENARIOS_FOR_HOLDOUT, split, split_sizes, synthesize
@@ -54,7 +57,9 @@ class FixedCosts:
     """The calls a plan spends outside GEPA's iterations and what is left for them (SPEC R4, R17;
     ARCHITECTURE section 1). `pre` is paid before the search (intake, synthesis, the two seed runs
     on the holdout, GEPA's scoring of the original on the valset), `final` after it (up to
-    FINALISTS holdout runs and contract checks). `iter_cost` is an accepted child (a reflection,
+    FINALISTS holdout runs and contract checks; with `pairwise`, each finalist is only run, not
+    scored, and judged against the original in two orders, after the original's two runs were
+    judged against each other: ADR-014). `iter_cost` is an accepted child (a reflection,
     the parent's and the child's minibatch, a valset pass); `iterations` is what `search_calls`
     affords at that cost, the worst case, and `iterations_best` at the cost of a rejected child.
     `search_calls` is negative when the fixed costs alone exceed the budget."""
@@ -76,16 +81,20 @@ def _pass(k: int) -> int:
     return k - (-k // JUDGE_BATCH_MAX)
 
 
-def fixed_costs(plan: Plan, n: int, synthesising: bool) -> FixedCosts:
+def fixed_costs(plan: Plan, n: int, synthesising: bool, *, pairwise: bool = True) -> FixedCosts:
     """The costs of `plan` with n scenarios, synthesised by one call or given by the user. From 8
     scenarios on the split of SPEC R15 holds out some; below 8 there is no holdout and every
-    scenario is both dataset and valset (SPEC R11). Whole-number arithmetic only."""
+    scenario is both dataset and valset (SPEC R11). `pairwise`: the final decision is the pairwise
+    preference of ADR-014, not the reference score. Whole-number arithmetic only."""
     if n < 1:
         raise ValueError("a plan needs at least one scenario")
     holdout, valset, dataset = split_sizes(n) if n >= MIN_SCENARIOS_FOR_HOLDOUT else (0, n, n)
     minibatch = min(MINIBATCH_SIZE, dataset)
     pre = 1 + int(synthesising) + 2 * _pass(holdout) + _pass(valset)  # _pass(0) is 0
-    final = FINALISTS * _pass(holdout) + FINALISTS
+    if pairwise and holdout:
+        final = FINALISTS * holdout + FINALISTS + 2 * FINALISTS + 2
+    else:
+        final = FINALISTS * _pass(holdout) + FINALISTS
     rejected = 1 + 2 * (minibatch + 1)
     iter_cost = rejected + _pass(valset)
     search_calls = plan.budget - pre - final
@@ -125,7 +134,11 @@ def score_holdout(evaluator: BatchEvaluator, candidate: str, holdout: Sequence[S
     that raises BackendError: a failed seed or finalist run is never a score (SPEC R24)."""
     if not holdout:
         raise ValueError("there is no holdout to score on")
-    entries = evaluator(candidate, holdout)
+    return _mean_score(evaluator(candidate, holdout))
+
+
+def _mean_score(entries: Sequence[tuple[float, dict[str, Any]]]) -> float:
+    """The mean of the entries' scores; an incomplete entry raises BackendError (SPEC R24)."""
     for _score, info in entries:
         if info.get("incomplete"):
             why = info.get("error", "no reason given")
@@ -151,16 +164,28 @@ _REASONS = {
     "no_candidate_beat_seed": "no candidate beat the original on the valset",
     "unconfirmed_out_of_budget": "ran out of budget or time before a candidate was confirmed",
 }
+# The reasons of a deep result decided by the pairwise judge (ADR-014); `deep_pairwise.MARK` tells
+# the report to word it as a preference.
+_PAIRWISE_REASONS = {
+    "improved": f"preferred over the original by the {deep_pairwise.MARK}, on the target model, "
+    "by more than the noise of the original's two runs",
+    "no_reliable_improvement": "no reliable improvement: no candidate was preferred over the "
+    f"original by the {deep_pairwise.MARK} by more than the noise of the original's two runs",
+    "unconfirmed_out_of_budget": "ran out of budget or time before the "
+    f"{deep_pairwise.MARK} had confirmed a candidate",
+}
 _UNVERIFIED = "beats the original on the valset; not verified on a holdout (--trust-search)"
 
 
 class _Seed(NamedTuple):
     """The original's two holdout runs on the target model: their mean, their difference and the
-    gain a candidate must exceed (SPEC R12)."""
+    gain a candidate must exceed (SPEC R12), and their outputs, which the pairwise decision
+    compares (ADR-014)."""
 
     score: float
     noise: float
     threshold: float
+    outputs: tuple[dict[str, str | CallFailed], ...] = ()
 
 
 def improve(
@@ -213,6 +238,8 @@ class _Run:
     budgeted: BudgetedBackend
     store: RunStore
     measured: dict[str, Any] = field(default_factory=dict)
+    pairwise: bool = False  # the final decision is the pairwise preference (ADR-014)
+    decided: bool = False  # ... and it was made, so the reason says so
 
     def flow(
         self, given: list[Scenario] | None, kind: Kind | None, clock: Clock, log: TextIO
@@ -230,7 +257,8 @@ class _Run:
             given = synthesize(self.backend, models.reflect, prompt, contract)
         if self.store.scenarios() is None:
             self.store.save_scenarios(given)
-        costs = fixed_costs(plan, len(given), synthesising)
+        self.pairwise = reference_of(given) is None
+        costs = fixed_costs(plan, len(given), synthesising, pairwise=self.pairwise)
         parts = split(given, plan.seed)
         seed = self.seed_runs(contract, parts.holdout) if parts.holdout else None
         if seed is not None and seed.score >= ALREADY_STRONG:
@@ -268,12 +296,25 @@ class _Run:
         evaluator = Evaluator(self.backend, contract, models.target, models.judge, sample)
         return score_holdout(evaluator, text, holdout)
 
+    def seed_run(
+        self, contract: Contract, holdout: Sequence[Scenario], sample: int
+    ) -> tuple[float, dict[str, str | CallFailed]]:
+        """The original on the holdout on the target model: its mean score and its outputs."""
+        models = self.plan.models
+        evaluator = Evaluator(self.backend, contract, models.target, models.judge, sample)
+        outputs = evaluator.outputs(self.prompt, holdout)
+        return _mean_score(evaluator.score(holdout, outputs)), outputs
+
     def seed_runs(self, contract: Contract, holdout: Sequence[Scenario]) -> _Seed:
         """The original scored twice on the holdout, the second run under sample 1 so it is a new
         call, not a cache hit (SPEC R12)."""
-        first, second = (self.on_target(contract, self.prompt, holdout, s) for s in (0, 1))
+        (first, out_first), (second, out_second) = (
+            self.seed_run(contract, holdout, s) for s in (0, 1)
+        )
         noise = abs(first - second)
-        seed = _Seed((first + second) / 2, noise, max(MIN_THRESHOLD, 2 * noise))
+        seed = _Seed(
+            (first + second) / 2, noise, max(MIN_THRESHOLD, 2 * noise), (out_first, out_second)
+        )
         self.measured |= {"score_before": seed.score, "noise": seed.noise}
         return seed
 
@@ -304,7 +345,10 @@ class _Run:
         self, contract: Contract, holdout: Sequence[Scenario], seed: _Seed, result: SearchResult
     ) -> Outcome:
         """The first finalist whose holdout score on the target model beats the original's by more
-        than the threshold, verified; else the original (SPEC R3, R14a)."""
+        than the threshold, verified; else the original (SPEC R3, R14a). Without references the
+        finalists are judged by preference instead (`preferred`, ADR-014)."""
+        if self.pairwise:
+            return self.preferred(contract, holdout, seed, result)
         for candidate, ratio in self.finalists(contract, result):
             after = self.on_target(contract, candidate.text, holdout)
             margin = after - seed.score - seed.threshold
@@ -318,6 +362,62 @@ class _Run:
                     length_ratio=ratio,
                 )
         return self.outcome("no_reliable_improvement")
+
+    def preferred(
+        self, contract: Contract, holdout: Sequence[Scenario], seed: _Seed, result: SearchResult
+    ) -> Outcome:
+        """The first finalist the blind pairwise judge prefers to the original on the holdout, on
+        the target model, in both orders, by more scenarios than the original's two runs
+        disagree on; else the original (ADR-014, SPEC R25). Each finalist is run, never scored:
+        what decides is the judge's preference, so the scores of the original's two runs only
+        serve the check of SPEC R13. `score_*`, `noise` and `margin` of the result are shares of
+        the holdout scenarios, as in the fast tiers."""
+        judge, request = self.plan.models.judge, self.prompt
+        total = len(holdout)
+        bar: int | None = None
+        for candidate, ratio in self.finalists(contract, result):
+            if bar is None:
+                bar = deep_pairwise.noise(self.backend, judge, request, holdout, *seed.outputs)
+            answers = self.target_outputs(contract, candidate.text, holdout)
+            found = deep_pairwise.preferred(
+                self.backend, judge, request, holdout, seed.outputs[0], answers
+            )
+            if prefers(found, bar):
+                self.settle(bar, total)
+                return self.outcome(
+                    "improved",
+                    candidate,
+                    verified=True,
+                    score_before=found.losses / total,
+                    score_after=found.wins / total,
+                    margin=(found.wins - found.losses - bar) / total,
+                    length_ratio=ratio,
+                )
+        if bar is not None:
+            self.settle(bar, total)
+        return self.outcome("no_reliable_improvement")
+
+    def settle(self, bar: int, total: int) -> None:
+        """The decision was made by preference: the noise is the share of the holdout scenarios
+        where the original's two runs had a winner, and the original's absolute score is no part
+        of the result. A run cut short before this keeps what it measured (SPEC R12)."""
+        self.decided = True
+        self.measured.pop("score_before", None)
+        self.measured["noise"] = bar / total
+
+    def target_outputs(
+        self, contract: Contract, text: str, holdout: Sequence[Scenario]
+    ) -> dict[str, str | CallFailed]:
+        """`text` run on the holdout on the target model, as the user will run it (SPEC R14a); a
+        failed call is a BackendError, never a missing answer (SPEC R24)."""
+        models = self.plan.models
+        outputs = Evaluator(self.backend, contract, models.target, models.judge).outputs(
+            text, holdout
+        )
+        for failure in outputs.values():
+            if isinstance(failure, CallFailed):
+                raise BackendError(f"a call failed while running on the holdout: {failure}")
+        return outputs
 
     def trusted(self, contract: Contract, result: SearchResult) -> Outcome:
         """Without a holdout (`--trust-search`): the best finalist that beats the original on the
@@ -340,7 +440,7 @@ class _Run:
         return Outcome(
             status="improved" if candidate is not None else "unchanged",
             prompt=self.prompt if candidate is None else candidate.text,
-            reason=reason or _REASONS[code],
+            reason=reason or (_PAIRWISE_REASONS if self.decided else _REASONS)[code],
             reason_code=code,
             calls_used=self.budgeted.used,
             run_dir=str(self.store.path),

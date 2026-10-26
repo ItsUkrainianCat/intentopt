@@ -1,9 +1,9 @@
 """Which prompt `improve` returns, on a given search result (SPEC R3, R6, R7, R9, R11, R12, R13,
 R17, R24): a stand-in replaces `run_search`, so the valset scores are exact, while the contract,
 the scenarios, the seed and finalist runs and the contract checks go through the real stack over
-a scripted model. The finalists, the noise threshold, the 0.95 check, `--trust-search`, the
-search's arguments and its share of the budget, and the failures around the search. The whole
-flow on GEPA is tested in `test_runner_flow.py`."""
+a scripted model: the finalists, the noise threshold (with references; the pairwise decision is
+in `test_runner_pairwise.py`), the 0.95 check, `--trust-search`, the search's arguments and its
+budget share, the failures around it. The whole flow: `test_runner_flow.py`."""
 
 import io
 import json
@@ -14,11 +14,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import MARKER, FakeClock, ScriptedBackend, intake_reply, judge_reply, synth_reply
+from fakes import (
+    MARKER,
+    FakeClock,
+    ScriptedBackend,
+    intake_reply,
+    judge_reply,
+    pairwise_reply,
+    synth_reply,
+)
 
 from autoimprover import runner
 from autoimprover.backend import BudgetedBackend, CachedBackend, Clock, ResilientBackend
 from autoimprover.evaluator import Evaluator
+from autoimprover.fastplan import Reference
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.runstore import RunStore
 from autoimprover.scenarios import split
 from autoimprover.search import Candidate, SearchResult
@@ -77,6 +87,8 @@ def model(winners: Sequence[str] = (), vetoed: Sequence[str] = ()) -> Callable[[
             return synth_reply()
         if call.role == "task":
             return "GOOD answer" if ran(call) in winners else "BAD answer"
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         if (checked := contract_checked(call)) is not None:
             return judge_reply(call, lambda *_: checked not in vetoed)
         return judge_reply(call, lambda _s, _c, output: output.startswith("GOOD"))
@@ -114,15 +126,20 @@ def decide(
     fake_clock: FakeClock | None = None,
     kind: Kind | None = None,
     prepare: Callable[[RunStore], None] = lambda _store: None,
+    referenced: bool = False,
 ) -> Outcome:
     """`improve` on the real stack over `raw`, with `searched` in place of the search; `prepare`
-    may fill the new run folder first, as a resumed run finds it."""
+    fills the new run folder first, as a resumed run finds it; `referenced`: every scenario has a
+    reference, so the absolute holdout score decides, not the preference (ADR-014)."""
     monkeypatch.setattr(runner, "run_search", searched)
+    if referenced:
+        monkeypatch.setattr(runner, "reference_of", lambda _scenarios: Reference(1, 1))
     now = datetime(2026, 10, 4, 12, tzinfo=UTC)
     store = RunStore.open_or_create(tmp_path / "runs", plan, PROMPT, utcnow=lambda: now)
     try:
         prepare(store)
-        costs = runner.fixed_costs(plan, len(examples or ()) or 12, examples is None)
+        n = len(examples or ()) or 12
+        costs = runner.fixed_costs(plan, n, examples is None, pairwise=not referenced)
         clock = Clock(now=(fake_clock or FakeClock()).now)
         deadline = SEARCH_CLOCK_SHARE * plan.wall_clock_s
         budgeted = BudgetedBackend(raw, plan.budget - costs.final, 0, clock, deadline)
@@ -232,6 +249,7 @@ def test_time_running_out_keeps_the_original_with_what_was_measured_before(
         examples=examples,
         trust_search=trust,
         fake_clock=clock,
+        referenced=True,
     )
     assert (outcome.reason_code, outcome.prompt) == (code, A if code == "improved" else PROMPT)
     fields = (outcome.score_before, outcome.noise, outcome.stop, outcome.search_score_before)
@@ -255,8 +273,8 @@ def test_the_search_gets_train_and_val_only_its_share_of_the_budget_and_the_plan
     assert (kw["seed"], kw["train"], kw["val"]) == (PROMPT, parts.train, parts.val)
     assert not set(parts.holdout) & {*kw["train"], *kw["val"]}
     assert kw["search_start"] == (12, 0.0)  # intake, synthesis, two seed runs of 4 + 1
-    assert (kw["calls_left_at_start"], kw["iter_cost"]) == (120 - 18 - 12, 13)
-    assert searched.limit == 120 - 18 and searched.budgeted and searched.budgeted.limit == 120
+    assert (kw["calls_left_at_start"], kw["iter_cost"]) == (120 - 23 - 12, 13)
+    assert searched.limit == 120 - 23 and searched.budgeted and searched.budgeted.limit == 120
     assert (kw["rng_seed"], kw["merge"], kw["reflect_model"]) == (7, True, MODELS.reflect)
     assert (kw["wall_clock_s"], kw["clock_share"]) == (plan.wall_clock_s, SEARCH_CLOCK_SHARE)
     template = runner.reflection_template(contract, "balanced", runner.count_tokens(PROMPT), True)
@@ -347,7 +365,7 @@ def test_a_candidate_must_beat_the_original_by_twice_the_noise_of_its_two_runs(
         return scenario in seed_passes[sample] if name == "seed" else scenario not in failing
 
     raw = scored(passes)
-    outcome = decide(tmp_path, monkeypatch, Searched(found(cand(A, 0.5))), raw)
+    outcome = decide(tmp_path, monkeypatch, Searched(found(cand(A, 0.5))), raw, referenced=True)
     assert (outcome.reason_code, outcome.score_before, outcome.noise) == (code, 0.375, 0.25)
     assert (outcome.score_after, outcome.margin) == ((1.0, 0.125) if fails == 0 else (None, None))
     seeds = [c for c in raw.calls if c.role == "task" and c.user.endswith(f"\n\n{PROMPT}")]
@@ -370,7 +388,7 @@ def test_a_gain_exactly_at_the_threshold_is_not_a_win(
         return output[0] == "A" and scenario == HOLDOUT[0].id and int(check[3:]) <= passed
 
     raw = scored(passes, FIVE_CHECKS)
-    outcome = decide(tmp_path, monkeypatch, Searched(found(cand(A, 0.5))), raw)
+    outcome = decide(tmp_path, monkeypatch, Searched(found(cand(A, 0.5))), raw, referenced=True)
     assert (outcome.reason_code, outcome.score_before, outcome.noise) == (code, 0.0, 0.0)
     assert outcome.margin == (None if passed == 1 else 0.05)  # 0.05 or 0.1, against 0.05
 
@@ -385,7 +403,7 @@ def test_an_original_at_095_on_the_holdout_is_already_strong_and_is_not_searched
         )
 
     searched = Searched(found(cand(A, 0.5)))
-    outcome = decide(tmp_path, monkeypatch, searched, scored(passes, FIVE_CHECKS))
+    outcome = decide(tmp_path, monkeypatch, searched, scored(passes, FIVE_CHECKS), referenced=True)
     if strong:  # runs of 1.0 and 0.9
         assert (outcome.reason_code, outcome.score_before, outcome.stop) == (
             "already_strong",
@@ -402,7 +420,7 @@ def test_the_095_check_reads_the_holdout_on_the_target_not_the_valset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     searched = Searched(found(cand(A, 0.5), seed=1.0))  # the search model rates the original 1.0
-    outcome = decide(tmp_path, monkeypatch, searched, scored(lambda *_: False))
+    outcome = decide(tmp_path, monkeypatch, searched, scored(lambda *_: False), referenced=True)
     assert (outcome.reason_code, outcome.score_before) == ("no_reliable_improvement", 0.0)
     assert outcome.search_score_before == 1.0 and searched.kwargs
 
@@ -423,8 +441,8 @@ def test_fewer_than_8_examples_without_trust_search_keep_the_original_before_any
         assert raw.calls == [] and outcome.calls_used == 0
     else:  # the twin: 8 examples keep a holdout of 3
         assert (outcome.reason_code, outcome.prompt) == ("improved", A)
-        kw = searched.kwargs  # final 3 x (3 + 1) + 3, start 1 + 2 x (3 + 1)
-        assert (kw["calls_left_at_start"], kw["iter_cost"]) == (100 - 15 - 9, 12)
+        kw = searched.kwargs  # final 3 x 3 + 3 + 8, start 1 + 2 x (3 + 1)
+        assert (kw["calls_left_at_start"], kw["iter_cost"]) == (100 - 20 - 9, 12)
         assert {c.user.split("\n\n")[0] for c in raw.calls if c.model == MODELS.target} == {
             s.input for s in split(EXAMPLES, seed=0).holdout
         }

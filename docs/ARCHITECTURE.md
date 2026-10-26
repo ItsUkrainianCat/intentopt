@@ -18,6 +18,7 @@ main(argv, backend=None, now=None):
   m = min(MINIBATCH_SIZE, size of dataset); jc(k) = ceil(k / JUDGE_BATCH_MAX)   # judge calls for a pass over k scenarios (1 for k <= 6; 2 for n = 7)
   pre   = 1 + (1 if synthesising) + (2 * (h + jc(h)) if h else 0) + (v + jc(v))   # intake, synthesis, two seed runs (h task calls + the judge calls each), GEPA's seed valset pass
   final = (3 * (h + jc(h)) if h else 0) + 3                           # up to 3 finalist runs on the target model + up to 3 contract checks
+  if not references and h: final = 3 * h + 3 + 3 * 2 + 2             # ADR-014: finalists are run, not scored; 2 pairwise calls each, 2 for the noise
   iter_cost = 1 + 2 * (m + 1) + (v + jc(v))                       # an accepted child: reflect, parent minibatch, child minibatch, valset pass; a rejected one costs 1 + 2 * (m + 1)
   search_calls = budget - pre - final                             # a rejected reflection reply costs one more call (GEPA retries it): a planning estimate, not a limit
   iterations = search_calls // iter_cost                          # worst case; the R4 floor uses it; --dry also prints the best case
@@ -50,8 +51,11 @@ main(argv, backend=None, now=None):
     if not h:                                                     # --trust-search: only a finalist that beats the seed on the valset, verified=False (R11)
       best = first finalist with valset score > the seed's; return Improved(best, verified=False, ...) or Unchanged("no candidate beat the seed")
     for cand in finalists (best first):
-      if runner.score_holdout(cand, holdout, models.target) > mean(base) + threshold:
-        return Improved(cand, verified=True, stop=state.stop, changes=lineage_notes(cand))     # R3, R2
+      if references:                                              # every example has a reference: the absolute rule (R3, R12)
+        if runner.score_holdout(cand, holdout, models.target) > mean(base) + threshold:
+          return Improved(cand, verified=True, stop=state.stop, changes=lineage_notes(cand))   # R3, R2
+      elif pairwise_preferred(cand's holdout answers vs the original's run 0, both orders) beats noise_count(original run 0 vs run 1):   # ADR-014
+        return Improved(cand, verified=True, stop=state.stop, changes=lineage_notes(cand))
     return Unchanged("no reliable improvement", stop=state.stop)
   except BudgetExhausted:                                         # in the final steps
     return Unchanged("ran out of budget or time before a candidate was confirmed", stop=...)   # never an unvetted answer (R17)
@@ -99,6 +103,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `scenarios.py` | `read_examples(path: Path) -> list[Scenario]` (a bad line raises `ValueError("line N: ...")`, which `cli` turns into exit 2); `synthesize(backend, model, prompt, contract) -> list[Scenario]` (`model` is the reflection model); `split_sizes(n) -> tuple[int, int, int]` (holdout, valset, dataset; n >= 8); `split(scenarios, seed) -> Split`, `Split(train, val, holdout)` being tuples of `Scenario` (n < 8: `train == val == all`, `holdout == ()`) | R11, R15 |
 | `evaluator.py` | `Evaluator(backend, contract, task_model, judge_model, sample=0)` implementing `BatchEvaluator` (the runner builds one with `models.task` for the search and one with `models.target` and `sample` 0 or 1 for the seed and finalist runs): task call per scenario, programmatic checks, one judge call per at most `JUDGE_BATCH_MAX` scenarios, quote rule; a `CallFailed` on a task call or the judge call returns an `incomplete` entry instead of raising (`BudgetExhausted`, `BackendError`, `SessionNotLockedDown` propagate); `side_info["scores"]` per group and the ASI in other keys | R10, R10a, R10b, R16, R24 |
 | `search.py` | the GEPA seam, the only importer of `gepa`: the batch evaluator adapter, the reflection wrapper (delimiter parsing), the stdout redirect and `RunLogger`, `run_search(...) -> SearchResult` (candidates with valset scores and lineage notes); it re-exports the state types of `search_state.py` | R12, R15, R15a, R16, R17, R22, R24 |
+| `deep_pairwise.py` | the deep tier's decision without references (ADR-014): `noise` (the original's two holdout runs compared) and `preferred` (a finalist's holdout answers against the original's, both orders) over `fast_pairwise`; `MARK`, which the report reads | R3, R12, R25 |
 | `search_state.py` | what a search has decided, with no `gepa` import: `SearchMeter` (distinct calls once, seconds), `RunState` (`abort`, `stop`, `completed`, reflection index, `raise_if_aborted`, the stopper), `SkipProposal`, `Candidate`, `SearchResult` | R17, R22, R24 |
 | `runner.py` | `improve(prompt, plan, backend, store, ...) -> Outcome`; `fixed_costs` (its `iterations` and `iterations_best` fields are the estimate), `refusal`; `score_holdout`; gates (contract, length cap, literals); finalist selection, `--trust-search`, the final steps and the `Outcome` with its report fields; it re-exports `count_tokens`, `length_ok` and `reflection_template` | R3, R4, R6, R7, R8, R11-R14a, R17, R22 |
 | `lengths.py` | `count_tokens` (the one approximate token count), `_token_cap`, `length_ok` (the free length gate) | R7, R8 |
@@ -128,7 +133,7 @@ A reply that is valid for the JSON schema but fails `Check`, `Scenario` or `Cont
 | `cli.py` | `main(argv, *, backend=None, now=None) -> int` (`backend` replaces the raw model layer, `now` the monotonic clock) and the subcommand `clean`. Flags: `--dry`, `--force-low-budget`, `--json`, `--file`, `--examples`, `--kind template\|task`, `--budget`, `--strictness`, `--allow-growth`, `--task-model`, `--judge-model`, `--reflect-model`, `--target-model`, `--merge`, `--trust-search`, `--resume <id>` | R1, R2, R4, R14, R22, R23 |
 | `.claude-plugin/`, `hooks/` (repo root) | the Claude Code mod: `plugin.json`, `marketplace.json`, `hooks.json`, `register.js` (every `$` call), pure modules `args.js`, `argv.js`, `report.js`, `stream.js`, `pane.js`; `/improve` and `/optimize` run the CLI as a child process (ADR-010) | R19, R21 |
 
-Dependencies point one way: `cli -> runner -> search -> {evaluator, backend, search_state}`, `runner -> {contract, scenarios, lengths, reflection_text}`, `{evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `search.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
+Dependencies point one way: `cli -> runner -> search -> {evaluator, backend, search_state}`, `runner -> {contract, scenarios, lengths, reflection_text, deep_pairwise}`, `deep_pairwise -> fast_pairwise -> bench_judge`, `{evaluator, contract, scenarios} -> backend -> runstore -> types`, and `cli -> claude_cli -> backend` (the CLI builds the real raw layer; tests inject their own). `gepa` is imported only in `search.py`; nothing else touches GEPA types or `oa.log` (not available on the batch path).
 
 Interfaces fixed at the skeleton commit are in `types.py` (read it, not a copy here) and the `cli.main` signature. Signatures of the other modules above are fixed by this table; an owner may add private helpers but changes a public signature only through the lead.
 
@@ -264,6 +269,6 @@ DSPy and any second optimiser (ADR-001); GEPA merge by default (R15); the local 
 - `--merge` is accepted and handed to GEPA, but with a valset under GEPA's overlap floor of 5 (ours is at most 4) it never merges (probe, G3 pre-flight), so at default sizes it changes nothing; kept because SPEC R15 lists it, and a candidate for removal if the user agrees.
 - Model aliases are pinned in `types.py` (`MODEL_ALIASES`); the claude CLI may resolve `opus` to a newer id later. Provisional: the user passes full ids when they care.
 
-## ADRs (ADR-001 to ADR-008 accepted by the user's G3 sign-off, ADR-009 to ADR-013 accepted when written; index: `docs/adr/`)
+## ADRs (ADR-001 to ADR-008 accepted by the user's G3 sign-off, ADR-009 to ADR-014 accepted when written; index: `docs/adr/`)
 
-ADR-001 gepa only, no DSPy in v1. ADR-002 judge sees outputs, not candidates. ADR-003 three-way split and holdout rule. ADR-004 one backend seam, budget, stop and failure handling. ADR-005 one-off tasks are tested on synthesised situations, templates on inputs. ADR-006 our own reflection prompt. ADR-007 run folder format, atomic writes, clocks, lock and resume. ADR-008 wire formats of every model message (intake, synthesis, task, judge, contract check, reflection).
+ADR-001 gepa only, no DSPy in v1. ADR-002 judge sees outputs, not candidates. ADR-003 three-way split and holdout rule. ADR-004 one backend seam, budget, stop and failure handling. ADR-005 one-off tasks are tested on synthesised situations, templates on inputs. ADR-006 our own reflection prompt. ADR-007 run folder format, atomic writes, clocks, lock and resume. ADR-008 wire formats of every model message (intake, synthesis, task, judge, contract check, reflection). ADR-014 the deep tier decides by pairwise preference when the examples carry no reference.

@@ -14,6 +14,7 @@ import threading
 import pytest
 from fakes import MARKER, ScriptedBackend, failing, happy_backend
 
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import Call
 
 ORIGINAL = "Summarise the meeting notes for the team in five bullet points."
@@ -147,7 +148,8 @@ def test_judge_is_blind_batched_and_never_the_task_or_target_model(run_cli):
         items = json.loads(call.user)["scenarios"]
         assert 1 <= len(items) <= 6
         if items[0]["scenario"] != "contract":
-            assert ORIGINAL not in call.user + call.system
+            if call.system != PAIRWISE_BATCH_SYSTEM:  # that judge sees the original as the request
+                assert ORIGINAL not in call.user + call.system
             assert MARKER not in call.user + call.system
     seeds = _seed_calls(backend.calls)
     assert sorted(c.sample for c in seeds) == [0] * 4 + [1] * 4
@@ -187,7 +189,8 @@ def test_holdout_size_and_the_search_never_sees_it(run_cli, examples, n):
     holdouts = []
     for _ in range(2):
         backend = happy_backend(IMPROVED)
-        r = run_cli(["--examples", examples(n), ORIGINAL], backend)
+        budget = ["--budget", "105"] if n == 40 else []  # 40 examples: a holdout of 6 (ADR-014)
+        r = run_cli([*budget, "--examples", examples(n), ORIGINAL], backend)
         assert r.code == 0, r.err
         seeds = _seed_calls(backend.calls)
         holdout = {_input(c) for c in seeds if c.sample == 0}

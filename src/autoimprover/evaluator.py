@@ -128,7 +128,12 @@ class Evaluator:
         minibatch with repeats) runs once and fills each of its places with its own copy. Two
         different scenarios with one id raise ValueError before any call: the judge's reply could
         not tell them apart."""
-        return self.score(scenarios, self._run(candidate, _distinct(scenarios)))
+        return self.score(scenarios, self.outputs(candidate, scenarios))
+
+    def outputs(self, candidate: str, scenarios: Sequence[Scenario]) -> dict[str, str | CallFailed]:
+        """The task calls of `__call__` without the judging: scenario id -> the output, or the
+        CallFailed of a call that failed all its attempts; a scenario given twice runs once."""
+        return self._run(candidate, _distinct(scenarios))
 
     def score(
         self, scenarios: Sequence[Scenario], outputs: Mapping[str, str | CallFailed]

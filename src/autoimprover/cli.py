@@ -53,6 +53,7 @@ from autoimprover.cli_plan import FastView, PlanView
 from autoimprover.efforts import EffortBackend
 from autoimprover.fast import improve_fast
 from autoimprover.fastplan import FastPlan
+from autoimprover.reference_score import reference_of
 from autoimprover.report import Emitter
 from autoimprover.runstore import RunStore, RunStoreError, runs_root
 from autoimprover.scenarios import MIN_SCENARIOS_FOR_HOLDOUT
@@ -240,7 +241,8 @@ class _Session:
         below 8 scenarios unless `--trust-search` (SPEC R4, R11, R17)."""
         plan = _plan(opts, chosen, budget(opts, "deep", chosen.time_s, 0))
         n = SYNTH_COUNT if examples is None else len(examples)
-        costs = runner.fixed_costs(plan, n, synthesising=examples is None)
+        pairwise = reference_of(examples or []) is None
+        costs = runner.fixed_costs(plan, n, synthesising=examples is None, pairwise=pairwise)
         keeps = None
         if n < MIN_SCENARIOS_FOR_HOLDOUT and not opts.trust_search:
             keeps = (
@@ -302,7 +304,12 @@ class _Session:
         kind, trust_search, had_examples, ungated = _saved(store)
         plan, saved = store.plan, store.scenarios()
         tier_plan: TierPlan = (
-            runner.fixed_costs(plan, len(saved or ()) or SYNTH_COUNT, not saved)
+            runner.fixed_costs(
+                plan,
+                len(saved or ()) or SYNTH_COUNT,
+                not saved,
+                pairwise=reference_of(saved or []) is None,
+            )
             if plan.tier == "deep"
             else saved_fast_plan(store, had_examples)
         )

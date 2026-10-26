@@ -201,7 +201,7 @@ REFUSED = [
     (["clean", "--budget", "5"], "--budget"),
     (["clean", RUN_ID, RUN_ID], "clean"),
     (["clean", "../x"], "clean"),
-    (["--budget", "30", PROMPT], "--budget 86"),
+    (["--budget", "30", PROMPT], "--budget 91"),
     (["--budget", "60", PROMPT], "--force-low-budget"),
 ]
 
@@ -268,7 +268,7 @@ def test_dry_prints_the_plan_makes_no_call_and_writes_nothing(capsys):
     dry = run(capsys, "--dry", PROMPT)
     assert (dry.code, dry.err, dry.backend.calls) == (0, "", [])
     assert dry.out.startswith("dry run: no model call made, nothing written\n")
-    assert "66 left for the search" in dry.out and "would refuse" not in dry.out
+    assert "61 left for the search" in dry.out and "would refuse" not in dry.out
     assert state() == []
 
 

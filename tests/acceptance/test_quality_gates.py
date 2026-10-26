@@ -10,8 +10,9 @@ import json
 from collections import Counter
 
 import pytest
-from fakes import MARKER, happy_backend, judge_reply
+from fakes import MARKER, happy_backend, judge_reply, pairwise_reply
 
+from autoimprover.pairwise_text import PAIRWISE_BATCH_SYSTEM
 from autoimprover.types import Call
 
 ORIGINAL = "Summarise the meeting notes for the team in five bullet points."
@@ -62,11 +63,13 @@ def test_original_returned_unless_a_candidate_beats_it(run_cli, proposal, status
     ids=["gain-inside-noise", "twin-gain-above-noise", "twin-same-gain-no-noise"],
 )
 def test_win_threshold_is_twice_the_seed_noise(
-    run_cli, override, seed2_good, candidate_good, status
+    run_cli, override, examples, seed2_good, candidate_good, status
 ):
-    """R3, R12, R14a: on the 4 holdout scenarios, on the target model, seed run 1 passes 2 and seed
-    run 2 passes `seed2_good`; the bar is max(0.05, 2 x |difference|). A candidate passing 3 of 4
-    does not clear 0.375 + 0.5 but does clear 0.5 + 0.05; one passing 4 clears both."""
+    """R3, R12, R14a: with references (every example carries one; without them the pairwise
+    preference decides, ADR-014), on the 4 holdout scenarios, on the target model, seed run 1
+    passes 2 and seed run 2 passes `seed2_good`; the bar is max(0.05, 2 x |difference|). A
+    candidate passing 3 of 4 does not clear 0.375 + 0.5 but does clear 0.5 + 0.05; one passing 4
+    clears both."""
     served: Counter = Counter()
 
     def task(call: Call) -> str:
@@ -77,7 +80,8 @@ def test_win_threshold_is_twice_the_seed_noise(
         limit = {("seed", 0): 2, ("seed", 1): seed2_good, ("candidate",): candidate_good}[key]
         return "GOOD answer" if served[key] <= limit else "BAD answer"
 
-    r = run_cli(["--json", ORIGINAL], override(happy_backend(IMPROVED), task=task))
+    argv = ["--json", "--examples", examples(12, expected="Three bullets"), ORIGINAL]
+    r = run_cli(argv, override(happy_backend(IMPROVED), task=task))
     assert r.code == 0, r.err
     obj = r.json()
     assert served[("candidate",)] == 4  # the finalist was run on the target model's holdout
@@ -100,6 +104,8 @@ def _contract_judge(verdict: str):
     its last question: pass, fail, omit, or a pass whose quote is not in the candidate."""
 
     def answer(call: Call) -> str:
+        if call.system == PAIRWISE_BATCH_SYSTEM:
+            return pairwise_reply(call)
         request = json.loads(call.user)
         item = request["scenarios"][0]
         if item["scenario"] != "contract":
@@ -347,12 +353,14 @@ def _on_target(outcome: str):
 
 
 @pytest.mark.parametrize("on_target", ["ties", "loses", "wins"], ids=["tie", "loss", "twin-win"])
-def test_search_winner_must_also_win_on_the_target_model(run_cli, override, on_target):
+def test_search_winner_must_also_win_on_the_target_model(run_cli, override, examples, on_target):
     """R14a: the final comparison runs on the target model for both seed runs and the finalist; a
     candidate that wins on the search model but ties or loses on the target model is not returned.
-    Twin: it also wins there, and the report shows the scores on both models."""
+    Twin: it also wins there, and the report shows the scores on both models. With references, as
+    here; without them the pairwise preference decides, on the same target-model runs (ADR-014)."""
+    refs = ["--examples", examples(12, expected="Three bullets")]
     served, task = _on_target(on_target)
-    r = run_cli(["--json", ORIGINAL], override(happy_backend(IMPROVED), task=task))
+    r = run_cli(["--json", *refs, ORIGINAL], override(happy_backend(IMPROVED), task=task))
     assert r.code == 0, r.err
     obj = r.json()
     assert served == Counter({"seed-0": 4, "seed-1": 4, "candidate": 4})
@@ -362,7 +370,8 @@ def test_search_winner_must_also_win_on_the_target_model(run_cli, override, on_t
         assert obj["prompt"] == IMPROVED
         assert obj["score_before"] == pytest.approx(0.5)
         assert obj["score_after"] == pytest.approx(1.0)
-        text = run_cli([ORIGINAL], override(happy_backend(IMPROVED), task=_on_target("wins")[1]))
+        backend = override(happy_backend(IMPROVED), task=_on_target("wins")[1])
+        text = run_cli([*refs, ORIGINAL], backend)
         scores = [line for line in text.err.splitlines() if "score" in line]
         assert any(TARGET in line for line in scores), scores
         assert any(TASK_MODEL in line for line in scores), scores

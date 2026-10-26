@@ -34,7 +34,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Protocol, TextIO
 
-from autoimprover import reference_text
+from autoimprover import deep_pairwise, reference_text
 from autoimprover.report_clean import clean_text as clean_text
 from autoimprover.report_clean import one_line as one_line
 from autoimprover.report_clean import word_diff as word_diff
@@ -43,6 +43,7 @@ from autoimprover.report_text import (
     FAST_UNVERIFIED,
     FAST_UNVERIFIED_NOISE,
     FAST_VERIFIED,
+    PREFERRED_REASON_LINES,
     REASON_LINES,
 )
 from autoimprover.runner import MIN_THRESHOLD
@@ -158,6 +159,8 @@ def _meaning(outcome: Outcome) -> str:
         return FAST_REASON_LINES.get(outcome.reason_code, REASON_LINES[outcome.reason_code])
     if outcome.status == "improved" and not outcome.verified:
         return _UNVERIFIED_MEANING
+    if _preferred(outcome):
+        return PREFERRED_REASON_LINES.get(outcome.reason_code, REASON_LINES[outcome.reason_code])
     return REASON_LINES[outcome.reason_code]
 
 
@@ -188,6 +191,10 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
     if outcome.score_before is not None:
         if outcome.mode in _UNHELD:
             lines.append(f"{picked}: {shown(outcome.score_before, outcome.score_after)}")
+        elif _preferred(outcome):
+            where = f"preference on the holdout (judge {plan.models.judge}, target model "
+            where += f"{plan.models.target})"
+            lines.append(f"{where}: {_preference(outcome.score_before, outcome.score_after)}")
         else:
             where = f"holdout score (target model {plan.models.target})"
             lines.append(f"{where}: {_before_after(outcome.score_before, outcome.score_after)}")
@@ -203,6 +210,11 @@ def _scores(outcome: Outcome, plan: Plan) -> list[str]:
             said += f" {runs}"
             bar = f"; a rewrite had to gain more than {outcome.noise:.2f}"
         lines.append(said if margin is not None else said + bar)
+    elif outcome.noise is not None and _preferred(outcome):
+        said = f"noise: {outcome.noise:.2f} of the holdout had a winner between the original's"
+        said += " two runs"
+        bar = f"a rewrite had to lead by more than {outcome.noise:.2f}"
+        lines.append(f"{said}; {margin or bar}")
     elif outcome.noise is not None:
         bar = max(MIN_THRESHOLD, 2 * outcome.noise)
         said = f"noise: {outcome.noise:.2f} between the original's two holdout runs"
@@ -245,6 +257,10 @@ def _margin_text(outcome: Outcome) -> str | None:
             f"{lead} {after - before:.2f}{against}{ref} on {_PICKED}; ungated, so no {lead} was "
             "required"
         )
+    if _preferred(outcome):
+        if before is None or after is None or noise is None:
+            return None
+        return f"lead {after - before:.2f} vs noise {noise:.2f} on the holdout"
     if outcome.mode not in FAST_TIERS:
         if noise is None:
             return None
@@ -259,6 +275,11 @@ def _margin_text(outcome: Outcome) -> str | None:
         f"{margin:.2f} above the least gain of {after - before - margin:.2f} on the {held} (no "
         "noise measured)"
     )
+
+
+def _preferred(outcome: Outcome) -> bool:
+    """Whether a deep result was decided by the pairwise judge on the holdout (ADR-014)."""
+    return deep_pairwise.MARK in outcome.reason
 
 
 def _referenced(outcome: Outcome) -> bool:

@@ -74,7 +74,7 @@ from autoimprover.cli_options import (
     settings,
 )
 from autoimprover.lengths import count_tokens
-from autoimprover.reference_score import checks_of
+from autoimprover.reference_score import checks_of, reference_of
 from autoimprover.report import Emitter
 from autoimprover.runstore import RunStore, RunStoreError, make_dirs, runs_root, write_json
 from autoimprover.types import (
@@ -304,7 +304,8 @@ def _run_plan(
     calls = budget(shared, "deep", chosen.time_s, 0)
     plan = Plan(chosen.models, chosen.strictness, calls, wall_clock_s=chosen.time_s, tier="deep")
     n = SYNTH_COUNT if given is None else len(given)
-    costs = runner.fixed_costs(plan, n, synthesising=given is None)
+    pairwise = reference_of(given or []) is None
+    costs = runner.fixed_costs(plan, n, synthesising=given is None, pairwise=pairwise)
     return calls, float(chosen.time_s), runner.refusal(costs, force_low_budget=False)
 
 

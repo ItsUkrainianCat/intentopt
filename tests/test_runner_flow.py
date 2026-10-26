@@ -170,7 +170,10 @@ def test_a_candidate_that_wins_on_the_holdout_is_returned_verified_with_its_repo
     assert (outcome.verified, outcome.stop, outcome.changes) == (True, "budget", WHY)
     assert (outcome.score_before, outcome.score_after, outcome.noise) == (0.0, 1.0, 0.0)
     assert (outcome.search_score_before, outcome.search_score_after) == (0.0, 1.0)
-    assert outcome.margin == pytest.approx(0.95)
+    # no references, so the pairwise judge decided (ADR-014): the candidate won 4 of 4 holdout
+    # scenarios, the original none, no scenario was noise; the shares are the scores
+    assert outcome.margin == pytest.approx(1.0)
+    assert "pairwise judge on the holdout" in outcome.reason
     ratio = runner.count_tokens(BETTER) / runner.count_tokens(PROMPT)
     assert outcome.length_ratio == ratio and outcome.calls_used == len(raw.calls)
 

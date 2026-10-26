@@ -34,7 +34,7 @@ def plan(budget: int = 100) -> Plan:
 
 
 def test_twelve_synthesised_scenarios_at_budget_100_leave_5_to_7_iterations():
-    costs = runner.fixed_costs(plan(100), 12, synthesising=True)
+    costs = runner.fixed_costs(plan(100), 12, synthesising=True, pairwise=False)
     assert costs == runner.FixedCosts(
         holdout=4,
         valset=3,
@@ -59,14 +59,14 @@ def test_twelve_synthesised_scenarios_at_budget_100_leave_5_to_7_iterations():
 def test_the_users_examples_cost_no_synthesis_call(
     n: int, sizes: tuple[int, int], pre: int, final: int, iter_cost: int, iterations: int
 ):
-    costs = runner.fixed_costs(plan(100), n, synthesising=False)
+    costs = runner.fixed_costs(plan(100), n, synthesising=False, pairwise=False)
     assert (costs.holdout, costs.valset, costs.minibatch) == (*sizes, 3)
     assert (costs.pre, costs.final, costs.iter_cost) == (pre, final, iter_cost)
     assert (costs.search_calls, costs.iterations) == (100 - pre - final, iterations)
 
 
 def test_seven_examples_have_no_holdout_runs_and_two_judge_calls_per_valset_pass():
-    costs = runner.fixed_costs(plan(100), 7, synthesising=False)
+    costs = runner.fixed_costs(plan(100), 7, synthesising=False, pairwise=False)
     assert (costs.holdout, costs.valset, costs.minibatch) == (0, 7, 3)
     assert costs.pre == 1 + 7 + 2  # intake and GEPA's seed valset pass; no seed holdout runs
     assert costs.final == 3  # the contract checks only; no finalist holdout runs
@@ -78,25 +78,25 @@ def test_seven_examples_have_no_holdout_runs_and_two_judge_calls_per_valset_pass
 def test_a_dataset_smaller_than_a_minibatch_makes_the_minibatch_smaller(
     n: int, minibatch: int, iter_cost: int
 ):
-    costs = runner.fixed_costs(plan(100), n, synthesising=False)
+    costs = runner.fixed_costs(plan(100), n, synthesising=False, pairwise=False)
     assert (costs.minibatch, costs.iter_cost) == (minibatch, iter_cost)
 
 
 def test_no_scenario_at_all_has_no_costs():
     with pytest.raises(ValueError, match="scenario"):
-        runner.fixed_costs(plan(100), 0, synthesising=False)
+        runner.fixed_costs(plan(100), 0, synthesising=False, pairwise=False)
 
 
 def test_fixed_costs_above_the_budget_leave_a_negative_search_share_and_no_iteration():
-    costs = runner.fixed_costs(plan(30), 12, synthesising=True)
+    costs = runner.fixed_costs(plan(30), 12, synthesising=True, pairwise=False)
     assert (costs.search_calls, costs.iterations, costs.iterations_best) == (-4, 0, 0)
 
 
 def test_the_costs_add_up_to_the_budget_for_every_plan():
     for n in range(1, 201):
         for budget in range(1, 301):
-            for synthesising in (n == 12, False):
-                costs = runner.fixed_costs(plan(budget), n, synthesising)
+            for synthesising, pairwise in ((n == 12, True), (False, False)):
+                costs = runner.fixed_costs(plan(budget), n, synthesising, pairwise=pairwise)
                 assert costs.pre + costs.final + costs.search_calls == budget, (n, budget)
                 share = max(0, costs.search_calls)
                 assert costs.iterations * costs.iter_cost <= share
@@ -105,11 +105,26 @@ def test_the_costs_add_up_to_the_budget_for_every_plan():
                 assert costs.holdout <= 6 and costs.valset <= max(4, min(n, 7))
 
 
+def test_without_references_the_finalists_are_run_and_judged_in_pairs():
+    costs = runner.fixed_costs(plan(100), 12, synthesising=True)
+    assert costs.holdout == 4
+    # three finalist runs of 4 task calls (never scored), three contract checks, two pairwise
+    # judge calls per finalist and two for the noise of the original's two runs (ADR-014)
+    assert costs.final == 3 * 4 + 3 + 3 * 2 + 2
+    assert (costs.pre, costs.search_calls, costs.iterations) == (16, 100 - 16 - 23, 4)
+
+
+def test_with_references_or_without_a_holdout_nothing_is_judged_in_pairs():
+    referenced = runner.fixed_costs(plan(100), 12, synthesising=False, pairwise=False)
+    assert referenced.final == 18
+    assert runner.fixed_costs(plan(100), 7, synthesising=False).final == 3
+
+
 # --- refusal before any paid call (SPEC R4, R17) --------------------------------------------------
 
 
 def test_budget_66_with_12_scenarios_affords_2_iterations_and_is_refused():
-    costs = runner.fixed_costs(plan(66), 12, synthesising=True)
+    costs = runner.fixed_costs(plan(66), 12, synthesising=True, pairwise=False)
     assert costs.iterations == 2
     message = runner.refusal(costs, force_low_budget=False)
     assert message is not None
@@ -119,8 +134,8 @@ def test_budget_66_with_12_scenarios_affords_2_iterations_and_is_refused():
 
 
 def test_four_iterations_are_enough_and_three_are_not():
-    four = runner.fixed_costs(plan(34 + 4 * 13), 12, synthesising=True)
-    three = runner.fixed_costs(plan(34 + 4 * 13 - 1), 12, synthesising=True)
+    four = runner.fixed_costs(plan(34 + 4 * 13), 12, synthesising=True, pairwise=False)
+    three = runner.fixed_costs(plan(34 + 4 * 13 - 1), 12, synthesising=True, pairwise=False)
     assert (four.iterations, three.iterations) == (4, 3)
     assert runner.refusal(four, force_low_budget=False) is None
     assert runner.refusal(three, force_low_budget=False) is not None
@@ -128,7 +143,7 @@ def test_four_iterations_are_enough_and_three_are_not():
 
 def test_fixed_costs_above_the_budget_are_refused_even_with_force_low_budget():
     for budget in (1, 33):
-        costs = runner.fixed_costs(plan(budget), 12, synthesising=True)
+        costs = runner.fixed_costs(plan(budget), 12, synthesising=True, pairwise=False)
         for force in (False, True):
             message = runner.refusal(costs, force_low_budget=force)
             assert message is not None and "fixed costs" in message, (budget, force)
@@ -137,7 +152,7 @@ def test_fixed_costs_above_the_budget_are_refused_even_with_force_low_budget():
 
 
 def test_fixed_costs_equal_to_the_budget_are_not_refused_when_forced():
-    costs = runner.fixed_costs(plan(34), 12, synthesising=True)
+    costs = runner.fixed_costs(plan(34), 12, synthesising=True, pairwise=False)
     assert costs.search_calls == 0
     assert runner.refusal(costs, force_low_budget=True) is None
     assert "fewer than 4" in (runner.refusal(costs, force_low_budget=False) or "")

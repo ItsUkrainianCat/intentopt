@@ -155,12 +155,17 @@ checked run tests it on held-out scenarios.
 1. The intent contract as above; scenarios from `--examples`, or one call writes 12. From 8
    scenarios up they are split into dataset, valset and a holdout of 3 to 6 that the search never
    sees; below 8 the original is kept unless `--trust-search`.
-2. The original is scored twice on the holdout, on the target model; a result must beat it by more
-   than `max(0.05, 2 x noise)`. An original that already scores 0.95 or more ends the run there.
+2. The original is run twice on the holdout, on the target model, and scored; an original that
+   already scores 0.95 or more ends the run there. With references a result must beat the mean
+   score by more than `max(0.05, 2 x noise)`; without them the two runs are compared with each
+   other by a blind pairwise judge and the noise is the number of scenarios with a winner.
 3. GEPA searches on the cheaper task model, one call at a time, scoring each candidate by running
    it and judging the outputs as above (without the 120-word request).
 4. Up to 3 finalists pass the free gates, then the contract check. The first one that beats the
-   original on the holdout, on the target model, is returned; otherwise the original is.
+   original on the holdout, on the target model, is returned; otherwise the original is. Without
+   references "beats" means a blind pairwise judge, in both orders, prefers it on more scenarios
+   than it prefers the original, by more than the noise (ADR-014); the report prints shares of the
+   holdout scenarios, not scores.
 
 ## Reference examples and learned rules
 
@@ -315,7 +320,8 @@ passed every gate is dropped and the original is returned (`unconfirmed_out_of_b
 In the deep tier fixed costs are reserved before the first call: the contract call, the synthesis
 call when there are no examples, two seed runs on the holdout and GEPA's scoring of the original
 on the valset; after the search up to 3 finalist runs on the target model and up to 3 contract
-checks. The search gets the rest and 75 % of the clock. A deep run refuses to start (exit 2) when
+checks, and without references 2 pairwise judge calls per finalist and 2 for the noise (23 calls
+in all for a holdout of 4). The search gets the rest and 75 % of the clock. A deep run refuses to start (exit 2) when
 the fixed costs exceed the budget, or when the budget affords fewer than 4 iterations in the worst
 case and `--force-low-budget` is not given. If calls or time run out before a finalist is
 confirmed, the original is returned. A budget of 100 is very low for GEPA (the paper's runs used

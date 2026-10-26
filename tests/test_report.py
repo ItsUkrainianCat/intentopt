@@ -104,6 +104,35 @@ def test_the_report_of_each_reason_code_carries_its_code_its_reason_and_its_line
     assert not any(line in text for line in others)
 
 
+PREFERRED = dataclasses.replace(
+    IMPROVED,
+    reason="preferred over the original by the pairwise judge on the holdout, on the target model",
+    score_before=0.0,
+    score_after=0.75,
+    noise=0.5,
+    margin=0.25,
+    mode="deep",
+)
+
+
+def test_a_deep_result_decided_by_preference_says_so_and_prints_no_score():
+    text = report.render(PREFERRED, ORIGINAL, CONTRACT, PLAN, 600.0)
+    assert report.PREFERRED_REASON_LINES["improved"] in text
+    assert (
+        "preference on the holdout (judge claude-opus-5-5, target model claude-sonnet-5-5)" in text
+    )
+    assert "the original won 0.00, the rewrite 0.75" in text
+    assert "noise: 0.50 of the holdout had a winner between the original's two runs" in text
+    assert "lead 0.75 vs noise 0.50 on the holdout" in text
+    assert "holdout score" not in text and "cleared the bar" not in text
+
+
+def test_a_deep_result_without_a_preference_keeps_the_score_lines():
+    text = report.render(dataclasses.replace(IMPROVED, mode="deep"), ORIGINAL, CONTRACT, PLAN)
+    assert "holdout score (target model" in text and "cleared the bar" in text
+    assert report.PREFERRED_REASON_LINES["improved"] not in text
+
+
 def test_the_improved_report_snapshot():
     assert report.render(IMPROVED, ORIGINAL, CONTRACT, PLAN) == (
         "result: improved (improved)\n"
@@ -316,9 +345,9 @@ def test_the_plan_names_models_budget_fixed_costs_scenarios_iterations_and_the_f
     assert "task claude-haiku-4-5-20251001, judge claude-opus-5-5" in text
     assert "reflection claude-opus-5-5, target claude-sonnet-5-5" in text
     assert "100 calls (ceiling 300)" in text
-    assert "16 before the search, 18 after it, 66 left for the search" in text
+    assert "16 before the search, 23 after it, 61 left for the search" in text
     assert "scenarios: 12, synthesised by one call; holdout 4, valset 3, dataset 5" in text
-    assert "about 5 GEPA iterations (worst case, 13 calls each) to 7" in text
+    assert "about 4 GEPA iterations (worst case, 13 calls each) to 6" in text
     assert "the clock may end the search sooner" in text
     assert "the final steps keep 11 min 15 s" in text
     assert "would refuse" not in text
@@ -336,8 +365,8 @@ def test_the_plan_object_carries_the_same_numbers():
     obj = cli_plan.plan_object(view(refusal="too few"))
     assert obj["status"] == "dry" and obj["plan"] == dataclasses.asdict(PLAN)
     assert (obj["scenarios"], obj["holdout"], obj["valset"], obj["dataset"]) == (12, 4, 3, 5)
-    assert (obj["calls_before_search"], obj["calls_after_search"]) == (16, 18)
-    assert (obj["search_calls"], obj["iterations"], obj["iterations_best"]) == (66, 5, 7)
+    assert (obj["calls_before_search"], obj["calls_after_search"]) == (16, 23)
+    assert (obj["search_calls"], obj["iterations"], obj["iterations_best"]) == (61, 4, 6)
     assert (obj["search_clock_s"], obj["final_clock_s"]) == (2025, 675)
     assert (obj["refusal"], obj["keeps_original"], obj["synthesised"]) == ("too few", None, True)
 
