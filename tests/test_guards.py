@@ -7,7 +7,10 @@ import tempfile
 import time
 from pathlib import Path
 
+import conftest
 import pytest
+
+from autoimprover.runstore import RunStore
 
 CONFTEST = Path(__file__).with_name("conftest.py")
 
@@ -74,6 +77,17 @@ def test_working_directory_and_temp_folder_are_inside_the_test_folder(tmp_path: 
     assert Path.cwd().is_relative_to(tmp_path)
     assert Path(tempfile.gettempdir()).is_relative_to(tmp_path)
     assert Path(os.environ["TMPDIR"]).is_relative_to(tmp_path)
+
+
+def test_the_session_folder_is_outside_a_git_repository_even_if_tmpdir_is_inside_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(repo))
+    parent = Path(conftest._session_parent())
+    assert not parent.is_relative_to(repo)
+    RunStore.check_root(parent / "autoimprover-tests")
 
 
 def test_a_test_file_cannot_shadow_the_guard_fixture(pytester: pytest.Pytester):

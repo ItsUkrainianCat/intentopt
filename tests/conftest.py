@@ -88,9 +88,28 @@ def _popen_init(*args: object, **kwargs: object):
     return _real_popen_init(*args, **kwargs)  # type: ignore[arg-type]
 
 
+def _session_parent() -> str:
+    """The folder the session's scratch tree is made in: TMPDIR if it is outside every git
+    repository, else /tmp or /var/tmp. `RunStore.check_root` refuses a state folder inside a
+    repository, and every test's state folder lives under this one (a TMPDIR inside a repository
+    made most of the suite fail with exit code 2)."""
+    from autoimprover.runstore import RunStore, RunStoreError
+
+    for candidate in (tempfile.gettempdir(), "/tmp", "/var/tmp"):
+        try:
+            RunStore.check_root(Path(candidate) / "autoimprover-tests")
+        except RunStoreError:
+            continue
+        return candidate
+    raise pytest.UsageError(
+        "no writable temp folder outside a git repository (tried TMPDIR, /tmp, /var/tmp); "
+        "set TMPDIR to one"
+    )
+
+
 def _install_session_guards() -> None:
     """Patch once, for the whole session, on a MonkeyPatch no test can reach."""
-    base = Path(tempfile.mkdtemp(prefix="autoimprover-tests-"))
+    base = Path(tempfile.mkdtemp(prefix="autoimprover-tests-", dir=_session_parent()))
     _state["base"] = base
     for var, sub in _ENV_FOLDERS:
         folder = base / "home" / sub
